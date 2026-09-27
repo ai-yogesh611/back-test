@@ -1,10 +1,29 @@
 # Back-Test
 
-An algorithmic trading platform for backtesting, comparing, and paper-trading investment strategies against historical market data.
+An algorithmic trading platform for Indian markets: backtest, compare, forward-test (paper), and trade strategies across equity and NIFTY/BANKNIFTY options — with portfolio-level risk, order management, and portfolio intelligence watching the combined book.
+
+## Current Status (2026-09-27)
+
+| Area | Status |
+|------|--------|
+| Backtest / Compare engine | ✅ Production — deterministic, request-id logging, 2,700+ tests |
+| Forward testing (paper) | ✅ Production — server-side replay clock, equity + options, persistence across restarts |
+| Options (paper, live, backtest) | ✅ Complete — 9/9 PRD phases; atomic multi-leg execution, Greeks, full statutory fee stack, expiry handling |
+| Playbooks (unified trading) | ✅ Live — declarative option-strategy configs spawn runners; risk envelope with "estimated" badge |
+| Live Order Management | ✅ Live — position actions (SL/TP/Close) + Orders ledger tab with cancel, amend-at-venue, aging alerts, bounded auto-retry |
+| Risk management | ✅ Live — 3 tiers: global breakers, independent per-bucket breakers, `/risk` monitoring page |
+| Portfolio Intelligence & Alerts | ✅ Live — portfolio Greeks in ₹, concentration, correlation, VIX regime, pub/sub AlertBroker with strategy hooks, DB persistence (migration 005) |
+| Strategy Analytics | ✅ Live — `/analytics` per-strategy performance suite + extended `/compare` |
+| Multi-broker sessions | ✅ mStock + Dhan — registry-based, per-broker login via auth modal, one *active session* at a time |
+| Feed-quality monitoring | ✅ Live — staleness/gaps/repeats/error-rate per (broker, symbol), durable JSONL log, restart-proof |
+| Data sources | ✅ Synthetic, CSV, mStock, Dhan; PostgreSQL/TimescaleDB cache (467K+ bars, 201 stocks) |
+| Multi-broker *concurrent* sessions + segmented trading | 📝 PRD drafted (`docs/MULTI-BROKER-PRD.md`) — not yet implemented |
+| Live broker fill polling (F-12) | ⚠️ Open — live orders return `placed`; fill confirmation from the venue not yet polled |
+| Live Dhan order contract (`BrokerOrderBase`) | ⚠️ Open — Dhan has auth + data today; order book/place/cancel pending |
 
 ## What It Does
 
-**Test trading strategies before risking real money.** Feed it historical OHLCV (Open/High/Low/Close/Volume) candle data, pick a strategy, and the engine simulates trades — showing you exactly how much you would have made or lost.
+**Test trading strategies before risking real money — then drive them live with human overrides.** Feed it historical OHLCV candle data, pick a strategy, and the engine simulates trades; graduate to forward paper-testing on a live clock; arm live runners with portfolio-wide risk breakers, manual position controls, and an intelligence layer watching the combined book.
 
 ## How It Works
 
@@ -43,7 +62,8 @@ Market Data (OHLCV candles)
 | **Options** | Trade multi-leg NIFTY option structures (long call/put, bull call spread, bear put spread) with Greeks, fees, and expiry handling — paper or live |
 | **Options Backtest** | *(Python API)* Model-driven options backtesting: the same expression layer (view → selector → structure → intent) run bar-by-bar over a candle frame with synthetic Black-Scholes pricing — no UI tab yet |
 | **Order Management** | Manual steering wheel on the Command Center — per-position actions (Modify SL / Target / Close 50% / Close All) + an Orders ledger tab with cancel, amend-at-venue, aging alerts, slippage and bounded auto-retry (see below) |
-| **Multi-Broker** | Switchable broker sessions — mStock and Dhan behind one auth contract; feed-quality monitoring on every live bar (see Data Sources) |
+| **Multi-Broker** | Switchable broker sessions — mStock and Dhan behind one auth contract; feed-quality monitoring on every live bar (see Data Sources). Concurrent per-broker sessions + segment-based capital allocation: PRD drafted, see [docs/MULTI-BROKER-PRD.md](docs/MULTI-BROKER-PRD.md) |
+| **Portfolio Intelligence** | Risk layer above individual strategies: portfolio Greeks in ₹ with scenario revaluation, concentration (underlying / group / strike clusters), strategy P&L correlation, volatility-regime fit, and a pub/sub alert system strategies can subscribe to — see [docs/PORTFOLIO-INTELLIGENCE.md](docs/PORTFOLIO-INTELLIGENCE.md), [docs/ALERTS-GUIDE.md](docs/ALERTS-GUIDE.md) |
 | **Risk** | 3-tiered risk management & monitoring — global circuit breakers (daily loss, drawdown, leverage), per-bucket breakers with independent halts, and a live `/risk` page + dashboard risk strip |
 | **Analytics** | `/analytics` — per-strategy performance suite (P&L attribution, trade stats, equity behaviour) plus an extended `/compare` |
 | **Dashboard** | Overview of all strategies and their status |
@@ -199,12 +219,17 @@ src/backtest/
 ├── options/        # Options trading: selectors, structures, paper/live
 │                   #   execution, Greeks, margin, fees, expiry, persistence, playbooks
 ├── instruments/    # Instrument model (equity, option, expiry calendar)
-├── brokers/        # Broker session layer: BrokerAuthBase + mstock + dhan,
+├── intelligence/   # Portfolio Intelligence: Greeks ₹, concentration, correlation,
+│                   #   regime, collector, async persistence (migration 005 tables)
+├── alerts/         # Pub/sub AlertBroker: dedup, escalation, auto-resolve,
+│                   #   ack, catalog; strategies subscribe via hooks
+├── brokers/        # Broker session layer: BrokerAuthBase + BrokerOrderBase,
+│                   #   mstock (auth+orders) + dhan (auth+data),
 │                   #   registry/switch_broker session manager, remember_session
-├── db/             # SQLAlchemy models + DB manager
+├── db/             # SQLAlchemy models + DB manager + migrations (alembic, v005)
 ├── api/            # REST endpoints: backtest, strategies, forward, portfolio,
 │                   #   broker_auth (list/select/login/feed-quality), playbooks,
-│                   #   analytics, data_manager, symbols
+│                   #   analytics, monitor (intelligence), data_manager, symbols
 ├── web/            # Flask web app (UI + API)
 ├── live/           # mStock live auth + data adapter
 ├── cli.py          # Command-line interface
@@ -249,6 +274,8 @@ Open `http://localhost:5000` → Backtest tab → Pick a strategy → Hit **Run 
 | [docs/STRATEGY-AUTHORING.md](docs/STRATEGY-AUTHORING.md) / [docs/ADDING-NEW.md](docs/ADDING-NEW.md) | Writing strategies/plugins |
 | [docs/STRATEGY-GUIDELINES.md](docs/STRATEGY-GUIDELINES.md) | Rules & review checklist for new strategies (+ `templates/strategy_test_template.py`) |
 | [docs/LOGGING.md](docs/LOGGING.md) | Logging levels, request ids, debugging table |
+| [docs/PORTFOLIO-INTELLIGENCE.md](docs/PORTFOLIO-INTELLIGENCE.md) / [docs/ALERTS-GUIDE.md](docs/ALERTS-GUIDE.md) / [docs/STRATEGY-ALERTS.md](docs/STRATEGY-ALERTS.md) | Portfolio Intelligence: Greeks, concentration, regime; alert system + strategy subscription hooks |
+| [docs/MULTI-BROKER-PRD.md](docs/MULTI-BROKER-PRD.md) | **DRAFT** — concurrent multi-broker sessions, segmented capital allocation, cross-broker risk |
 
 ## Tests
 
@@ -256,9 +283,10 @@ Open `http://localhost:5000` → Backtest tab → Pick a strategy → Hit **Run 
 cd src && python -m pytest ../tests/ -q          # full suite (2,700+ tests)
 cd src && python -m pytest ../tests/ -q -k options   # options slice only
 cd src && python -m pytest ../tests/test_position_management.py -q   # order management (67 tests)
+cd src && python -m pytest ../tests/intelligence ../tests/alerts ../tests/db -q   # intelligence + alerts + migrations (100 tests)
 ```
 
-Plus 69 JS behaviour assertions across Node harnesses (`tests/js/*.mjs` — positions actions, Orders tab incl. amend + aging), run by `tests/test_web_components.py` and skipped when node is absent.
+Plus JS behaviour assertions across Node harnesses (`tests/js/*.mjs` — positions actions, Orders tab incl. amend + aging, alert widget, monitor page), run by `tests/test_web_components.py` and skipped when node is absent.
 
 The options layer is Decimal-exact throughout, and the options backtest
 path is deterministic by construction — the suite asserts byte-identical
