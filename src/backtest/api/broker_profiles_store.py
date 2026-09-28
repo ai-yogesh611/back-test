@@ -150,6 +150,10 @@ def _seed_rows() -> list[dict[str, Any]]:
     return [rows[key] for key in sorted(rows)]
 
 
+#: Actor recorded when the seed pass re-applies the file to a cached row.
+YAML_SYNC_ACTOR = "yaml-sync"
+
+
 class BrokerProfileStore:
     """CRUD + audit for broker cost-model profiles, DB-backed."""
 
@@ -198,25 +202,86 @@ class BrokerProfileStore:
     # -- bootstrap ---------------------------------------------------------
 
     def seed_from_yaml(self) -> int:
-        """Insert preset rows missing from the DB. Returns rows added."""
+        """Bootstrap the catalogue; re-sync untouched rows with the file.
+
+        Inserting the missing rows is only half the job. A row that was *seeded*
+        and never edited is a cache of ``config/brokers.yaml``, not a decision,
+        and DB-first resolution would keep pricing runs with the old numbers
+        forever once the file moved on. So rows the file defines, that nobody
+        has touched, are re-applied from the file here (audited as
+        ``yaml-sync``). A panel edit or a validation stamp makes a row a
+        decision: it is left alone and the panel reports that it wins over the
+        file.
+
+        Returns the number of rows inserted (re-syncs are logged and audited).
+        """
+        file_rows = {row["profile_id"]: row for row in _yaml_rows()}
         added = 0
+        refreshed: list[str] = []
         with self._manager.session() as session:
             existing = {
-                row.profile_id
+                row.profile_id: row
                 for row in session.execute(select(BrokerProfileRow)).scalars()
             }
             for payload in _seed_rows():
-                if payload["profile_id"] in existing:
-                    continue
-                session.add(
-                    BrokerProfileRow(
-                        **{k: v for k, v in payload.items() if k != "origin"}
+                profile_id = payload["profile_id"]
+                row = existing.get(profile_id)
+                if row is None:
+                    session.add(
+                        BrokerProfileRow(
+                            **{k: v for k, v in payload.items() if k != "origin"}
+                        )
                     )
-                )
-                added += 1
-        if added:
-            logger.info("seeded %d broker profiles from presets/yaml", added)
+                    added += 1
+                elif self._sync_cached_row(session, row, file_rows.get(profile_id)):
+                    refreshed.append(profile_id)
+        if added or refreshed:
+            logger.info(
+                "broker profiles from presets/yaml: %d seeded, re-synced %s",
+                added,
+                ", ".join(refreshed) if refreshed else "none",
+            )
         return added
+
+    def _sync_cached_row(self, session: Any, row: Any, file_row: Mapping[str, Any] | None) -> bool:
+        """Re-apply the file to a row nobody has decided anything with."""
+        if file_row is None or not row.is_preset or row.validated_on is not None:
+            return False
+        if self._is_edited(session, row.profile_id):
+            return False
+        # ``is_preset`` is lineage, not a rate: the file must not rewrite it.
+        desired = {
+            key: value
+            for key, value in file_row.items()
+            if key not in ("origin", "profile_id", "is_preset")
+        }
+        changed = [key for key, value in desired.items() if getattr(row, key) != value]
+        if not changed:
+            return False
+        for key in changed:
+            session.add(
+                BrokerProfileAudit(
+                    profile_id=row.profile_id,
+                    field_changed=key,
+                    old_value=str(getattr(row, key)),
+                    new_value=str(desired[key]),
+                    changed_by=YAML_SYNC_ACTOR,
+                )
+            )
+            setattr(row, key, desired[key])
+        return True
+
+    @staticmethod
+    def _is_edited(session: Any, profile_id: str) -> bool:
+        """True when the panel changed something beyond seeding the row."""
+        rows = session.execute(
+            select(BrokerProfileAudit.field_changed, BrokerProfileAudit.changed_by).where(
+                BrokerProfileAudit.profile_id == profile_id
+            )
+        ).all()
+        return any(
+            field != "__created__" and actor != YAML_SYNC_ACTOR for field, actor in rows
+        )
 
     # -- reads -------------------------------------------------------------
 

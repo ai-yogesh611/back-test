@@ -60,6 +60,10 @@ def _usage_index() -> dict[str, list[str]]:
         active = None
     if active:
         add(active, _USAGE_ACTIVE)
+    else:
+        # No panel choice: the file's ``active_broker`` is what prices a run
+        # that names no broker, so that broker *is* in use.
+        add(_file_active_broker(), _USAGE_ACTIVE)
 
     try:
         from backtest.brokers.segments import get_segments_config
@@ -75,6 +79,21 @@ def _usage_index() -> dict[str, list[str]]:
     for segment in _db_segments():
         add(segment.get("broker"), f"segment: {segment.get('segment_id')}")
     return usage
+
+
+def _file_active_broker() -> str | None:
+    """``active_broker`` from ``config/brokers.yaml`` (the panel choice wins)."""
+    try:
+        import yaml
+
+        from backtest.simulator.fees import DEFAULT_BROKER_CONFIG_PATH
+
+        document = yaml.safe_load(DEFAULT_BROKER_CONFIG_PATH.read_text(encoding="utf-8")) or {}
+        value = document.get("active_broker")
+        return str(value).strip().lower() if value else None
+    except Exception:  # noqa: BLE001 — the file is optional context
+        log.debug("config/brokers.yaml unreadable for the usage index", exc_info=True)
+        return None
 
 
 def _db_segments() -> list[dict[str, Any]]:
@@ -168,7 +187,7 @@ def list_broker_profiles() -> tuple:
 
         # Grouping is about *adoption*, not drift: a preset you never touched
         # does not become "in use" because its numbers moved underneath it.
-        referenced = [reason for reason in usage.get(broker, []) if reason != "config/brokers.yaml"]
+        referenced = usage.get(broker, [])
         if referenced or row.get("validated_on"):
             row["group"] = "in_use"
         elif in_file:

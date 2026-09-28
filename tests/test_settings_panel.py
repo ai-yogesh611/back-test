@@ -213,6 +213,9 @@ class TestBrokerCatalogue:
         assert "data: primary" in rows["mstock"]["usage"]
         # A broker nobody references is not "in use" — it stays available
         # (upstox is a preset that config/brokers.yaml does not define at all).
+        # The file's active_broker prices every run that names no broker.
+        assert "active broker" in rows["zerodha"]["usage"]
+        assert rows["zerodha"]["group"] == "in_use"
         assert rows["upstox"]["group"] == "catalogue"
         assert rows["upstox"]["usage"] == []
         # ibkr is written in config/brokers.yaml, so it is "configured", but it
@@ -222,6 +225,54 @@ class TestBrokerCatalogue:
         assert body["counts"]["in_use"] >= 2
         assert body["counts"]["configured"] >= 1
         reset_segments_config()
+
+    def test_a_seeded_row_tracks_the_file_until_the_panel_edits_it(self, store):
+        """A seeded row is a cache of the file, not a decision.
+
+        The live DB can carry rows seeded before the yaml was read, so
+        DB-first resolution would keep pricing runs with numbers the file no
+        longer says. Re-seeding re-applies the file — once, and only while
+        nobody has edited the row.
+        """
+        from backtest.api.broker_profiles_store import YAML_SYNC_ACTOR, _preset_rows, _yaml_rows
+
+        store.seed_from_yaml()
+        preset = next(r for r in _preset_rows() if r["profile_id"] == "zerodha")
+        file_row = next(r for r in _yaml_rows() if r["profile_id"] == "zerodha")
+        assert preset["commission_model"] != file_row["commission_model"], "fixture drifted"
+
+        # Simulate the stale state: the preset's numbers, seeded, untouched.
+        with store._manager.session() as session:
+            row = session.get(BrokerProfileRow, "zerodha")
+            row.commission_model = dict(preset["commission_model"])
+        assert store.get_profile("zerodha")["commission_model"] != file_row["commission_model"]
+
+        store.seed_from_yaml()
+        synced = store.get_profile("zerodha")
+        assert synced["commission_model"] == file_row["commission_model"]
+        assert synced["is_preset"] is True, "lineage is not a rate — the sync keeps it"
+        sync_audit = [a for a in store.get_audit("zerodha") if a["changed_by"] == YAML_SYNC_ACTOR]
+        assert sync_audit, "a re-sync is audited"
+        assert all(a["field_changed"] != "is_preset" for a in sync_audit)
+
+        # A panel edit makes the row a decision: the file no longer overwrites it.
+        store.upsert_profile(
+            {"profile_id": "zerodha", "statutory_rates": {"stt_delivery": "0.0099"}}
+        )
+        store.seed_from_yaml()
+        assert store.get_profile("zerodha")["statutory_rates"]["stt_delivery"] == "0.0099"
+        assert any(
+            a["field_changed"] == "statutory_rates" and a["changed_by"] == "admin"
+            for a in store.get_audit("zerodha")
+        ), "the panel edit is the row's own record"
+
+    def test_a_validated_row_is_never_re_synced(self, store):
+        """A validation stamp is a decision: the file must not undo it."""
+        store.mark_validated("mstock", "CN-1")
+        with store._manager.session() as session:
+            session.get(BrokerProfileRow, "mstock").commission_model = {"stale": True}
+        store.seed_from_yaml()
+        assert store.get_profile("mstock")["commission_model"] == {"stale": True}
 
     def test_api_serves_a_yaml_only_profile_for_the_editor(self, client):
         response = client.get("/api/settings/brokers/dhan")
