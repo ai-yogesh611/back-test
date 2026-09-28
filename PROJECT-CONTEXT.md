@@ -90,7 +90,7 @@ backtest papertrade --mode walkforward --strategies X --from D1 --to D2  # Paper
 1. Wire `mode='live'` command-center runners through `BrokerFillProvider` + `MStockLiveFeed` (F-12)
 2. Add portfolio/runner state persistence across restarts (V2)
 3. Test mStock auth with real credentials
-4. Finish the docs pass for `instructions/ARCHITECTURE-BLUEPRINT.md` (see its top banner)
+4. ~~Finish the docs pass for `instructions/ARCHITECTURE-BLUEPRINT.md`~~ — blueprint archived to `docs/archive/` (superseded by `docs/ARCHITECTURE.md` + `graph.txt`)
 
 ## Live Order Management (2026-09-23)
 - Enhanced the positions tab (flat rows across runners, equity + option structures) with

@@ -1,6 +1,6 @@
 """Golden-number tests for the analytics metric math (gap fix #4).
 
-ANALYTICS-TAB-GAPS §6: the endpoints were tested, the MATH was not — so the
+docs/archive/ANALYTICS-TAB-GAPS.md §6: the endpoints were tested, the MATH was not — so the
 2026-09-28 methodology fixes (#2 timezone, #5 monthly Sharpe/Sortino/Calmar,
 #6 health gate, #7 carry-forward, #8 sentinels/streaks, #10 class split)
 each pin their convention here with hand-derivable numbers.

@@ -4,7 +4,7 @@
 **Status:** 🟢 Phase 0 + A2 (export) + A3 (seam) + A4 (loop) done — A1/A5–A7 open (A6 partially: ID/alert determinism landed)
 **Owner:** Strategy Platform
 **Supersedes:** PRD v1 / v2 / v3 (see [Corrections log](#corrections-log))
-**Task tracker:** [`docs/OPTIONS-BACKTEST-TASKS.md`](OPTIONS-BACKTEST-TASKS.md)
+**Task tracker:** `docs/archive/OPTIONS-BACKTEST-TASKS.md` (Phase-A build log)
 
 > **This document is the source of truth for the options backtest.**
 > Every signature in [Appendix A](#appendix-a--verified-signatures) was read

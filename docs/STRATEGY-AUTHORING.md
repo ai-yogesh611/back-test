@@ -142,7 +142,39 @@ half-valid strategy registered. A missing `plugins/` folder is a no-op.
 
 ---
 
-## 6. Lifecycle & promotion
+## 6. The built-in catalog & engine guarantees
+
+Four equity strategies ship in `src/backtest/strategies/` — useful as reading
+examples and baselines: `buy_and_hold` (always-long benchmark),
+`sma_crossover` (fast/slow SMA), `rsi_reversion` (oversold entry, level exit),
+`donchian_breakout` (N-bar high/low breakout).
+
+Programmatic access goes through the registry (`backtest.strategy.registry`):
+
+```python
+from backtest.strategy.registry import list_strategies, get_strategy
+
+names = list_strategies()                 # e.g. ["buy_and_hold", "sma_crossover", …]
+cls = get_strategy("sma_crossover")
+strategy = cls(fast=20, slow=50)          # params type-coerced from the schema
+signals = strategy.generate_signals(candles)
+```
+
+Engine guarantees that hold for every strategy (built-in or plugin):
+
+* **No lookahead** — your signal acts on the *next* bar (`target.shift(1)`).
+* **Costs** — commission + slippage apply on every position change.
+* **Sizing** — 100% of allocated capital per trade (no partial positions).
+* **Vectorized engine** — the backtest runs on the full candle series, not a
+  Python bar loop.
+* ⚠️ Class-level `stop_loss` / `take_profit` attributes are honoured **only**
+  by the legacy `quick_screen` path — the default engine and forward runners
+  ignore them (see §2). Enforce stops in your signal logic or the option
+  `expression.exit`.
+
+---
+
+## 7. Lifecycle & promotion
 
 * **Plugin** (drop-in): lives in `plugins/strategies/`, loaded at app start,
   reloaded on file change (mtime), registered into the normal strategy

@@ -132,12 +132,14 @@ def make_config(**over):
 
 
 def make_notifier(broker, opener=None, smtp_factory=None, synchronous=True, **over):
+    now = over.pop("now", None)  # clock override, not config
     return AlertNotifier(
         broker,
         make_config(**over),
         synchronous=synchronous,
         telegram_opener=opener,
         smtp_factory=smtp_factory,
+        now=now,
     ).start()
 
 
@@ -189,12 +191,20 @@ def test_telegram_escapes_markdown_identifiers(broker):
             "log": {"enabled": True},
             "telegram": {**TELEGRAM_CHANNEL, "telegram_parse_mode": "Markdown"},
         },
+        templates={BREACH: "⚠️ Risk limit breached: {limit_type} | {message}"},
     )
     try:
-        broker.raise_alert(BREACH, "critical", "halted", subject="bucket:paper")
+        broker.raise_alert(
+            BREACH,
+            "critical",
+            "halted",
+            subject="bucket:paper",
+            data={"limit_type": "portfolio_daily_loss"},
+        )
         text = opener.calls[0][1]["text"]
-        # type name has underscores — escaped so Telegram shows plain text
-        assert "risk\\_limit\\_breach" in text
+        # identifiers in template data have underscores — escaped so Telegram
+        # shows them as plain text instead of italics/broken entities
+        assert "portfolio\\_daily\\_loss" in text
         assert opener.calls[0][1]["parse_mode"] == "Markdown"
     finally:
         n.stop()
@@ -391,8 +401,8 @@ def test_channel_failure_does_not_block_other_channels(broker, fake_smtp_cls):
             "email": {
                 "enabled": True,
                 "smtp_host": "smtp.test",
-                "user": "bot@test",
-                "password": "pw",
+                "smtp_user": "bot@test",
+                "smtp_password": "pw",
                 "to_emails": ["ops@test"],
             },
         },

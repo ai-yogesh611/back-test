@@ -1,5 +1,35 @@
 # Database
 
+## Adding a new table (~25 minutes)
+
+**Option A — Alembic/SQLAlchemy (recommended):**
+1. Add the model to `src/backtest/db/models.py`:
+```python
+class MyTable(Base):
+    __tablename__ = "my_table"
+    id = mapped_column(Integer, primary_key=True)
+    name = mapped_column(String(64), nullable=False)
+    created_at = mapped_column(DateTime(timezone=True), server_default=func.now())
+```
+2. Create and apply the migration:
+```bash
+cd db && alembic revision --autogenerate -m "add my_table"
+cd db && alembic upgrade head
+```
+(See `db/migrations/` for the numbered chain — Postgres + a paired
+`.sqlite.sql` mirror for tests. Keep the chain linear: one head.)
+
+**Option B — raw SQL:**
+```bash
+PGPASSWORD=postgres psql -U postgres -d forward_test -c "CREATE TABLE my_table (...);"
+```
+then access via `DatabaseManager`:
+```python
+from backtest.db import DatabaseManager
+db = DatabaseManager.from_env()
+rows = db.fetch_all("SELECT * FROM my_table")
+```
+
 ## Stack
 
 - **PostgreSQL 18.4** on `localhost:5432`

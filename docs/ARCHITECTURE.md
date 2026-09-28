@@ -217,6 +217,25 @@ class BacktestResult:
     metrics: dict          # Sharpe, drawdown, win_rate, etc.
 ```
 
+## Adding a New API Endpoint (~20 minutes)
+
+1. Create or edit a blueprint in `src/backtest/api/`:
+```python
+from flask import Blueprint, jsonify
+
+my_bp = Blueprint("my_api", __name__)
+
+@my_bp.get("/api/my-endpoint")
+def my_endpoint():
+    return jsonify({"data": "value"}), 200
+```
+2. Register it in `src/backtest/web/app.py`:
+```python
+from backtest.api import my_bp
+app.register_blueprint(my_bp)
+```
+3. Access at `http://localhost:5000/api/my-endpoint`
+
 ## Tech Stack
 
 | Layer | Technology |

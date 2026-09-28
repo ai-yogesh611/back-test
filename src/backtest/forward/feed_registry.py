@@ -1,4 +1,4 @@
-"""Shared Market Data Bus — U6.2 per UNIFIED-TRADING-TASKS.md.
+"""Shared Market Data Bus — U6.2 per docs/archive/UNIFIED-TRADING-TASKS.md.
 
 **Rule (architecture §5.2, C2 completion): one feed per
 ``(source, symbol, timeframe)``, shared by every runner subscribed to it.**

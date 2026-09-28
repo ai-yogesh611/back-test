@@ -1,6 +1,6 @@
 """U1.2 — Playbook API routes
 
-Tests per UNIFIED-TRADING-TASKS.md U1.2:
+Tests per docs/archive/UNIFIED-TRADING-TASKS.md U1.2:
 - CRUD happy paths, 404s, seed delete-block, spawn response matches to_runner_config,
   audit log line per mutation (scope="playbook").
 """

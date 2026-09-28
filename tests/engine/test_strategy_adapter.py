@@ -6,7 +6,7 @@ normalized {direction, instrument_hint, confidence} signal — the
 plug-and-play contract from the user's point 3. Options vs swing is decided
 by playbook/runner type, not by strategy code.
 
-Tests per UNIFIED-TRADING-TASKS.md U2.4:
+Tests per docs/archive/UNIFIED-TRADING-TASKS.md U2.4:
 - one equity strategy (sma_crossover) driven through the engine to a paper fill via a stub playbook.
 """
 

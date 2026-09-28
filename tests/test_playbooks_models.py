@@ -1,6 +1,6 @@
 """U1.1 — Playbook dataclass + registry
 
-Tests per UNIFIED-TRADING-TASKS.md U1.1:
+Tests per docs/archive/UNIFIED-TRADING-TASKS.md U1.1:
 - schema round-trip
 - to_runner_config produces payload POST /runner/create accepts
 - risk_envelope cap math (spot 25,000 lot 75 qty1 → ≈ ₹37,500 × qty, capped)

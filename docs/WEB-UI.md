@@ -1,5 +1,31 @@
 # Web UI
 
+## Adding a new page (~45 minutes)
+
+1. Create template `src/backtest/web/templates/my_page.html`:
+```html
+{% extends "base.html" %}
+{% block title %}My Page{% endblock %}
+{% block content %}
+<h1>My Page</h1>
+<!-- Your HTML here -->
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/my_page.js') }}"></script>
+{% endblock %}
+```
+2. Create the JS controller `src/backtest/web/static/js/my_page.js`.
+3. Add the route in `src/backtest/web/app.py`:
+```python
+@app.get("/my-page")
+def my_page():
+    return render_template("my_page.html", active="my-page")
+```
+4. Add the nav link in `base.html`:
+```html
+<a href="/my-page" class="nav-link {% if active == 'my-page' %}active{% endif %}">My Page</a>
+```
+
 ## Pages
 
 ### 1. Backtest (`/backtest`)

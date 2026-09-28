@@ -86,19 +86,58 @@ candles = source.get_candles("RELIANCE", "2024-01-01", "2024-12-31", "day")
 - API limit: 1000 candles per request (auto-chunked)
 - Rate-limited by API
 
-### 4. DbSource (`data/db_source.py`) — **NOT YET BUILT**
+### 4. DbSource (`data/db_source.py`)
 
-**Use case:** Fast reads from PostgreSQL, no API calls.
+**Use case:** Fast historical reads from PostgreSQL — the **default backtest source**.
 
 ```python
-# Planned:
-source = DbSource()  # reads from market_data_cache
-candles = source.get_candles("RELIANCE", "2024-01-01", "2024-12-31", "day")
+source = DbSource()  # reads from market_data_cache, resolved via get_db_url()
+candles = source.get_candles("RELIANCE", "2024-01-01", "2024-12-31", "1day")
 ```
 
-- Query: `SELECT ts, open, high, low, close, volume FROM market_data_cache WHERE symbol=:sym AND timeframe=:tf AND ts BETWEEN :start AND :end`
+- Stores **1min** bars, resamples **up** to any requested interval (pandas rules;
+  canonical names `1min|5min|15min|1hour|4hour|1day|1week`)
+- Reads the finest stored timeframe at or below the request, then resamples
 - Returns empty DataFrame if symbol not found (no fallback)
 - ~0ms response time (TimescaleDB hypertable, indexed)
+
+### 5. DhanLiveFeed (`data/dhan_live_feed.py`)
+
+**Use case:** Real market data from Dhan HQ — `POST /marketfeed/ohlc` latest
+bars (minute-floor IST) + `/charts/intraday` candles. Requires an active Dhan
+session (`DHAN_API_KEY`, `DHAN_CLIENT_ID`).
+
+### Source registry — how mode and source combine (`data/source_registry.py`)
+
+The single factory deciding where a run's bars come from:
+
+| mode | source choice | What you get |
+|---|---|---|
+| `backtest` | — (fixed) | `DbSource` (historical DB), optionally wrapped in `AdjustedSource` for corporate-action back-adjustment at read time |
+| `live` | — (fixed) | `MStockLiveFeed` (real broker feed) |
+| `paper` | `mstock` | live broker data, paper risk |
+| `paper` | `synthetic` | generated bars replayed at `replay_speed` bars/second |
+
+Unknown modes / paper runs without a valid choice raise `ConfigError`.
+
+### Adding a new source (~30 minutes)
+
+1. Create `src/backtest/data/my_source.py` implementing the `DataSource`
+   protocol (return `normalize_candles(df)`):
+```python
+import pandas as pd
+from backtest.data.base import normalize_candles
+
+class MySource:
+    def get_candles(self, symbol: str, start: str, end: str, interval: str = "day") -> pd.DataFrame:
+        df = ...  # fetch your data
+        return normalize_candles(df)
+```
+2. Wire it where your entry path builds sources: `build_source()` in
+   `backtest/runner.py` (backtest page) and/or the mode table in
+   `data/source_registry.py` (portfolio runners).
+3. Update the `--source` help text in `app.py` if it should be CLI-selectable.
+4. Run with: `PYTHONPATH=src python -m backtest.web.app --source my_source`
 
 ## How Sources Are Selected
 
