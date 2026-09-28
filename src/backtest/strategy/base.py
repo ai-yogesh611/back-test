@@ -337,7 +337,12 @@ class Strategy(ABC):
 
     @classmethod
     def validate(cls) -> None:
-        """Raise :class:`StrategyContractError` if the contract is not met."""
+        """Raise :class:`StrategyContractError` if the contract is not met.
+        
+        As of 2026-09-29, strategies must define a non-empty description to
+        improve discoverability and user understanding. Older strategies
+        without descriptions will be flagged but allowed (grace period).
+        """
         if not isinstance(getattr(cls, "name", ""), str) or not cls.name.strip():
             raise StrategyContractError(
                 f"{cls.__name__}: strategy must define a non-empty string 'name'"
@@ -354,6 +359,14 @@ class Strategy(ABC):
             raise StrategyContractError(
                 f"{cls.name}: strategy must implement generate_signals(candles) "
                 "or entries(candles)"
+            )
+        
+        # Description validation (new requirement, 2026-09-29)
+        description = getattr(cls, "description", "")
+        if not isinstance(description, str) or not description.strip():
+            raise StrategyContractError(
+                f"{cls.name}: strategy must define a non-empty 'description'. "
+                "Add a brief explanation of what the strategy does and when to use it."
             )
 
     @staticmethod

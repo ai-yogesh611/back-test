@@ -1777,3 +1777,68 @@ class SegmentAudit(Base):
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<SegmentAudit {self.segment_id}.{self.field_changed}>"
+
+
+# ---------------------------------------------------------------------------
+# 12. Strategy Metadata — descriptions, regime info, documentation (v2 strategy template)
+# ---------------------------------------------------------------------------
+
+
+class StrategyMetadata(Base):
+    """Extended metadata for strategies — descriptions, docs, regime fit.
+
+    This table stores rich strategy information beyond the class attributes.
+    The ``strategy_name`` is the canonical name from ``Strategy.name`` and is
+    unique per row. Descriptions are mandatory for new strategies; older
+    strategies without descriptions will have backfilled data.
+
+    The ``regime_vix_range`` column drives the Risk Board "strategy regime fit"
+    display (low-volatility mean-reversion vs high-volatility momentum, etc.).
+    ``eligible_instruments`` restricts which underlyings a strategy can trade.
+    """
+
+    __tablename__ = "strategy_metadata"
+
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    #: Canonical strategy name (matches ``Strategy.name``, unique).
+    strategy_name: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    #: Rich description of what the strategy does, its logic, and when to use it.
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    #: Longer-form documentation / README content (Markdown allowed).
+    documentation: Mapped[Optional[str]] = mapped_column(Text)
+    #: Author / source of the strategy.
+    author: Mapped[Optional[str]] = mapped_column(String(100))
+    #: Version string (semver-like: "1.0", "2.1.3").
+    version: Mapped[Optional[str]] = mapped_column(String(20))
+    #: Signal kind: "equity" or "option" (derived from generate_market_view override).
+    signal_kind: Mapped[str] = mapped_column(String(20), nullable=False, server_default="equity")
+    #: VIX range this strategy is designed for (e.g. (10, 20)).
+    regime_vix_low: Mapped[Optional[float]] = mapped_column(Numeric(8, 2))
+    regime_vix_high: Mapped[Optional[float]] = mapped_column(Numeric(8, 2))
+    #: Comma-separated list of eligible instruments (NIFTY,BANKNIFTY).
+    eligible_instruments: Mapped[Optional[str]] = mapped_column(String(255))
+    #: Tags for filtering/searching (momentum, mean-reversion, breakout, etc.).
+    tags: Mapped[Optional[str]] = mapped_column(String(255))
+    #: When this metadata was created/updated.
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("strategy_name", name="uq_strategy_metadata_name"),
+        CheckConstraint(
+            "signal_kind IN ('equity', 'option')", name="ck_strategy_metadata_signal_kind"
+        ),
+        CheckConstraint(
+            "regime_vix_low IS NULL OR regime_vix_high IS NULL OR regime_vix_low <= regime_vix_high",
+            name="ck_strategy_metadata_vix_range",
+        ),
+        Index("idx_strategy_metadata_name", "strategy_name"),
+        Index("idx_strategy_metadata_signal_kind", "signal_kind"),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<StrategyMetadata {self.strategy_name} v{self.version}>"
