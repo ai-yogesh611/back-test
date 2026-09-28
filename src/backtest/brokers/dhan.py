@@ -30,6 +30,9 @@ login form, never from the environment.
 
 from __future__ import annotations
 
+import csv
+import io
+import json
 import logging
 import os
 import re
@@ -45,15 +48,32 @@ from backtest.brokers.base import (
     STATUS_EXPIRING_SOON,
     STATUS_UNAUTHENTICATED,
     BrokerAuthBase,
+    BrokerOrder,
+    BrokerOrderBase,
+    BrokerOrderId,
+    MarginInfo,
 )
 
-__all__ = ["DhanBroker", "DhanAuthError"]
+__all__ = ["DhanBroker", "DhanAuthError", "DhanOrderError"]
 
 logger = logging.getLogger("backtest.brokers.dhan")
 
 # Dhan auth + data API endpoints (DhanHQ v2).
 _AUTH_BASE_URL = "https://auth.dhan.co"
 _GENERATE_TOKEN_PATH = "/app/generateAccessToken"
+
+# Order lifecycle endpoints (DhanHQ v2 REST — Phase C, closes F-12).
+_API_BASE_URL = "https://api.dhan.co/v2"
+_ORDERS_PATH = "/orders"
+_MARGIN_PATH = "/margincalculator"
+
+# Instrument master (symbol → securityId). The compact scrip master is a
+# public CSV; downloaded lazily ONLY when an order references a symbol not
+# covered by the DHAN_SECURITY_IDS env override.
+_SCRIP_MASTER_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
+
+# Dhan order statuses that mean "no more fills will come".
+_DHAN_TERMINAL_STATUSES = {"TRADED", "REJECTED", "CANCELLED", "EXPIRED"}
 
 # Fallback session lifetime when the API response carries no expiry hint.
 # Dhan access tokens are typically valid for the trading day (24h nominal);
@@ -72,6 +92,53 @@ class DhanAuthError(Exception):
     """Dhan rejected the request (bad client-id, bad PIN, bad TOTP)."""
 
 
+class DhanOrderError(RuntimeError):
+    """Dhan rejected an order call (place/modify/cancel/book/margin)."""
+
+
+# Process-wide scrip-master cache: symbol (upper) → securityId. Downloaded at
+# most once per process; an order for an unmapped symbol fails closed.
+_SCRIP_MASTER_CACHE: dict[str, str] | None = None
+
+
+def _load_scrip_master(timeout: float = 30.0) -> dict[str, str]:
+    """Download + parse the Dhan compact scrip master (NSE equity rows).
+
+    Returns ``{trading_symbol: security_id}``. Cached per process — the CSV
+    is a few MB and changes at most daily. A download failure returns an
+    empty map (the caller then fails closed for unmapped symbols with a
+    message pointing at the ``DHAN_SECURITY_IDS`` override).
+    """
+    global _SCRIP_MASTER_CACHE
+    if _SCRIP_MASTER_CACHE is not None:
+        return _SCRIP_MASTER_CACHE
+    url = os.getenv("DHAN_SCRIP_MASTER_URL", _SCRIP_MASTER_URL)
+    mapping: dict[str, str] = {}
+    try:
+        resp = requests.get(url, timeout=timeout)
+        resp.raise_for_status()
+        reader = csv.DictReader(io.StringIO(resp.text))
+        for row in reader:
+            exch = (row.get("SEM_EXM_EXCH_ID") or row.get("EXCH_ID") or "").strip().upper()
+            segment = (row.get("SEM_SEGMENT") or row.get("SEGMENT") or "").strip().upper()
+            instrument = (
+                (row.get("SEM_INSTRUMENT_NAME") or row.get("INSTRUMENT") or "").strip().upper()
+            )
+            if exch != "NSE" or segment not in ("E", "EQ", "EQUITY"):
+                continue
+            if instrument and instrument not in ("EQUITY", "ES"):
+                continue
+            sym = (row.get("SEM_TRADING_SYMBOL") or row.get("SYMBOL_NAME") or "").strip().upper()
+            sec_id = (row.get("SEM_SMST_SECURITY_ID") or row.get("SECURITY_ID") or "").strip()
+            if sym and sec_id and sym not in mapping:
+                mapping[sym] = sec_id
+        logger.info("Dhan scrip master loaded: %s NSE equity symbols", len(mapping))
+    except requests.RequestException as exc:
+        logger.warning("Dhan scrip master download failed: %s", exc)
+    _SCRIP_MASTER_CACHE = mapping
+    return mapping
+
+
 def _rejection_reason(payload: Any) -> str | None:
     """Extract a user-facing rejection reason from a Dhan payload, if any."""
     if not isinstance(payload, dict):
@@ -83,7 +150,7 @@ def _rejection_reason(payload: Any) -> str | None:
     return None
 
 
-class DhanBroker(BrokerAuthBase):
+class DhanBroker(BrokerAuthBase, BrokerOrderBase):
     """Dhan implementation of the generic two-step auth contract.
 
     State held in-memory only; lost on restart by design (same as mStock).
@@ -116,6 +183,12 @@ class DhanBroker(BrokerAuthBase):
         # Transient single-request retry guard (same live-session lesson as
         # mStock: one retry on transient network failures).
         self._retries = 1
+        # Order contract (Phase C): the client id every /v2 order call must
+        # carry; kept after verify_totp, env-fallback for restored sessions.
+        self._client_id: str | None = None
+        # symbol (upper) → Dhan securityId, resolved lazily (env override
+        # first, scrip master download as fallback) and cached per instance.
+        self._order_security_ids: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Step 1 — credentials (client-id + PIN; local validation only)
@@ -206,6 +279,9 @@ class DhanBroker(BrokerAuthBase):
         expires_at = self._compute_expiry(payload)
         self._access_token = token
         self._expires_at = expires_at
+        # Phase C: order calls need dhanClientId — keep it past the handshake
+        # (it is an account identifier, not a secret credential like the PIN).
+        self._client_id = client_id
         self._temp_auth_context = None
         self._temp_username = None
         self._temp_pin = None
@@ -265,6 +341,350 @@ class DhanBroker(BrokerAuthBase):
         self._temp_pin = None
         if had_session:
             logger.info("Dhan session cleared (logout)")
+
+    # ------------------------------------------------------------------
+    # Order lifecycle contract (Phase C — closes F-12)
+    #
+    # DhanHQ v2 REST: JSON bodies, `access-token` header, and every call
+    # carries `dhanClientId`. Fail-closed: no authenticated session → raise
+    # before any bytes leave the process (never half-send).
+    # ------------------------------------------------------------------
+
+    def place_order(self, order: BrokerOrder) -> BrokerOrderId:
+        """Place ``order`` — ``POST /v2/orders`` (JSON packet).
+
+        Returns the broker's order id (what modify/cancel reference).
+        ``order.client_order_id`` is sent as ``correlationId`` (Dhan echoes
+        it back on the order book — the idempotency/audit key).
+        """
+        payload = self._api_request(
+            "POST", _ORDERS_PATH, json_body=self._map_order_to_broker_payload(order)
+        )
+        order_id = self._extract_order_id(payload)
+        if order_id is None:
+            raise DhanOrderError("Dhan did not return an order id for the placed order")
+        logger.info("Dhan order placed: %s %s x%s", order.side, order.symbol, order.quantity)
+        return BrokerOrderId(order_id)
+
+    def modify_order(self, order: BrokerOrder) -> None:
+        """Amend an open order — ``PUT /v2/orders/{order-id}``."""
+        broker_order_id = self._require_broker_order_id(order)
+        body = {
+            "dhanClientId": self._require_client_id(),
+            "orderId": broker_order_id,
+            "orderType": self._map_order_type(order.order_type),
+            "quantity": int(order.quantity),
+            "price": float(order.limit_price) if order.limit_price is not None else 0.0,
+            "disclosedQuantity": 0,
+            "triggerPrice": 0.0,
+            "validity": "DAY",
+        }
+        self._api_request("PUT", f"{_ORDERS_PATH}/{broker_order_id}", json_body=body)
+
+    def cancel_order(self, order: BrokerOrder) -> None:
+        """Cancel an open order — ``DELETE /v2/orders/{order-id}``."""
+        broker_order_id = self._require_broker_order_id(order)
+        self._api_request("DELETE", f"{_ORDERS_PATH}/{broker_order_id}")
+
+    def get_order_book(self) -> list[BrokerOrder]:
+        """Every order Dhan currently knows — ``GET /v2/orders``."""
+        return [self._order_from_row(row) for row in self._fetch_order_rows()]
+
+    def poll_fill(self, broker_order_id: Any) -> dict[str, Any] | None:
+        """Poll one order's fill — for :class:`BrokerFillProvider` (ticket #8).
+
+        Same contract as :meth:`MStockBroker.poll_fill`: a normalized fill
+        row (keys :meth:`Fill.from_broker` understands) once the order has
+        actually traded, ``None`` while it is still open/pending. A partial
+        fill reports the FILLED quantity at the average traded price, never
+        the requested quantity. Unknown id → ``None`` (not-yet-filled).
+        """
+        target = str(broker_order_id)
+        for row in self._fetch_order_rows():
+            if str(row.get("orderId") or row.get("order_id")) != target:
+                continue
+            status = str(row.get("orderStatus") or row.get("status") or "").upper()
+            filled = row.get("filledQty", row.get("filled_quantity"))
+            try:
+                filled_qty = int(filled) if filled is not None else 0
+            except (TypeError, ValueError):
+                filled_qty = 0
+            if filled_qty <= 0 and status != "TRADED":
+                return None  # open or otherwise not executed — no fill yet
+            price = row.get("averageTradedPrice")
+            if price in (None, "", 0):
+                price = row.get("price")
+            fill_row = {
+                "tradingsymbol": row.get("tradingSymbol") or row.get("tradingsymbol"),
+                "transaction_type": row.get("transactionType") or row.get("transaction_type"),
+                "quantity": filled_qty or row.get("quantity"),
+                "filled_quantity": filled_qty or row.get("quantity"),
+                "price": price,
+                "order_id": row.get("orderId") or row.get("order_id"),
+            }
+            logger.info("Dhan order %s polled: %s", target, status)
+            return fill_row
+        return None
+
+    def calculate_order_margin(self, order: BrokerOrder) -> MarginInfo:
+        """Pre-trade margin check — ``POST /v2/margincalculator`` (JSON)."""
+        body = {
+            "dhanClientId": self._require_client_id(),
+            "exchangeSegment": self._map_exchange_segment(order),
+            "transactionType": (order.side or "BUY").upper(),
+            "quantity": int(order.quantity),
+            "productType": self._map_product(order.product),
+            "securityId": self._security_id_for_order(order.symbol),
+            "price": float(order.limit_price) if order.limit_price is not None else 0.0,
+        }
+        payload = self._api_request("POST", _MARGIN_PATH, json_body=body)
+        data = payload if isinstance(payload, dict) else {}
+        inner = data.get("data") if isinstance(data.get("data"), dict) else {}
+
+        def _num(*keys: str) -> float | None:
+            for key in keys:
+                value = data.get(key)
+                if value is None:
+                    value = inner.get(key)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    return float(value)
+            return None
+
+        initial = _num("totalMargin", "total_margin", "margin")
+        available = _num("availableBalance", "available_balance")
+        insufficient = _num("insufficientBalance", "insufficient_balance")
+        if initial is None:
+            raise DhanOrderError("Dhan margin response carried no margin amount")
+        if insufficient is not None:
+            funded = insufficient <= 0
+        else:
+            funded = (available is None) or (available >= initial)
+        return MarginInfo(
+            initial_margin=initial,
+            maintenance_margin=initial,
+            available_margin=available,
+            is_funded=funded,
+        )
+
+    # ------------------------------------------------------------------
+    # Order internals
+    # ------------------------------------------------------------------
+
+    def _require_order_session(self) -> str:
+        """Valid access token or raise — order calls never half-send."""
+        token = self.get_session_token()
+        if not token:
+            raise DhanOrderError(
+                "No authenticated Dhan session — log in before placing orders (fail-closed)"
+            )
+        return token
+
+    def _require_client_id(self) -> str:
+        """The dhanClientId order calls must carry (env fallback for restored sessions)."""
+        client_id = (self._client_id or os.getenv("DHAN_CLIENT_ID", "")).strip()
+        if not client_id:
+            raise DhanOrderError(
+                "Dhan client id unknown — log in again or set DHAN_CLIENT_ID in .env"
+            )
+        return client_id
+
+    @staticmethod
+    def _require_broker_order_id(order: BrokerOrder) -> str:
+        if order.broker_order_id is None or not str(order.broker_order_id):
+            raise DhanOrderError("order has no broker_order_id — cannot modify/cancel")
+        return str(order.broker_order_id)
+
+    def _api_request(self, method: str, path: str, json_body: dict | None = None) -> Any:
+        """One DhanHQ v2 REST call (single retry on transient network errors)."""
+        token = self._require_order_session()
+        url = f"{self._api_base_url()}{path}"
+        headers = {"access-token": token, "Content-Type": "application/json"}
+        last_exc: Exception | None = None
+        for attempt in range(self._retries + 1):
+            try:
+                resp = requests.request(
+                    method, url, json=json_body, headers=headers, timeout=self._http_timeout
+                )
+            except requests.RequestException as exc:
+                last_exc = exc
+                logger.warning(
+                    "Dhan %s %s failed (attempt %s): %s", method, path, attempt + 1, exc
+                )
+                continue
+            if resp.status_code in (401, 403):
+                raise DhanOrderError(
+                    "Dhan rejected the request (session expired or unauthorized) — log in again"
+                )
+            try:
+                payload = resp.json() if resp.content else {}
+            except ValueError:
+                payload = {}
+            if resp.status_code >= 400:
+                reason = _rejection_reason(payload) or f"HTTP {resp.status_code}"
+                raise DhanOrderError(f"Dhan order call failed: {reason}")
+            return payload
+        raise DhanOrderError(f"Could not reach Dhan ({last_exc}) — order call NOT sent")
+
+    def _map_order_to_broker_payload(self, order: BrokerOrder) -> dict[str, Any]:
+        """Translate the generic :class:`BrokerOrder` into a Dhan v2 packet."""
+        packet: dict[str, Any] = {
+            "dhanClientId": self._require_client_id(),
+            "transactionType": (order.side or "BUY").upper(),
+            "exchangeSegment": self._map_exchange_segment(order),
+            "productType": self._map_product(order.product),
+            "orderType": self._map_order_type(order.order_type),
+            "validity": "DAY",
+            "securityId": self._security_id_for_order(order.symbol),
+            "quantity": int(order.quantity),
+            "disclosedQuantity": 0,
+            "price": float(order.limit_price) if order.limit_price is not None else 0.0,
+            "afterMarketOrder": False,
+        }
+        if order.client_order_id:
+            packet["correlationId"] = str(order.client_order_id)[:25]
+        return packet
+
+    @staticmethod
+    def _map_exchange_segment(order: BrokerOrder) -> str:
+        """Dhan segment token — NSE equity by default (options come with F-13)."""
+        exchange = (order.exchange or "NSE").upper()
+        if exchange in ("NSE", "NSE_EQ"):
+            return "NSE_EQ"
+        if exchange in ("BSE", "BSE_EQ"):
+            return "BSE_EQ"
+        if exchange in ("NFO", "NSE_FNO"):
+            return "NSE_FNO"
+        raise DhanOrderError(f"unsupported exchange for Dhan orders: {exchange!r}")
+
+    @staticmethod
+    def _map_product(product: str | None) -> str:
+        mapping = {
+            None: "INTRADAY",
+            "": "INTRADAY",
+            "INTRADAY": "INTRADAY",
+            "MIS": "INTRADAY",
+            "DELIVERY": "CNC",
+            "CNC": "CNC",
+            "MARGIN": "MARGIN",
+            "MTF": "MTF",
+        }
+        key = product.upper() if isinstance(product, str) else product
+        if key not in mapping:
+            raise DhanOrderError(f"unsupported product for Dhan orders: {product!r}")
+        return mapping[key]
+
+    @staticmethod
+    def _map_order_type(order_type: str | None) -> str:
+        mapping = {
+            None: "MARKET",
+            "": "MARKET",
+            "MARKET": "MARKET",
+            "LIMIT": "LIMIT",
+            "STOP_LOSS": "STOP_LOSS",
+            "SL": "STOP_LOSS",
+            "STOP_LOSS_MARKET": "STOP_LOSS_MARKET",
+            "SL-M": "STOP_LOSS_MARKET",
+        }
+        key = order_type.upper() if isinstance(order_type, str) else order_type
+        if key not in mapping:
+            raise DhanOrderError(f"unsupported order type for Dhan orders: {order_type!r}")
+        return mapping[key]
+
+    @staticmethod
+    def _extract_order_id(payload: Any) -> str | None:
+        if not isinstance(payload, dict):
+            return None
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+        for key in ("orderId", "order_id"):
+            value = data.get(key)
+            if value not in (None, ""):
+                return str(value)
+        return None
+
+    def _fetch_order_rows(self) -> list[dict]:
+        """Raw Dhan v2 order-book rows (``GET /v2/orders``)."""
+        payload = self._api_request("GET", _ORDERS_PATH)
+        if isinstance(payload, dict):
+            payload = payload.get("data")
+        if payload is None:
+            return []
+        if not isinstance(payload, list):
+            raise DhanOrderError("Dhan order book response was not a list of orders")
+        return [row for row in payload if isinstance(row, dict)]
+
+    def _order_from_row(self, row: dict[str, Any]) -> BrokerOrder:
+        """Best-effort mapping of one Dhan order-book row to :class:`BrokerOrder`."""
+
+        def _int(value: Any) -> int:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return 0
+
+        def _float(value: Any) -> float | None:
+            try:
+                return float(value) if value not in (None, "") else None
+            except (TypeError, ValueError):
+                return None
+
+        status = str(row.get("orderStatus") or row.get("status") or "OPEN").upper()
+        order_id = row.get("orderId") or row.get("order_id")
+        return BrokerOrder(
+            broker_order_id=BrokerOrderId(str(order_id)) if order_id not in (None, "") else None,
+            client_order_id=row.get("correlationId") or row.get("correlation_id"),
+            symbol=str(row.get("tradingSymbol") or row.get("tradingsymbol") or ""),
+            side=str(row.get("transactionType") or row.get("transaction_type") or "BUY").upper(),
+            quantity=_int(row.get("quantity")),
+            order_type=str(row.get("orderType") or row.get("order_type") or "MARKET").upper(),
+            limit_price=_float(row.get("price")),
+            status=status,
+            filled_quantity=_int(row.get("filledQty") or row.get("filled_quantity")),
+            average_fill_price=_float(row.get("averageTradedPrice") or row.get("average_price")),
+            exchange=str(row.get("exchangeSegment") or "NSE_EQ"),
+            product=row.get("productType") or row.get("product"),
+            created_at=row.get("createTime") or row.get("created_at"),
+            tag={"raw_status": status},
+        )
+
+    def _security_id_for_order(self, symbol: str) -> str:
+        """Dhan securityId for ``symbol`` — env override first, scrip master second.
+
+        * ``DHAN_SECURITY_IDS`` (JSON ``{"RELIANCE": "2885", ...}``) wins;
+        * otherwise the public compact scrip master CSV is downloaded once
+          per process and filtered to NSE equity rows;
+        * unknown symbol → :class:`DhanOrderError` (fail-closed — an order
+          for an unmapped instrument must never guess an id).
+        """
+        key = (symbol or "").strip().upper()
+        if not key:
+            raise DhanOrderError("order symbol is empty — cannot resolve a Dhan security id")
+        if key in self._order_security_ids:
+            return self._order_security_ids[key]
+
+        raw = os.getenv("DHAN_SECURITY_IDS", "").strip()
+        if raw:
+            try:
+                overrides = json.loads(raw)
+                if isinstance(overrides, dict):
+                    self._order_security_ids.update(
+                        {str(k).upper(): str(v) for k, v in overrides.items()}
+                    )
+            except json.JSONDecodeError:
+                logger.warning("DHAN_SECURITY_IDS is not valid JSON — ignored")
+        if key in self._order_security_ids:
+            return self._order_security_ids[key]
+
+        self._order_security_ids.update(_load_scrip_master(self._http_timeout))
+        if key not in self._order_security_ids:
+            raise DhanOrderError(
+                f"no Dhan security id for {key!r} — not in the scrip master; "
+                "set DHAN_SECURITY_IDS in .env to map it explicitly"
+            )
+        return self._order_security_ids[key]
+
+    @staticmethod
+    def _api_base_url() -> str:
+        return os.getenv("DHAN_API_BASE_URL", _API_BASE_URL).rstrip("/")
 
     # ------------------------------------------------------------------
     # Internals

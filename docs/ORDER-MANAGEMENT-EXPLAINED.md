@@ -1,6 +1,10 @@
 # Live Order Management — Complete Explanation
 
-> **Status:** Lives on `origin/arena/01a0ccdb-back-test` (commits `988baa4` *feat(portfolio): live order management — per-position actions + Orders tab* and `3a7eb1d` *feat(portfolio): phase 3 order management — amend, aging alerts, bounded auto-retry*). **Not yet merged** into `arena/01a0c511-back-test` — merging it needs only 4 trivial test-file conflict resolutions.
+> **Status:** ✅ MERGED — the feature is on this tree (verified 2026-09-28:
+> `components/orders_tab.js`, `POST /api/portfolio/orders/<coid>/cancel`/amend,
+> `LiveEquityGateway.poll_fill` all present). Historical note below kept for
+> provenance: it originally lived on `origin/arena/01a0ccdb-back-test`
+> (commits `988baa4`, `3a7eb1d`).
 >
 > **Source docs:** `docs/PORTFOLIO-CENTER.md` (endpoints & semantics), `PROJECT-CONTEXT.md` (state summary).
 
@@ -81,7 +85,7 @@ On a `mode=live` runner, a close/cancel goes to the venue first. The API returns
 ## 5. Known limitations (documented by the authors)
 
 - **Ledger orders are not persisted** — the Orders tab starts empty after a restart and fills as new orders route through. (Positions/levels *do* persist.)
-- `mode=live` buckets: tags/UI wired, but **live broker fills are still open** (findings F-12 — `BrokerFillProvider` + `MStockLiveFeed` exist; forward-engine wiring and `poll_fill` in the broker ABC remain). Until then, live actions are placement-first (`placed` status) but fill confirmation is not yet polled from the broker.
+- ~~`mode=live` buckets: live broker fills are still open (F-12)~~ **F-12 CLOSED:** equity live fills via `LiveEquityGateway` (cumulative-delta `poll_fill`, reconcile every 300 ticks — `tests/test_live_equity_gateway.py`, 2026-09-17); options/multi-broker fills via `ExecutionRouter.poll_fill(order_id, broker)` incl. the Dhan order contract (Phase C, 2026-09-28).
 - ◐ 50% is equity-only by design (option structures close atomically).
 
 ## 6. Merge impact on our branch

@@ -1,6 +1,8 @@
 # PRD: Multi-Broker Capital Allocation & Segmented Trading
 
-> **Status:** DRAFT for architecture discussion — not yet approved.
+> **Status:** IMPLEMENTED — Phases A–D shipped 2026-09-28 on `arena/01a0e42c-back-test`
+> (sessions v2, segments & routing, per-broker execution, cross-broker risk).
+> Remaining: real-credential smoke test, DB migration 006 apply, open questions 3–7 (§8).
 > **Author:** drafted 2026-09-27 from the working session on `arena/01a0c511-back-test`.
 > **Replaces in spirit:** the current "one active broker session at a time" rule in `BrokerSessionManager` (which was a deliberate V1 simplification, not a product goal).
 
@@ -106,7 +108,10 @@ one broker, fixed at creation.
 A **Segment** is the user's own partition of capital and mandate:
 
 ```yaml
-# config/brokers.yaml (extends existing file)
+# config/segments.yaml (NEW file — implementation decision 2026-09:
+# config/brokers.yaml is the fee-model config and stays untouched;
+# segments + data-broker routing live in their own file, overridable
+# via the SEGMENTS_CONFIG_PATH env var)
 segments:
   options_index:
     display_name: "Index Options"
@@ -299,7 +304,7 @@ in. No flag day: old `switch_broker` calls map to `set_ui_active`.
 - **Demo:** mStock + Dhan both Authenticated simultaneously.
 
 ### Phase B — Segments & runner routing ~2–3 days
-- `config/brokers.yaml` segments + `POST /api/segments` validation.
+- `config/segments.yaml` segments + `POST /api/segments` validation.
 - `RunnerConfig.execution_broker` + segment-aware runner creation (API +
   UI select). Paper mode ignores broker (paper broker everywhere).
 - Summary/Orders/Positions carry broker/segment.
@@ -326,13 +331,12 @@ ordering through the platform goes real; D closes the honest-risk loop.
 
 ## 8. Open Questions (for the architecture discussion)
 
-1. **Segment ↔ bucket mapping:** reuse the bucket key directly
-   (`segment == bucket`) or introduce a third dimension? (Recommendation:
-   segment *is* the bucket for live mode; the paper bucket stays shared.)
-2. **Who owns the DATA role long-term?** One broker for data forever, or
-   per-segment data (options chain from the options broker)?
-   (Recommendation: single data broker V1 — one chain-snapshot bus;
-   per-segment data V2+.)
+1. ~~**Segment ↔ bucket mapping:**~~ **RESOLVED (2026-09-28, as recommended):**
+   segment *is* the bucket for live mode (`segment:<name>` bucket keys); the
+   paper bucket stays shared. Implemented in `portfolio_manager.py`.
+2. ~~**Who owns the DATA role long-term?**~~ **RESOLVED for V1 (2026-09-28, as
+   recommended):** single data broker via `config/segments.yaml` `data.primary`
+   (with a declared-but-inert `data.fallback` field); per-segment data stays V2+.
 3. **Broker C/D adapters:** which brokers next (Zerodha? Upstox?), and do we
    buy/borrow an SDK or hand-roll like mStock/Dhan? The registry makes each
    a module + entry, but order-contract work is real.
@@ -352,15 +356,25 @@ ordering through the platform goes real; D closes the honest-risk loop.
 
 ## 9. Success Criteria
 
-- [ ] mStock **and** Dhan (and later C/D) simultaneously Authenticated;
+- [x] mStock **and** Dhan (and later C/D) simultaneously Authenticated;
       either can trade without a re-login dance.
-- [ ] Each runner's orders route to its segment's broker; the Orders tab
+      *(2026-09-28: `BrokerSessionManager` session map + Broker Board UI;
+      `tests/brokers/test_multi_session.py`. Real-credential smoke still pending.)*
+- [x] Each runner's orders route to its segment's broker; the Orders tab
       shows which.
-- [ ] A runner whose broker session expires pauses entries and raises an
+      *(2026-09-28: `ExecutionRouter.order_for` + broker/segment columns;
+      `tests/brokers/test_segments_routing.py`.)*
+- [x] A runner whose broker session expires pauses entries and raises an
       alert naming the broker — no cross-broker fallback, ever.
-- [ ] Global risk breakers evaluate the cross-broker sum; per-segment
+      *(2026-09-28: `BrokerSessionExpired` fail-closed path, runner pauses entries.)*
+- [x] Global risk breakers evaluate the cross-broker sum; per-segment
       breakers fire independently.
-- [ ] One broker remains the single data source; feed-quality alerts keep
+      *(2026-09-28: segment-keyed bucket breakers + global SUM;
+      `tests/test_cross_broker_risk.py`.)*
+- [x] One broker remains the single data source; feed-quality alerts keep
       working unchanged.
-- [ ] With exactly one broker logged in, every screen behaves exactly as
+      *(2026-09-28: `config/segments.yaml` `data.primary`; feed path untouched.)*
+- [x] With exactly one broker logged in, every screen behaves exactly as
       today (no regression for the current single-broker flow).
+      *(2026-09-28: full suite 2922 passed / 0 failed incl. all legacy
+      single-broker API-shape tests.)*

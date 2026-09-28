@@ -54,10 +54,10 @@ then NIFTY collapses 7,000 pts over 24 bars:
 | **C1** | Spawn UI: instrument / structure / strike / quantity controls | C · Reach | DONE | A2 |
 | **C2** | Portfolio matrix + deep-dive: option columns, premium, Greeks | C · Reach | DONE | C1 |
 | **D1** | Index-scale synthetic spot for NIFTY / BANKNIFTY | D · Realism | DONE | A1 |
-| **D2** | Injectable quote provider (`synthetic` \| `live:mstock`) + badge | D · Realism | TODO | A1 |
-| **D3** | Persist forward option books across restarts | D · Realism | TODO | A2 |
+| **D2** | Injectable quote provider (`synthetic` \| `live:mstock`) + badge | D · Realism | DONE | A1 |
+| **D3** | Persist forward option books across restarts | D · Realism | DONE | A2 |
 | **E1** | Fix lint baseline (`options/expiry.py` unused imports) | E · Hygiene | DONE | — |
-| **E2** | Stop options tests leaking state through the dev SQLite DB | E · Hygiene | TODO | — |
+| **E2** | Stop options tests leaking state through the dev SQLite DB | E · Hygiene | DONE | — |
 
 Phases: **A** makes the numbers move, **B** makes the runner able to leave a
 trade, **C** makes it reachable from the browser, **D** makes the numbers
@@ -676,20 +676,34 @@ draws, grid/lot/premium scale, and both end-to-end runners). Full gate:
 
 ## D2 — Injectable quote provider
 
-**Status:** TODO
+**Status:** DONE (2026-09-17, via P1.1 live-options wiring — mechanism differs
+from the sketch below: routing keys off the runner's `source` field, not an
+`expression["quotes"]` knob)
 
-**Change.** `expression["quotes"] = "synthetic" | "live"` (live requires an
-authenticated broker session) resolved through the existing
-`web/options_api.get_quote_provider()` chain, with the result surfaced as
-`quote_source` on the runner state so nobody reads synthetic percentages as
-real fills.
+**Shipped.** `LiveChainProvider`/`LiveQuoteProvider` serve real chains + LTP
+behind the generator duck type when `source=mstock` && authenticated, with a
+**labelled** `synthetic:bs` fallback when no session; `quote_source` is
+surfaced on the bridge summary/runner state (`options_bridge.py`) so nobody
+reads synthetic percentages as real fills. 31 tests:
+`tests/test_live_options_wiring.py`.
+
+**Original sketch (superseded).** `expression["quotes"] = "synthetic" | "live"`
+resolved through the `web/options_api.get_quote_provider()` chain.
 
 ## D3 — Persist forward option books
 
-**Status:** TODO
+**Status:** DONE (2026-09-17, via P2.4 state persistence — mechanism differs
+from the sketch below: runner option books ride the manager state snapshot,
+not `StructurePersistence`)
 
-**Change.** Reuse `options/persistence.StructurePersistence` for runner books
-(keys or a parent id per runner), rehydrate on `PortfolioManager` bootstrap.
+**Shipped.** `forward/state_store.py` serialises, for option runners, the
+complete option book (`OptionPosition`/`StructurePosition` legs, broker cash,
+bar clock) into the `PORTFOLIO_STATE_PATH` snapshot; `PortfolioManager`
+rehydrates it on bootstrap (persisted RUNNING comes back PAUSED, fail-closed).
+16 tests: `tests/forward/test_state_persistence.py`.
+
+**Original sketch (superseded).** Reuse
+`options/persistence.StructurePersistence` for runner books.
 
 ## E1 — Lint baseline
 
@@ -709,7 +723,9 @@ top). Done while editing that file for B2.
 
 ## E2 — Options tests leak state through the dev SQLite DB
 
-**Status:** TODO
+**Status:** DONE (verified 2026-09-28: `tests/test_options_integration.py`
+back-to-back runs are green — the leaking test now sets
+`OPTIONS_PERSISTENCE=off` with a docstring explaining why)
 
 **Problem (found 2026-09-15 while validating A1).** `tests/test_options_integration.py`
 is not idempotent: `OPTIONS_PERSISTENCE` defaults to `auto`, so the options API

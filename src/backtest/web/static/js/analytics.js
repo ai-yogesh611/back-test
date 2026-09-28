@@ -7,6 +7,44 @@
 (function () {
     'use strict';
 
+    // XSS guard (gap fix #1): EVERY user-influenced string interpolated into
+    // an innerHTML template goes through esc() — runner names are set at
+    // spawn time by the user and used to be injected raw.
+    function esc(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    // Error banner (gap fix #9): fetch failures used to die in console.error
+    // with a silently blank pane.
+    function showError(message) {
+        let banner = document.getElementById('analyticsErrorBanner');
+        if (!banner) {
+            banner = document.createElement('div');
+            banner.id = 'analyticsErrorBanner';
+            banner.setAttribute('role', 'alert');
+            banner.style.cssText = 'margin: 10px 0; padding: 10px 14px; border-radius: 6px; ' +
+                'background: rgba(239,68,68,0.12); color: var(--danger); border: 1px solid rgba(239,68,68,0.4); ' +
+                'display: flex; justify-content: space-between; align-items: center; gap: 12px;';
+            const host = document.querySelector('.page-content') || document.body;
+            host.insertBefore(banner, host.firstChild);
+        }
+        banner.innerHTML = '<span>⚠️ ' + esc(message) + '</span>' +
+            '<button type="button" class="btn btn-ghost btn-small" id="analyticsErrorDismiss">Dismiss</button>';
+        banner.style.display = 'flex';
+        const dismiss = document.getElementById('analyticsErrorDismiss');
+        if (dismiss) dismiss.addEventListener('click', () => { banner.style.display = 'none'; });
+    }
+
+    function clearError() {
+        const banner = document.getElementById('analyticsErrorBanner');
+        if (banner) banner.style.display = 'none';
+    }
+
     // State
     let currentPeriod = '30d';
     let currentMode = 'all';
@@ -40,6 +78,17 @@
         } else {
             loadOverview();
         }
+
+        // Auto-refresh (gap fix #9): numbers went silently stale on a
+        // long-open tab. Poll every 30s, only while the tab is visible.
+        setInterval(() => {
+            if (document.visibilityState !== 'visible') return;
+            if (currentStrategyId) {
+                loadStrategyDetail(currentStrategyId);
+            } else {
+                loadOverview();
+            }
+        }, 30000);
     }
 
     function bindEvents() {
@@ -121,15 +170,18 @@
 
             if (!data.success) {
                 console.error('Failed to load analytics overview:', data.error);
+                showError(`Analytics overview failed: ${data.error || 'unknown error'}`);
                 return;
             }
 
+            clearError();
             renderOverviewMetrics(data.portfolio_metrics, data.active_runners, data.total_runners);
             renderPortfolioEquityChart(data.portfolio_equity_curve);
             renderStrategyCards(data.strategy_cards);
             renderOverviewAlerts(data.alerts);
         } catch (err) {
             console.error('Error fetching analytics overview:', err);
+            showError('Could not reach the analytics API — is the server up?');
         }
     }
 
@@ -268,10 +320,10 @@
                 <div>
                     <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px;">
                         <div>
-                            <strong style="font-size: 1.05rem; display: block;">${card.name}</strong>
-                            <span class="small muted">${card.strategy_name} · ${card.mode.toUpperCase()} · ${card.symbols.join(', ')}</span>
+                            <strong style="font-size: 1.05rem; display: block;">${esc(card.name)}</strong>
+                            <span class="small muted">${esc(card.strategy_name)} · ${esc(card.mode.toUpperCase())} · ${esc(card.symbols.join(', '))}</span>
                         </div>
-                        <span class="badge" style="font-size: 0.75rem; background: var(--surface-2); padding: 2px 8px; border-radius: 10px;">${health.badge}</span>
+                        <span class="badge" style="font-size: 0.75rem; background: var(--surface-2); padding: 2px 8px; border-radius: 10px;">${esc(health.badge)}</span>
                     </div>
 
                     <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 12px 0; background: var(--surface-2); padding: 10px; border-radius: 6px;">
@@ -311,10 +363,15 @@
             setTimeout(() => {
                 const canvas = document.getElementById(`miniChart_${idx}`);
                 if (canvas && card.mini_curve && card.mini_curve.length > 1) {
+                    // Time labels when the backend provides them (fix #9) —
+                    // index labels were misleading once curves decimate.
+                    const tsLabels = (card.mini_curve_ts && card.mini_curve_ts.length === card.mini_curve.length)
+                        ? card.mini_curve_ts
+                        : card.mini_curve.map((_, i) => i);
                     new Chart(canvas.getContext('2d'), {
                         type: 'line',
                         data: {
-                            labels: card.mini_curve.map((_, i) => i),
+                            labels: tsLabels,
                             datasets: [{
                                 data: card.mini_curve,
                                 borderColor: m.total_return_pct >= 0 ? '#10b981' : '#ef4444',
@@ -353,7 +410,7 @@
             item.style.cssText = 'display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: var(--surface-2); border-radius: 6px;';
             item.innerHTML = `
                 <div>
-                    <span>${icon}</span> <strong>${a.strategy}</strong>: ${a.message}
+                    <span>${icon}</span> <strong>${esc(a.strategy)}</strong>: ${esc(a.message)}
                 </div>
                 <button class="btn btn-ghost btn-small" style="font-size: 0.75rem;" type="button">Drill Down</button>
             `;
@@ -379,9 +436,11 @@
 
             if (!data.success) {
                 console.error('Failed to load strategy detail:', data.error);
+                showError(`Strategy detail failed: ${data.error || 'unknown error'}`);
                 return;
             }
 
+            clearError();
             renderDetailHeader(data);
             renderDetailMetrics(data.metrics, data.health);
             renderDegradationBanner(data.edge_degradation);
@@ -392,6 +451,7 @@
             renderTradesTable(data.recent_trades);
         } catch (err) {
             console.error('Error fetching strategy detail:', err);
+            showError('Could not reach the analytics API — is the server up?');
         }
     }
 
@@ -447,7 +507,9 @@
 
         const sortinoEl = document.getElementById('detailSortino');
         if (sortinoEl && m) {
-            sortinoEl.textContent = m.sortino_ratio.toFixed(2);
+            // null = no downside deviation to divide by (fix #5) — say so,
+            // don't silently print the Sharpe under a Sortino label.
+            sortinoEl.textContent = m.sortino_ratio == null ? 'n/a (no losses)' : m.sortino_ratio.toFixed(2);
         }
 
         const calmarEl = document.getElementById('detailCalmar');
@@ -465,7 +527,8 @@
         const pfEl = document.getElementById('detailProfitFactor');
         const expEl = document.getElementById('detailExpectancy');
         if (pfEl && m) {
-            pfEl.textContent = m.profit_factor >= 99 ? '∞' : m.profit_factor.toFixed(2);
+            // null = no losing trades (fix #8: explicit sentinel, not 99.99).
+            pfEl.textContent = m.profit_factor == null ? '∞' : m.profit_factor.toFixed(2);
             expEl.textContent = `Exp: ₹${m.expectancy}/trade`;
         }
 
@@ -626,13 +689,13 @@
             const pnlColor = m.pnl >= 0 ? 'var(--success)' : 'var(--danger)';
             const pnlSign = m.pnl >= 0 ? '+' : '';
             tr.innerHTML = `
-                <td><strong>${m.month}</strong></td>
+                <td><strong>${esc(m.month)}</strong></td>
                 <td class="text-right">${m.trades}</td>
                 <td class="text-right">${m.win_rate}%</td>
                 <td class="text-right" style="color: ${pnlColor}; font-weight: 600;">${pnlSign}₹${m.pnl.toLocaleString()}</td>
                 <td class="text-right" style="color: ${pnlColor};">${pnlSign}${m.return_pct}%</td>
                 <td class="text-right">-${m.max_drawdown_pct}%</td>
-                <td class="text-right">${m.sharpe_ratio.toFixed(2)}</td>
+                <td class="text-right">${m.sharpe_ratio == null ? '—' : m.sharpe_ratio.toFixed(2)}</td>
             `;
             tbody.appendChild(tr);
         });
@@ -710,11 +773,18 @@
             const badge = pnl >= 0 ? '<span class="badge" style="background: rgba(16,185,129,0.15); color: var(--success); padding: 2px 6px; border-radius: 4px;">WIN</span>'
                                    : '<span class="badge" style="background: rgba(239,68,68,0.15); color: var(--danger); padding: 2px 6px; border-radius: 4px;">LOSS</span>';
 
+            // Instrument class tag (fix #10): option qty is LOTS, equity qty
+            // is shares — say which one the row is.
+            const cls = t.instrument_class || t.kind || 'equity';
+            const clsBadge = cls === 'option'
+                ? ' <span class="badge small" style="background: rgba(99,102,241,0.15); color: #818cf8; padding: 1px 5px; border-radius: 4px;">OPT</span>'
+                : '';
+            const qtyLabel = cls === 'option' ? `${t.qty || 1} lot` : `${t.qty || 1}`;
             tr.innerHTML = `
-                <td>${t.exit_ts ? t.exit_ts.replace('T', ' ').slice(0, 19) : '—'}</td>
-                <td><strong>${t.symbol || '—'}</strong></td>
-                <td><span class="small">${t.side || 'LONG'}</span></td>
-                <td class="text-right">${t.qty || 1}</td>
+                <td>${t.exit_ts ? esc(t.exit_ts.replace('T', ' ').slice(0, 19)) : '—'}</td>
+                <td><strong>${esc(t.symbol || '—')}</strong>${clsBadge}</td>
+                <td><span class="small">${esc(t.side || 'LONG')}</span></td>
+                <td class="text-right">${esc(qtyLabel)}</td>
                 <td class="text-right">₹${Number(t.entry_price || 0).toLocaleString()}</td>
                 <td class="text-right">₹${Number(t.exit_price || 0).toLocaleString()}</td>
                 <td class="text-right" style="color: ${pnlColor}; font-weight: 600;">${pnlSign}₹${pnl.toLocaleString()}</td>

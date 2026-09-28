@@ -297,6 +297,34 @@ def risk_board() -> Tuple[Response, int]:
     total_eq = summ.get("total_equity") or 0.0
     gross_pct = round(total_gross / total_eq, 4) if total_eq else 0.0
 
+    # Multi-broker Phase D: per-segment breaker cards + per-broker rollup
+    # (the risk page's per-broker cards; PRD §8.5). Derived, never guessed.
+    segments_data: dict = {}
+    by_broker: dict[str, dict] = {}
+    try:
+        segments_data = mgr.get_segment_aggregates()
+        for rs in mgr.list_instances(mode=mode):
+            b = str(rs.get("broker") or ("live" if rs.get("mode") == "live" else "paper"))
+            if b not in by_broker:
+                by_broker[b] = {
+                    "broker": b,
+                    "runner_count": 0,
+                    "equity": 0.0,
+                    "allocated_capital": 0.0,
+                    "daily_pnl": 0.0,
+                    "open_positions": 0,
+                }
+            by_broker[b]["runner_count"] += 1
+            by_broker[b]["equity"] += float(rs.get("equity") or 0.0)
+            by_broker[b]["allocated_capital"] += float(rs.get("allocated_capital") or 0.0)
+            by_broker[b]["daily_pnl"] += float(rs.get("daily_pnl") or 0.0)
+            by_broker[b]["open_positions"] += int(rs.get("open_positions") or 0)
+        for row in by_broker.values():
+            for k in ("equity", "allocated_capital", "daily_pnl"):
+                row[k] = round(row[k], 2)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("risk segment/broker rollup failed: %s", exc)
+
     payload = {
         "timestamp": summ.get("timestamp"),
         "mode": mode or "all",
@@ -334,6 +362,9 @@ def risk_board() -> Tuple[Response, int]:
         "trade_stats": trade_stats,
         "risk_audit": risk_audit,
         "capability": summ.get("capability", {}),
+        # Multi-broker Phase D (additive keys — single-broker shape unchanged)
+        "segments": segments_data,
+        "by_broker": sorted(by_broker.values(), key=lambda x: x["broker"]),
     }
 
     return jsonify({"success": True, "risk": payload}), 200
@@ -620,6 +651,27 @@ def create_runner() -> Tuple[Response, int]:
                 + (f" ({strategy_name} is restricted to {sorted(allowed)})" if eligible else "")
             )
 
+    # Multi-broker Phase B: runners may be created INTO a segment (capital
+    # partition mapped to a broker) or with an explicit execution_broker.
+    # When a segment is given and no explicit mode, the segment's mode wins;
+    # an explicit conflicting mode is refused (fail-closed, no ambiguity).
+    segment = str(data.get("segment") or "").strip().lower() or None
+    execution_broker = str(data.get("execution_broker") or "").strip().lower() or None
+    mode = str(data.get("mode") or "").strip().lower() or None
+    if segment:
+        from backtest.brokers.segments import get_segments_config
+
+        seg_cfg = get_segments_config().get(segment)
+        if seg_cfg is None:
+            return _error(f"unknown segment: {segment}")
+        if mode is None:
+            mode = seg_cfg.mode
+        elif mode != seg_cfg.mode:
+            return _error(
+                f"segment {segment!r} is configured as {seg_cfg.mode} — "
+                f"a {mode} runner cannot be created into it"
+            )
+
     try:
         config = RunnerConfig(
             name=name,
@@ -649,8 +701,10 @@ def create_runner() -> Tuple[Response, int]:
                 if data.get("position_pct") is not None
                 else None
             ),
-            mode=data.get("mode") or "paper",
+            mode=mode or "paper",
             source=data.get("source") or "synthetic",
+            segment=segment,
+            execution_broker=execution_broker,
             instrument=instrument,
             playbook_id=data.get("playbook_id"),
             playbook_version=(
@@ -667,6 +721,12 @@ def create_runner() -> Tuple[Response, int]:
         instance_id = _manager().add_runner(config, start=auto_start)
     except (ValueError, KeyError, TypeError) as exc:
         return _error(f"invalid runner config: {exc}")
+    except Exception as exc:  # noqa: BLE001 — broker-session refusals get a clear 409
+        from backtest.brokers.execution_router import BrokerSessionExpired
+
+        if isinstance(exc, BrokerSessionExpired):
+            return _error(str(exc), 409)
+        raise
 
     runner = _manager().get_runner(instance_id)
     return (

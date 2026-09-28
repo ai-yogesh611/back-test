@@ -680,7 +680,7 @@ PYTHONPATH=src python -m backtest.web.app --source mock_broker
 - [x] `DirectionalOptionsStrategy` generates bull call spread when NIFTY rises ₹100 *(automated via G3.2 bridge)*
 - [x] Full fee stack deducted (P&L includes STT, stamp duty, etc.)
 - [x] Server restart → positions reload from DB
-- [x] Mock broker mode works without mStock credentials *(synthetic feed; literal flag pending, see Pending P5)*
+- [x] Mock broker mode works without mStock credentials *(literal `--source mock_broker` landed 2026-09-28, see P5)*
 
 ---
 
@@ -738,7 +738,12 @@ normalises `ltp`/`last_price`/`bid`/`best_bid` — extend there if the real
 mStock quote payload uses different keys), selection logic in
 `src/backtest/web/options_api.py::get_quote_provider()`.
 
-### P2. Option book is not reflected in runner equity / circuit breakers — Gap G3.2
+### ~~P2. Option book is not reflected in runner equity / circuit breakers~~ — ✅ DONE — Gap G3.2
+
+> **Resolved (verified in code 2026-09-28):** `StrategyRunner.equity()` folds
+> `options_bridge.net_pnl` in (docstring cites "Gap P2"), `unrealized_pnl()`
+> adds the bridge's unrealized, and instance breakers/bucket aggregates see
+> the option book. Original description kept below for history.
 The `OptionsBridge` keeps an **isolated** paper book per runner. That was
 the safe V1 choice, but it means:
 
@@ -752,28 +757,38 @@ Suggested change: fold `options_bridge.summary()["equity"]` into
 `StrategyRunner.equity()` (and `unrealized_pnl()`), then extend the breaker
 checks in `src/backtest/forward/paper_runner.py`.
 
-### P3. `InsufficientMarginError` surfaces as HTTP 500 — Gap G1.1 polish
-`PreTradeRiskCheck` catches most margin problems as a clean 400, but if the
-broker's own hard cash guard fires during `execute_structure`,
-`POST /api/options/trade` returns `500 execution failed`. Fix: catch
-`InsufficientMarginError` in `options_open_trade`
-(`src/backtest/web/options_api.py`) and map it to 400, same as risk
-rejections. ~3 lines.
+### ~~P3. `InsufficientMarginError` surfaces as HTTP 500~~ — ✅ DONE (2026-09-28) — Gap G1.1 polish
+`options_open_trade` now catches `InsufficientMarginError` and returns
+`400 {"error": ..., "rejected": true}` — same shape as risk rejections.
+This also covers the ltp=0 phantom-price guard (which raises the same
+exception). Regression test:
+`tests/test_options_gap_remediation.py::TestTradeDriverApi::test_insufficient_cash_is_a_clean_400`
+(drains `available_cash` while `capital` stays ₹10L so the pre-trade check
+passes and execution reaches the broker's hard guard).
 
-### P4. `BidAskQuoteProvider` (buy at ask, sell at bid) — Gap G2.1 sketch
-Sketched in this PRD but never built; not required by any acceptance
-criterion. Fills currently use LTP + slippage
-(`OptionPaperBroker._apply_slippage`). Add it in
-`src/backtest/options/quote_providers.py` and thread a `side` parameter
-through `get_quote` when you want more realistic execution.
+### ~~P4. `BidAskQuoteProvider` (buy at ask, sell at bid)~~ — ✅ DONE (2026-09-28) — Gap G2.1 sketch
+Built as an **opt-in wrapper** in `src/backtest/options/quote_providers.py`:
+`BidAskQuoteProvider(inner)` passes `get_quote` through unchanged (marks/MTM
+stay on LTP) and adds `execution_quote(token, side)` — ask for BUY, bid for
+SELL, LTP fallback when the venue payload lacks a usable bid/ask.
+`OptionPaperBroker` entry/close fills consult `execution_quote` **only when
+the provider offers it** (`_execution_quote` seam, MagicMock-safe), so every
+unwrapped book keeps V1 LTP fills byte-identical. `slippage_pct` still
+applies on top (spread ≠ impact); use `slippage_pct=0` for pure-spread
+fills. 8 tests: `tests/test_bidask_quote_provider.py`.
 
-### P5. Literal `--source mock_broker` mode — Gap G4.3
-The intent (options flow testable with zero credentials) is satisfied by
-the synthetic Black-Scholes feed, but there is still no `MockBroker` class
-or `mock_broker` source mode — CLI choices are `synthetic|csv|mstock|db`
-(`src/backtest/web/app.py`, argparse block). If you want the literal
-acceptance criterion: create `src/backtest/brokers/mock.py` (PRD G4.3 has
-the sketch), register it in `session_manager`, and add the CLI choice.
+### ~~P5. Literal `--source mock_broker` mode~~ — ✅ DONE (2026-09-28) — Gap G4.3
+`src/backtest/brokers/mock.py` — `MockBroker(BrokerAuthBase, BrokerOrderBase)`:
+zero-credential auto-auth, synthetic CE+PE chains via
+`SyntheticChainGenerator`, orders **logged and filed OPEN locally, never
+submitted** (deterministic `MOCK000001` ids — A6 rule, no `random`);
+`poll_fill` never invents a fill. Registration is **opt-in** via
+`session_manager.enable_mock_broker()` — deliberately NOT in the default
+registry so a dry-run venue can never appear in a production login UI.
+`--source mock_broker` (new CLI choice) enables it and runs the data
+pipeline as synthetic (all downstream source tags stay known values).
+Boot-verified: `python -m backtest.web.app --source mock_broker`.
+18 tests: `tests/brokers/test_mock_broker.py`.
 
 ### P6. Apply migration 004 on real databases — Gap G4.2 ops
 `ensure_schema()` auto-creates the table on SQLite dev databases, but
@@ -804,7 +819,7 @@ persistence (used by the test suite).
 - [x] ✅ `DirectionalOptionsStrategy` trades automatically (Gap G3.2 wired in `415c3c8`)
 - [x] ✅ Full fees deducted from cash (incl. dashboard book)
 - [x] ✅ Server restart → positions persist (verified over HTTP: kill → restart → book rehydrated, cash exact)
-- [x] ✅ Mock broker works without credentials (via synthetic feed; literal `--source mock_broker` pending, see P5)
+- [x] ✅ Mock broker works without credentials (literal `--source mock_broker` landed 2026-09-28, see P5)
 - [x] ✅ All existing tests pass (2076 passed, 0 failed as of `415c3c8`)
 
 ---

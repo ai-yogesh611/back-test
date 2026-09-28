@@ -193,14 +193,10 @@ class FeedQualityMonitor:
         """
         with self._lock:
             stale = sorted(self._stale_s)
-            window_min = 0.0
-            if self._last_observed is not None:
-                # Window = session span of observations; approximate via tail
-                # span is unreliable, so use polls vs a clock anchored at the
-                # first observation we can still see (bars carry bar_ts; the
-                # oldest tail entry's observed_at is not kept) — use errors
-                # tail as a lower bound and bars as the primary clock.
-                pass
+            # Window = session span of observations; approximating via the
+            # tail span is unreliable (the oldest tail entry's observed_at is
+            # not kept), so _window_hours anchors on bars as the primary
+            # clock with the errors tail as a lower bound.
             hours = self._window_hours()
             p = lambda q: stale[int(q * (len(stale) - 1))] if stale else None  # noqa: E731
             return {
@@ -221,7 +217,9 @@ class FeedQualityMonitor:
                 "max_stale_repeat_run": self._max_stale_repeat_run,
                 "window_hours": round(hours, 3) if hours > 0 else None,
                 "last_bar_ts": self._last_bar_ts.isoformat() if self._last_bar_ts else None,
-                "last_observed_at": self._last_observed.isoformat() if self._last_observed else None,
+                "last_observed_at": (
+                    self._last_observed.isoformat() if self._last_observed else None
+                ),
             }
 
     def _window_hours(self) -> float:

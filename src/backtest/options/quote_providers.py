@@ -98,11 +98,56 @@ class SyntheticChainGenerator:
     DEFAULT_SPOTS = {"NIFTY": 24800.0, "BANKNIFTY": 52000.0}
     VOL = {"NIFTY": 0.12, "BANKNIFTY": 0.15}
 
-    def __init__(self, spot: float | None = None, strikes_each_side: int = 10) -> None:
+    def __init__(
+        self,
+        spot: float | None = None,
+        strikes_each_side: int = 10,
+        reference: datetime | None = None,
+    ) -> None:
         self.spots: dict[str, float] = dict(self.DEFAULT_SPOTS)
         self.strikes_each_side = int(strikes_each_side)
         if spot is not None:
             self.set_spot("NIFTY", spot)
+        # A6 determinism hardening (2026-09-28): pinnable clock. When set,
+        # expiry selection AND pricing read this instead of the wall clock,
+        # so a whole run is reproducible on any calendar date. ``None``
+        # keeps V1 behaviour (wall clock) byte-identical.
+        self._reference: datetime | None = reference
+
+    def set_reference(self, reference: datetime | None) -> None:
+        """Pin the generator's clock (expiry selection + pricing fallbacks).
+
+        Mirrors :meth:`SyntheticQuoteProvider.set_reference`. ``None`` unpins
+        back to the wall clock. Precedence at every call site: explicit
+        ``reference`` argument > this pin > wall clock.
+
+        .. warning:: In the forward stack ONE generator is shared per
+           underlying across runners (``ChainBus``). Pin only in single-book
+           contexts — tests and the options backtest driver. The shared bus
+           must keep passing explicit per-bar references instead.
+        """
+        self._reference = reference
+
+    # -- A6: the ONLY wall-clock fallbacks in this class ------------------
+    # Every method that used to call ``date.today()`` / ``datetime.now()``
+    # inline now routes through these two, so "who can smuggle the wall
+    # clock into a backtest?" has exactly one audit point.
+
+    def _reference_datetime(self, reference: datetime | None = None) -> datetime:
+        """Explicit argument > pinned reference > wall clock (audit point)."""
+        if reference is not None:
+            return reference
+        if self._reference is not None:
+            return self._reference
+        return datetime.now()
+
+    def _reference_date(self, reference: date | None = None) -> date:
+        """Date twin of :meth:`_reference_datetime` (same precedence)."""
+        if reference is not None:
+            return reference
+        if self._reference is not None:
+            return self._reference.date()
+        return date.today()
 
     def set_spot(self, underlying: str, spot: float) -> None:
         self.spots[underlying] = float(spot)
@@ -119,7 +164,7 @@ class SyntheticChainGenerator:
         for a December one — reachable as soon as the expiry calendar follows
         the replay clock (forward testing task B1) instead of ``date.today()``.
         """
-        ref = reference or date.today()
+        ref = self._reference_date(reference)
         expiry = self._last_thursday_of(ref.year, ref.month)
         if expiry < ref:
             # This month's expiry has passed — the nearest remaining one is
@@ -189,7 +234,8 @@ class SyntheticChainGenerator:
         count: int = 3,
         reference: date | None = None,
     ) -> list[date]:
-        """The next ``count`` monthly expiries from ``reference`` (default today).
+        """The next ``count`` monthly expiries from ``reference``
+        (default: the pinned reference if set, else today).
 
         ``reference`` matters for replay: a forward test iterating historical
         bars must select the expiry that was current **on the bar**, not the
@@ -198,7 +244,7 @@ class SyntheticChainGenerator:
         blocks new entries forever.
         """
         expiries: list[date] = []
-        ref = reference or date.today()
+        ref = self._reference_date(reference)
         for _ in range(count):
             expiries.append(self.next_monthly_expiry(ref))
             ref = expiries[-1] + timedelta(days=1)
@@ -230,7 +276,7 @@ class SyntheticChainGenerator:
         """
         spot = self.get_spot(contract.underlying)
         vol = float(contract.metadata.get("vol", 0.13))
-        ref = reference or datetime.now()
+        ref = self._reference_datetime(reference)
         expiry_dt = datetime.combine(contract.expiry or ref.date(), datetime.min.time())
         years = (expiry_dt - ref).total_seconds() / (365.0 * 24 * 3600)
         return bs_price(
@@ -420,6 +466,67 @@ class CachedQuoteProvider:
         quote = self.inner.get_quote(instrument_token)
         self._cache[instrument_token] = (quote, now)
         return quote
+
+
+# ---------------------------------------------------------------------------
+# BidAskQuoteProvider (Gap-PRD P4 — buy at ask, sell at bid, opt-in)
+# ---------------------------------------------------------------------------
+
+
+class BidAskQuoteProvider:
+    """Execution realism wrapper: market orders cross the spread (P4).
+
+    Wraps any protocol provider. ``get_quote`` passes through UNCHANGED —
+    MTM, Greeks and dashboards keep marking off LTP. The realism is in
+    :meth:`execution_quote`, which the paper broker calls when (and only
+    when) its provider offers it: the returned quote's ``ltp`` is the ASK
+    for a BUY and the BID for a SELL, the price a market order actually
+    pays. Books without this wrapper fill at LTP exactly as before.
+
+    Fail-open on payload variance: live venues sometimes omit or zero the
+    bid/ask — the quote then falls back to LTP rather than pricing a leg
+    at ₹0 (same fail-closed spirit as the ltp=0 phantom-price guard).
+
+    Note ``OptionPaperBroker.slippage_pct`` still applies ON TOP: the
+    spread is where the market stands, slippage models your own impact.
+    Construct the broker with ``slippage_pct=0`` for pure-spread fills.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+
+    # -- QuoteProvider protocol (unchanged passthrough) -------------------
+
+    def get_quote(self, instrument_token: str) -> dict[str, Any]:
+        return self.inner.get_quote(instrument_token)
+
+    def execution_quote(self, instrument_token: str, side: str) -> dict[str, Any]:
+        """Side-aware quote: ``ltp`` becomes ask (BUY) / bid (SELL)."""
+        quote = dict(self.inner.get_quote(instrument_token))
+        key = "ask" if str(side).upper() == "BUY" else "bid"
+        price = float(quote.get(key) or 0.0)
+        if price > 0:
+            quote["ltp"] = price
+            quote["execution_side"] = str(side).upper()
+        return quote
+
+    # -- delegation so the wrapper can sit anywhere in the chain ----------
+
+    @property
+    def source_name(self) -> str:
+        inner_name = str(getattr(self.inner, "source_name", "unknown"))
+        return f"{inner_name}+bidask"
+
+    @property
+    def generator(self) -> Any:
+        return getattr(self.inner, "generator", None)
+
+    def __getattr__(self, name: str) -> Any:
+        # set_reference / set_spot / get_spot / register_chain /
+        # register_contract / get_quotes_bulk … — whatever the inner
+        # provider offers, offer too (only called for names not found on
+        # the wrapper itself).
+        return getattr(self.inner, name)
 
 
 # ---------------------------------------------------------------------------

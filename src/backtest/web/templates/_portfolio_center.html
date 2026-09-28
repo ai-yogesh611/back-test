@@ -237,6 +237,7 @@
                     <thead><tr>
                         <th>Time</th>
                         <th>Instance</th>
+                        <th title="Which broker (venue) this order went to — 'paper' for simulated fills">Broker</th>
                         <th>Symbol</th>
                         <th>Side</th>
                         <th class="num">Qty</th>
@@ -583,6 +584,18 @@
                             {% if s == 'synthetic' %}selected{% endif %}>{{ s | upper }}</option>
                         {% endfor %}
                     </select>
+                </div>
+            </div>
+            <!-- Multi-broker Phase B: runners are created INTO a segment (a
+                 capital partition mapped to a broker). Populated from
+                 GET /api/segments; hidden when no segments are configured. -->
+            <div class="two-col" id="spawn-segment-row" hidden>
+                <div class="form-row">
+                    <label>Segment</label>
+                    <select id="spawn-segment" class="input input-select">
+                        <option value="">— none (legacy default) —</option>
+                    </select>
+                    <small id="spawn-segment-hint" class="muted"></small>
                 </div>
             </div>
             <small id="spawn-risk-hint" class="muted">

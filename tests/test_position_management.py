@@ -135,6 +135,20 @@ def _option_runner(**overrides) -> StrategyRunner:
 def _open_option_structure(runner: StrategyRunner, spot: float = 24_800.0):
     bridge = runner.options_bridge
     assert bridge is not None
+    # Anchor the bridge's bar clock to the fixture's replay day BEFORE the
+    # entry. The bridge selects the expiry "as of the bar clock (falls back
+    # to today)" — without this anchor the first entry (no bar seen yet)
+    # picks the wall-clock month's expiry while every `_feed` bar stays at
+    # BASE_DAY (Sep 2026), so days-to-expiry drifts with the calendar and
+    # premium marks land knife-edge on the 50%/150% stop/target levels
+    # (date-brittle failure, fixed 2026-09-28). Anchored, the whole test
+    # runs in one deterministic replay world: BASE_DAY bars against the
+    # then-current 2026-09-24 expiry.
+    from datetime import time as _time
+
+    bar_dt = datetime.combine(BASE_DAY, _time(9, 15))
+    bridge._bar_dt = bar_dt
+    bridge._sync_market("NIFTY", spot, bar_dt.isoformat())
     result = bridge.on_market_view(_view(spot=spot), runner.config.strategy_name)
     assert result and not result.get("rejected"), result
     return bridge.option_broker.get_open_structures()[0]

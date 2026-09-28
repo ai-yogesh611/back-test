@@ -2,7 +2,7 @@
 
 **How to use:** tick `[x]` when done. "Who: You" = needs your action (credentials/money/account). "Who: Agent" = I can do it on request. Everything stays on this page — nothing held in your head.
 
-**Last updated:** 2026-09-24 · tests/forward/ 244 pass (was 31 fail) · gap-remediation 40 pass (was 12 fail)
+**Last updated:** 2026-09-28 · full suite 2922 passed / 0 failed / 3 skipped · multi-broker Phases A–D shipped (`docs/MULTI-BROKER-PRD.md`) · date-rot test repairs landed (pricing-clock pins + replay-anchored expiry) · doc sweep: item 7 marked done, item 12 half-done note
 
 > **Expiry-day pricing fix (2026-09-24):** `SyntheticChainGenerator.MIN_PRICING_YEARS`
 > (half a trading day) in `price_contract` — near/post-expiry synthetic options keep a
@@ -42,9 +42,9 @@ agent work. Blocked only by item 1 passing.
 
 ## 🟠 This week
 
-- [ ] **5. HFT-style strategy built + conformance-tested** — *0.5 day — Who: Agent*
+- [x] **5. HFT-style strategy built + conformance-tested** — ✅ DONE (owner confirmed 2026-09-28): the high-turnover intraday family shipped in `plugins/strategies/` — `momentum_burst` (draft #1 adapted 2026-09-18), `atm_instant_buy`, `immediate_entry`, `immediate_strangle`, `time_alternator`, `ema_reversion_pob` (reenter knobs) — all pass the conformance battery (`tests/test_strategy_conformance.py`) and register at boot.
 - [ ] **6. CI workflow push** (`.github/workflows/ci.yml` needs your account — I can't push workflows) — *15 min — Who: You*
-- [ ] **7. Portfolio-page option trade rows (UI polish)** — *2 hrs — Who: Agent*
+- [x] **7. Portfolio-page option trade rows (UI polish)** — ✅ DONE (verified in code 2026-09-28): `portfolio.js` renders per-structure rows via `OptionView.openStructures` (matrix + deep-dive); API side covered by `tests/engine/test_portfolio_options_rows.py`, JS by `tests/js/test_option_view.mjs` + `render_option_views.mjs`.
 - [ ] **8. Consultant answers on 6 open questions** — `CONSULTANT_RESPONSE.md` §0.4 — *Who: You*
 
 ## 🟢 Later (no date)
@@ -53,6 +53,8 @@ agent work. Blocked only by item 1 passing.
 - [ ] 10. Risk envelope V2 (BS+IV+SPAN) — after consultant answers
 - [ ] 11. Multi-leg structures (straddles/condors) — Phase B, don't bundle
 - [ ] 12. Sizing presets + richer metrics (Sortino, profit factor) — vectorized path
+      — *metrics half is DONE (2026-09-21: `engine/metrics.py` has Sortino, profit
+      factor, expectancy, VaR/ES); sizing presets on the vectorized path remain.*
 
 ---
 

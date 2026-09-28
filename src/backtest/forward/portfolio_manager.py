@@ -109,6 +109,11 @@ class PortfolioManager:
         self._bucket_halted_ts: Dict[str, Optional[str]] = {"paper": None, "live": None}
         self._bucket_day_start: Dict[str, float] = {"paper": 0.0, "live": 0.0}
         self._bucket_day: Dict[str, Optional[str]] = {"paper": None, "live": None}
+        # Phase D: per-segment breaker supervisors (limits from
+        # config/segments.yaml `risk` blocks); latches/anchors live in the
+        # `_bucket_*` dicts above under `segment:<name>` keys — the segment
+        # breakers ARE the bucket machinery, applied to a narrower slice.
+        self._segment_supervisors: Dict[str, RiskSupervisor] = {}
 
         # Feed
         self.feed = SyntheticFeed(
@@ -171,7 +176,11 @@ class PortfolioManager:
         # goes live never pays the arming check.
         self._injected_live_broker = live_broker
         self._confirm_live_orders = bool(confirm_live_orders)
-        self._live_gateway: Optional[Any] = None
+        # Multi-broker PRD Phase B/C: one gated gateway PER execution broker
+        # (keyed by broker name; the legacy default/injected path uses
+        # "default"). A runner's orders only ever flow through ITS broker's
+        # gateway — never another's.
+        self._live_gateways: Dict[str, Any] = {}
         #: Phase 3 order-aging alerts: coid → the bands already announced, so
         #: each working order is reported once per band instead of every tick.
         self._aging_alerted: Dict[str, set] = {}
@@ -270,6 +279,87 @@ class PortfolioManager:
         equity = self._bucket_equity(mode)
         peak = self._bucket_peak.get(mode, 0.0)
         return ((peak - equity) / peak) if peak > 0 else 0.0
+
+    # ------------------------------------------------------------------ #
+    # Segments (Phase D — per-segment breakers reuse the bucket machinery)
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _segment_key(segment: str) -> str:
+        """Bucket-dict key for a segment's breaker latch/anchor state."""
+        return f"segment:{segment}"
+
+    def _segment_runners(self, segment: str) -> List[StrategyRunner]:
+        """LIVE runners created into ``segment``.
+
+        Paper runners stay in the shared paper bucket (PRD recommendation:
+        segment == bucket key for live only) — a paper experiment inside a
+        segment never trips that segment's live breaker.
+        """
+        seg = str(segment).strip().lower()
+        return [
+            r
+            for r in self._runners.values()
+            if (getattr(r.config, "segment", None) or "") == seg
+            and self._runner_bucket(r) == "live"
+        ]
+
+    def _segment_risk_supervisor(self, segment: str, risk: Dict[str, Any]) -> RiskSupervisor:
+        """One cached supervisor per segment, limits from segments.yaml.
+
+        ``risk.max_drawdown_pct`` is configured in PERCENT (e.g. ``15``);
+        :class:`GlobalRiskConfig` wants a fraction.
+        """
+        cached = self._segment_supervisors.get(segment)
+        if cached is not None:
+            return cached
+        dd = risk.get("max_drawdown_pct")
+        dd_frac = (float(dd) / 100.0) if dd else GlobalRiskConfig.max_drawdown_pct
+        cfg = GlobalRiskConfig(
+            daily_loss_limit=abs(float(risk.get("daily_loss_limit") or 0.0)),
+            max_drawdown_pct=min(max(dd_frac, 0.001), 0.999),
+        )
+        supervisor = RiskSupervisor(cfg)
+        self._segment_supervisors[segment] = supervisor
+        return supervisor
+
+    def get_segment_aggregates(self) -> Dict[str, Dict[str, Any]]:
+        """Per-segment risk/exposure rollup (risk page per-broker cards).
+
+        Derived-not-duplicated: equity/P&L summed from the segment's LIVE
+        runners; halt latches read from the shared bucket-state dicts under
+        the ``segment:<name>`` key.
+        """
+        try:
+            from backtest.brokers.segments import get_segments_config
+
+            segments = get_segments_config().segments
+        except Exception:  # noqa: BLE001 — a broken config never breaks the API
+            segments = {}
+        out: Dict[str, Dict[str, Any]] = {}
+        with self._lock:
+            for name, seg in segments.items():
+                runners = self._segment_runners(name)
+                key = self._segment_key(name)
+                equity = sum(r.equity() for r in runners)
+                day_start = self._bucket_day_start.get(key, 0.0)
+                peak = self._bucket_peak.get(key, 0.0)
+                out[name] = {
+                    "display_name": seg.display_name,
+                    "broker": seg.broker,
+                    "mode": seg.mode,
+                    "allocated_capital": seg.allocated_capital,
+                    "risk": dict(seg.risk),
+                    "runner_count": len(runners),
+                    "equity": equity,
+                    "daily_pnl": (equity - day_start) if day_start > 0 else 0.0,
+                    "deployed": sum(r.deployed_capital() for r in runners),
+                    "drawdown_pct": ((peak - equity) / peak) if peak > 0 else 0.0,
+                    "halted": self._bucket_halted.get(key, False),
+                    "halt_reason": self._bucket_halt_reason.get(key),
+                    "halted_ts": self._bucket_halted_ts.get(key),
+                }
+        return out
 
     def _ensure_bucket_state(self, mode: str) -> None:
         """Initialize per-bucket state if not yet present (idempotent)."""
@@ -536,31 +626,97 @@ class PortfolioManager:
     # Runner lifecycle
     # ------------------------------------------------------------------ #
 
-    def _resolve_live_broker(self) -> Any:
-        """The broker session for live orders (F-12).
+    def _resolve_live_broker(self, broker_name: Optional[str] = None) -> Any:
+        """The broker session for live orders (F-12, multi-broker Phase B).
 
         The injected ``live_broker`` wins (tests pass a deterministic fake);
-        otherwise the session manager's active broker. Never constructs a
-        fresh unauthenticated client here — an unauthenticated session must
-        REFUSE live runners, not half-send.
+        an explicit ``broker_name`` resolves through the session manager to
+        THAT broker's authenticated session (fail-closed: ``None`` when the
+        session is absent/expired — NEVER another broker's session);
+        otherwise the legacy default: the session manager's active broker.
         """
         if self._injected_live_broker is not None:
             return self._injected_live_broker
+        if broker_name:
+            try:
+                from backtest.brokers.session_manager import get_session_manager
+
+                return get_session_manager().get_authenticated_broker(broker_name)
+            except Exception:  # noqa: BLE001 — resolution failure = refusal
+                logger.exception("broker resolution failed for %s", broker_name)
+                return None
         from backtest.forward.feed_registry import _default_quote_broker
 
         return _default_quote_broker()
 
-    def _live_gateway_for(self) -> Any:
-        """Build (once) the gated live-order gateway; raises when disarmed."""
-        if self._live_gateway is None:
+    @property
+    def _live_gateway(self) -> Optional[Any]:
+        """Legacy single-gateway view: the sole gateway, or ``None``.
+
+        Kept for V1 call sites/tests; multi-broker code paths use
+        ``_live_gateways`` / ``_gateway_tracking`` directly.
+        """
+        if len(self._live_gateways) == 1:
+            return next(iter(self._live_gateways.values()))
+        return None
+
+    def _live_gateway_for(self, broker_name: Optional[str] = None) -> Any:
+        """Build (once per broker) the gated live-order gateway.
+
+        Raises when disarmed or when the named broker has no authenticated
+        session — a live runner is REFUSED rather than half-armed.
+        """
+        key = (broker_name or "").strip().lower() or "default"
+        gateway = self._live_gateways.get(key)
+        if gateway is None:
             from backtest.forward.live_gateway import LiveEquityGateway
 
-            self._live_gateway = LiveEquityGateway(
+            broker = self._resolve_live_broker(broker_name)
+            if broker is None and broker_name:
+                from backtest.brokers.execution_router import BrokerSessionExpired
+
+                raise BrokerSessionExpired(broker_name)
+            gateway = LiveEquityGateway(
                 self.ledger,
-                self._resolve_live_broker(),
+                broker,
                 confirm_live=self._confirm_live_orders,
             )
-        return self._live_gateway
+            self._live_gateways[key] = gateway
+        return gateway
+
+    def _gateway_tracking(self, client_order_id: str) -> Optional[Any]:
+        """The gateway that owns a working order — the order's broker."""
+        for gateway in self._live_gateways.values():
+            try:
+                if gateway.working_state(client_order_id) is not None:
+                    return gateway
+            except Exception:  # noqa: BLE001 — one bad gateway must not hide the rest
+                continue
+        return None
+
+    def _runner_broker(self, runner: StrategyRunner) -> str:
+        """Display label for the broker a runner's orders route to."""
+        if runner.config.mode != "live":
+            return "paper"
+        return runner.config.execution_broker or "live"
+
+    def reconcile_broker(self, broker_name: Optional[str] = None) -> Dict[str, Any]:
+        """Reconcile working orders against one broker's venue book (10.5).
+
+        ``broker_name=None`` reconciles the legacy default gateway. Raises
+        ``KeyError`` when no gateway exists for that broker (nothing armed).
+        """
+        key = (broker_name or "").strip().lower() or "default"
+        gateway = self._live_gateways.get(key)
+        if gateway is None:
+            raise KeyError(f"no live gateway for broker {key!r} — nothing to reconcile")
+        result = gateway.reconcile()
+        self._audit_log(
+            f"RECONCILE · {key}",
+            scope="live",
+            detail=str(result),
+        )
+        return result
 
     def add_runner(
         self,
@@ -575,7 +731,10 @@ class PortfolioManager:
                 # F-12: live equity runners route orders to the REAL broker
                 # through the gated gateway. Fail-closed: arming raises
                 # here (refused runner) rather than paper-filling silently.
-                broker_for_runner = self._live_gateway_for()
+                # Multi-broker Phase B: the runner's segment/execution_broker
+                # picks WHICH broker's gateway; no broker field keeps the
+                # legacy default path.
+                broker_for_runner = self._live_gateway_for(config.execution_broker)
             runner = StrategyRunner(
                 config, ledger=self.ledger, broker=broker_for_runner, strategy=strategy
             )
@@ -758,6 +917,10 @@ class PortfolioManager:
                 "strategy_name": runner.config.strategy_name,
                 "mode": runner.config.mode,
                 "source": runner.config.source,
+                # Multi-broker Phase B: positions carry their broker/segment
+                # so manual close routes to the position's broker (LOM rule).
+                "broker": self._runner_broker(runner),
+                "segment": runner.config.segment,
                 "status": runner.status,
                 "stale": runner.status != STATUS_RUNNING,
                 "target_label": runner.target_label,
@@ -908,6 +1071,10 @@ class PortfolioManager:
                     "runner": r.config.name,
                     "strategy_name": r.config.strategy_name,
                     "mode": r.config.mode,
+                    # Multi-broker Phase B: the Orders tab gains a broker
+                    # column (audit: WHICH venue each order went to).
+                    "broker": self._runner_broker(r),
+                    "segment": r.config.segment,
                     "symbols": list(r.config.symbols),
                 }
                 for r in self._runners.values()
@@ -916,6 +1083,8 @@ class PortfolioManager:
             row["runner"] = labels.get(row["instance_id"], {}).get("runner")
             row["strategy_name"] = labels.get(row["instance_id"], {}).get("strategy_name")
             row["mode"] = labels.get(row["instance_id"], {}).get("mode")
+            row["broker"] = labels.get(row["instance_id"], {}).get("broker")
+            row["segment"] = labels.get(row["instance_id"], {}).get("segment")
         return {"orders": orders, "summary": summary}
 
     def _scoped_orders_summary(self, instances: List[str]) -> Dict[str, Any]:
@@ -1080,8 +1249,10 @@ class PortfolioManager:
         runner = self._runners.get(order.instance_id)
         at_venue = ""
         if order.broker_order_id is not None:
-            gateway = self._live_gateway
-            if gateway is None or gateway.working_state(client_order_id) is None:
+            # Multi-broker Phase C: cancel routes to the ORDER's broker —
+            # the gateway that is tracking this coid.
+            gateway = self._gateway_tracking(client_order_id)
+            if gateway is None:
                 # The venue order exists but this process is not tracking it
                 # (restored state, or the gateway was rebuilt). Cancelling
                 # locally would leave it live at the broker.
@@ -1133,14 +1304,16 @@ class PortfolioManager:
             raise ValueError("modify needs a new quantity and/or limit price")
         runner = self._runners.get(order.instance_id)
         bucket = self._runner_bucket(runner) if runner is not None else "paper"
-        gateway = self._live_gateway
         if order.broker_order_id is None:
             raise ValueError(
                 f"order {client_order_id} is a paper order — it fills or rejects "
                 "immediately, so there is nothing at a venue to amend; cancel it "
                 "and let the strategy re-arm"
             )
-        if gateway is None or gateway.working_state(client_order_id) is None:
+        # Multi-broker Phase C: amend routes to the ORDER's broker — the
+        # gateway that is tracking this coid.
+        gateway = self._gateway_tracking(client_order_id)
+        if gateway is None:
             raise ValueError(
                 f"order {client_order_id} is working at the venue "
                 f"({order.broker_order_id}) but is not tracked by this process — "
@@ -1327,22 +1500,27 @@ class PortfolioManager:
                 self.halt_reason = None
                 self.halt_mode = None
                 self.halted_ts = None
-                for m in ("paper", "live"):
+                # Master reset clears every latch — paper/live buckets AND
+                # each `segment:<name>` latch (Phase D).
+                for m in list(self._bucket_halted.keys()):
                     self._bucket_halted[m] = False
                     self._bucket_halt_reason[m] = None
                     self._bucket_halt_mode[m] = None
                     self._bucket_halted_ts[m] = None
-                logger.info("Circuit breaker reset (all buckets)")
+                logger.info("Circuit breaker reset (all buckets + segments)")
                 self._persist_state()
                 try:
                     self._audit_log("RESET_BREAKER all", scope="all", detail="master reset")
                 except Exception:
                     pass
             else:
-                # Scoped reset: only one bucket
+                # Scoped reset: one bucket or one `segment:<name>` latch.
                 mode = str(mode).strip().lower()
-                if mode not in VALID_INSTANCE_MODES:
-                    raise ValueError(f"mode must be one of {VALID_INSTANCE_MODES}, got {mode!r}")
+                if mode not in VALID_INSTANCE_MODES and not mode.startswith("segment:"):
+                    raise ValueError(
+                        f"mode must be one of {VALID_INSTANCE_MODES} or 'segment:<name>', "
+                        f"got {mode!r}"
+                    )
                 self._bucket_halted[mode] = False
                 self._bucket_halt_reason[mode] = None
                 self._bucket_halt_mode[mode] = None
@@ -1627,20 +1805,24 @@ class PortfolioManager:
                     except Exception:  # noqa: BLE001 — never break the tick
                         logger.exception("trade flush failed for %s", runner.instance_id)
 
-            # F-12: poll the live gateway every tick — a fill sitting at the
+            # F-12: poll EVERY live gateway every tick — a fill sitting at a
             # venue must reach the book in the same loop that drives risk.
-            # Reconciliation (the honesty check vs the broker's order book)
-            # runs on a slower cadence; neither may ever break the tick.
-            if self._live_gateway is not None and self._live_gateway.working_count():
+            # Multi-broker Phase C: fills poll per broker (each gateway owns
+            # one broker's order book). Reconciliation (the honesty check vs
+            # each broker's order book) runs on a slower cadence; neither may
+            # ever break the tick.
+            for gw_key, gateway in list(self._live_gateways.items()):
+                if not gateway.working_count():
+                    continue
                 try:
-                    self._live_gateway.poll_pending()
+                    gateway.poll_pending()
                 except Exception:  # noqa: BLE001
-                    logger.exception("[live] gateway poll failed")
+                    logger.exception("[live:%s] gateway poll failed", gw_key)
                 if self.tick_index % 300 == 0:
                     try:
-                        self._live_gateway.reconcile()
+                        gateway.reconcile()
                     except Exception:  # noqa: BLE001
-                        logger.exception("[live] gateway reconcile failed")
+                        logger.exception("[live:%s] gateway reconcile failed", gw_key)
 
     def _evaluate_risk(self) -> None:
         """Evaluate risk per-bucket (independent breakers) + manager-level.
@@ -1691,7 +1873,63 @@ class PortfolioManager:
                     for runner in bucket_runners:
                         runner.flatten_all(reason=f"circuit_breaker_flatten_{mode}")
 
+        # --- Per-segment risk evaluation (Phase D — narrower than buckets) ---
+        # Same machinery, one slice per live segment: a breach halts THAT
+        # segment's runners only (its broker's book), never the neighbours.
+        try:
+            from backtest.brokers.segments import get_segments_config
+
+            segment_defs = get_segments_config().segments
+        except Exception:  # noqa: BLE001 — a broken segments config never kills the tick
+            segment_defs = {}
+        for seg_name, seg_def in segment_defs.items():
+            if not seg_def.risk:
+                continue  # no per-segment limits configured
+            seg_runners = self._segment_runners(seg_name)
+            if not seg_runners:
+                continue
+            key = self._segment_key(seg_name)
+            self._ensure_bucket_state(key)
+
+            seg_equity = sum(r.equity() for r in seg_runners)
+            if seg_equity > self._bucket_peak.get(key, 0.0):
+                self._bucket_peak[key] = seg_equity
+            if self._bucket_day_start.get(key, 0.0) <= 0:
+                self._bucket_day_start[key] = seg_equity
+
+            seg_daily_pnl = seg_equity - self._bucket_day_start.get(key, 0.0)
+            seg_halted = self._bucket_halted.get(key, False)
+            report = self._segment_risk_supervisor(seg_name, seg_def.risk).evaluate(
+                runners=seg_runners,
+                total_equity=seg_equity,
+                peak_equity=self._bucket_peak[key],
+                daily_pnl=seg_daily_pnl,
+                already_halted=seg_halted,
+            )
+            if report.halted and not seg_halted:
+                self._bucket_halted[key] = True
+                self._bucket_halt_reason[key] = report.halt_reason
+                self._bucket_halt_mode[key] = report.halt_mode
+                self._bucket_halted_ts[key] = now_ts
+                logger.critical(
+                    "SEGMENT HALT [%s → %s]: %s (mode=%s)",
+                    seg_name,
+                    seg_def.broker,
+                    report.halt_reason,
+                    report.halt_mode,
+                )
+                # Only pause/flatten runners in THIS segment.
+                for runner in seg_runners:
+                    if runner.status == STATUS_RUNNING:
+                        runner.pause()
+                if report.halt_mode == HALT_FLATTEN:
+                    for runner in seg_runners:
+                        runner.flatten_all(reason=f"circuit_breaker_flatten_segment_{seg_name}")
+
         # --- Manager-level risk (combined view — for master kill) ---
+        # GLOBAL breakers evaluate the SUM across every bucket, segment and
+        # broker (PRD Phase D): a combined-loss breach halts EVERYTHING even
+        # when each individual segment is inside its own limits.
         all_runners = list(self._runners.values())
         equity = self._aggregate_equity()
         if equity > self.peak_equity:
@@ -1749,6 +1987,23 @@ class PortfolioManager:
                 self._bucket_peak[mode] = b_equity
             if self._bucket_day_start.get(mode, 0.0) <= 0 and self._bucket_runners(mode):
                 self._bucket_day_start[mode] = b_equity
+
+        # Per-segment anchors (Phase D) — same rule, one slice per live
+        # segment present in the book (derived from runner configs; no
+        # config read needed here).
+        seg_names = {
+            (getattr(r.config, "segment", None) or "")
+            for r in self._runners.values()
+            if getattr(r.config, "segment", None) and self._runner_bucket(r) == "live"
+        }
+        for seg_name in seg_names:
+            key = self._segment_key(seg_name)
+            self._ensure_bucket_state(key)
+            s_equity = sum(r.equity() for r in self._segment_runners(seg_name))
+            if s_equity > self._bucket_peak.get(key, 0.0):
+                self._bucket_peak[key] = s_equity
+            if self._bucket_day_start.get(key, 0.0) <= 0:
+                self._bucket_day_start[key] = s_equity
 
     def list_instances(self, mode: Optional[str] = None) -> List[Dict[str, Any]]:
         """Per-instance rows, optionally filtered to one bucket (ticket P4.1).
@@ -2100,11 +2355,13 @@ class PortfolioManager:
         self.feed.emit_one(**bar_kwargs)
 
     def shutdown(self) -> None:
-        if self._live_gateway is not None and self._live_gateway.working_count():
+        for gw_key, gateway in list(self._live_gateways.items()):
+            if not gateway.working_count():
+                continue
             try:
-                self._live_gateway.poll_pending()
+                gateway.poll_pending()
             except Exception:  # noqa: BLE001
-                logger.exception("[live] final poll before shutdown failed")
+                logger.exception("[live:%s] final poll before shutdown failed", gw_key)
         self._persist_state()  # V2: last write wins — leave a restorable state
         if self.intelligence is not None:
             try:

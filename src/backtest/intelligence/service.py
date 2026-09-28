@@ -342,11 +342,63 @@ class PortfolioIntelligence:
     def oi_activity(self, symbol: Optional[str] = None) -> Dict[str, Any]:
         return self.activity.activity(symbol)
 
+    def broker_segment_rollup(self, mode: Optional[str] = None) -> Dict[str, Any]:
+        """``{"by_broker": [...], "by_segment": [...]}`` (Phase D, additive).
+
+        Derived from the live runner roster: capital/equity/positions per
+        execution broker and per segment, plus each broker's share of total
+        equity (`concentration_pct`) — the cross-broker concentration view.
+        """
+        by_broker: Dict[str, Dict[str, Any]] = {}
+        by_segment: Dict[str, Dict[str, Any]] = {}
+        try:
+            rows = self.manager.list_instances(mode=mode)
+        except Exception:  # noqa: BLE001 — a manager hiccup never breaks intelligence
+            rows = []
+        total_equity = sum(float(r.get("equity") or 0.0) for r in rows) or 0.0
+        for r in rows:
+            broker = str(r.get("broker") or ("live" if r.get("mode") == "live" else "paper"))
+            segment = str(r.get("segment") or "")
+            for key, store in ((broker, by_broker), (segment, by_segment)):
+                if not key:
+                    continue
+                g = store.setdefault(
+                    key,
+                    {
+                        "name": key,
+                        "runner_count": 0,
+                        "equity": 0.0,
+                        "allocated_capital": 0.0,
+                        "daily_pnl": 0.0,
+                        "open_positions": 0,
+                    },
+                )
+                g["runner_count"] += 1
+                g["equity"] += float(r.get("equity") or 0.0)
+                g["allocated_capital"] += float(r.get("allocated_capital") or 0.0)
+                g["daily_pnl"] += float(r.get("daily_pnl") or 0.0)
+                g["open_positions"] += int(r.get("open_positions") or 0)
+        for g in by_broker.values():
+            g["concentration_pct"] = (
+                round(g["equity"] / total_equity, 4) if total_equity > 0 else 0.0
+            )
+        for store in (by_broker, by_segment):
+            for g in store.values():
+                for k in ("equity", "allocated_capital", "daily_pnl"):
+                    g[k] = round(g[k], 2)
+        return {
+            "by_broker": sorted(by_broker.values(), key=lambda x: x["name"]),
+            "by_segment": sorted(by_segment.values(), key=lambda x: x["name"]),
+        }
+
     def overview(self, mode: Optional[str] = None) -> Dict[str, Any]:
         snap = self.snapshot(mode)
+        rollup = self.broker_segment_rollup(mode)
         return {
             "greeks": snap["greeks"],
             "concentration": snap["concentration"],
+            "by_broker": rollup["by_broker"],
+            "by_segment": rollup["by_segment"],
             "correlation": self.correlation_matrix(mode),
             "regime": self.regime_snapshot(mode),
             "market_activity": self.oi_activity(),

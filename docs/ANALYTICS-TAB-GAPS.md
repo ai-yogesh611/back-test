@@ -116,20 +116,25 @@ PF = **99.99** when there are no losing trades; the frontend maps `≥ 99 → �
 
 ---
 
-## 7. Recommended fix order
+## 7. Recommended fix order — ✅ ALL 10 LANDED 2026-09-28
 
-| # | Fix | Severity | Effort |
+| # | Fix | Severity | Status |
 |---|---|---|---|
-| 1 | Escape `innerHTML` interpolations (XSS) | 🔴 | XS |
-| 2 | Canonical timezone stamping (IST/UTC) | 🔴 | S |
-| 3 | Trade/equity append-only log (DB) + analytics reads from it | 🔴→🟠 | M |
-| 4 | Unit tests for all metric math (golden numbers) | 🟡 | S |
-| 5 | Fix monthly "Sharpe" label/math; Sortino "n/a" state; annualize Calmar | 🟡 | S |
-| 6 | Health rating: payoff-ratio instead of WR + `n≥30` gate | 🟡 | XS |
-| 7 | Portfolio curve: carry-forward missing dates; baseline = actual start equity | 🟠 | S |
-| 8 | Risk-free rate → config; PF → `null` sentinel; streak convention | 🟡 | XS |
-| 9 | Frontend: error toasts, 1y option, time-axis sparklines, auto-refresh | ⚪ | S |
-| 10 | Instrument-class tagging in trade log; split distributions | 🟡 | M |
+| 1 | Escape `innerHTML` interpolations (XSS) | 🔴 | ✅ `esc()` on every user-influenced interpolation in `analytics.js` |
+| 2 | Canonical timezone stamping (IST/UTC) | 🔴 | ✅ `_parse_ts` treats naive stamps as IST market time (`IST` constant); aware stamps trusted |
+| 3 | Trade/equity append-only log (DB) + analytics reads from it | 🔴→🟠 | ✅ read path: per-runner merge of DB `trades` rows (LiveTradePersister's own manager + naming key) with the memory tail; memory wins on natural-key collisions; `history` provenance block on cards + detail; fail-soft to memory-only |
+| 4 | Unit tests for all metric math (golden numbers) | 🟡 | ✅ `tests/test_analytics_math.py` (28 tests: Sharpe 8.23 golden, DD 10% golden, streaks, sentinels, carry-forward, floor alert…) |
+| 5 | Fix monthly "Sharpe" label/math; Sortino "n/a" state; annualize Calmar | 🟡 | ✅ monthly Sharpe = annualized daily-grouped (≥2 days, else `null`/"—"); Sortino `null` → "n/a (no losses)"; Calmar numerator annualized over the trade span (`annualized_return_pct` exposed) |
+| 6 | Health rating: payoff-ratio instead of WR + `n≥30` gate | 🟡 | ✅ PF ≥ 1.5 criterion (None=∞ passes), WR dropped, `n<30` → ⚪ Insufficient sample |
+| 7 | Portfolio curve: carry-forward missing dates; baseline = actual start equity | 🟠 | ✅ per-runner carry-forward walk (allocation before first obs); baseline = first summed equity |
+| 8 | Risk-free rate → config; PF → `null` sentinel; streak convention | 🟡 | ✅ env `ANALYTICS_RISK_FREE_RATE` → `config/performance.yaml` → 6%; PF `null` (not 99.99); breakeven neutral in current AND max streaks |
+| 9 | Frontend: error toasts, 1y option, time-axis sparklines, auto-refresh | ⚪ | ✅ dismissible error banner, 1y in dropdown, `mini_curve_ts` labels, 30s visible-tab polling |
+| 10 | Instrument-class tagging in trade log; split distributions | 🟡 | ✅ `instrument_class` on every trade (runner `kind` tag, symbol heuristic for DB rows); `by_class` histograms + mixed-book insight; OPT badge + "N lot" qty in the trades table |
+
+Still open from this review (not in the fix-order list): §1.1's WRITE-side
+truncation (`MAX_TRADE_LOG`/decimation in `paper_runner.py` — the DB merge
+above compensates on the read side), restart-boundary chart labels (§2.2),
+pagination, and per-request service caching (§4).
 
 ---
 

@@ -28,9 +28,11 @@
             <a href="/data"       class="nav-link" data-key="data">Data</a>
         </div>
         <button id="broker-status" class="broker-status" type="button"
-                title="Broker connection status" aria-label="Broker connection status">
+                title="Broker connections" aria-label="Broker connections">
+            <span id="broker-strip" class="broker-strip"></span>
             <span id="broker-status-dot" class="broker-dot" data-state="unknown">⚪</span>
-            <span id="broker-status-name">Broker</span>
+            <span id="broker-status-name">Brokers</span>
+            <span class="broker-strip-caret">▾</span>
         </button>
     </nav>
 
@@ -81,6 +83,7 @@
     {% endif %}
 
     {% include "components/broker_auth_modal.html" %}
+    {% include "components/broker_board.html" %}
 
     <!-- Risk Flatten Confirmation Modal (Tier 1) -->
     <div id="risk-flatten-modal" class="modal-overlay" hidden>
@@ -111,6 +114,7 @@
     <script src="{{ url_for('static', filename='js/components/risk_strip.js') }}"></script>
     <script src="{{ url_for('static', filename='js/broker_status.js') }}"></script>
     <script src="{{ url_for('static', filename='js/broker_auth_modal.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/broker_board.js') }}"></script>
     <script src="{{ url_for('static', filename='js/playbooks.js') }}"></script>
     {% if config.get("PORTFOLIO_INTELLIGENCE_ENABLED", True) %}
     <script src="{{ url_for('static', filename='js/components/alert_widget.js') }}"></script>

@@ -415,9 +415,9 @@ V1 dashboard binds to a single process-wide `OptionPaperBroker`
 | Fee stack rates (validated vs contract note) | Paper fills at LTP ± slippage, no order book |
 | mStock option chain + quote fetch (`get_option_chain`) | No partial-fill simulation on paper legs |
 | Black-Scholes Greeks + IV solver | Margin is a SPAN *approximation* (floors) |
-| Atomic multi-leg semantics (both paper and live paths) | Statutory fees recorded but not yet cash-bearing on paper |
-| Rollback on failed live legs | One paper book per process, in-memory only |
-| DeltaSelector uses a distance heuristic, not true delta | Restart wipes broker/manager state |
+| Atomic multi-leg semantics (both paper and live paths) | ~~Statutory fees recorded but not yet cash-bearing on paper~~ **fees are cash-bearing since Gap G4.1** (`tests/test_options_gap_remediation.py::TestCashBearingFees`) |
+| Rollback on failed live legs | One paper book per process (but DB-persisted since Gap G4.2 — survives restart) |
+| DeltaSelector uses a distance heuristic, not true delta | ~~Restart wipes broker/manager state~~ **persistence landed:** dashboard book via G4.2 (`trade_structures`), runners via P2.4 (`PORTFOLIO_STATE_PATH`) |
 
 ## 10. Tests
 
