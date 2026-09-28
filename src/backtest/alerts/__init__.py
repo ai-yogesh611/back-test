@@ -19,6 +19,13 @@ See ``docs/ALERTS-GUIDE.md`` and ``docs/STRATEGY-ALERTS.md``.
 
 from backtest.alerts.broker import AlertBroker, get_alert_broker, reset_alert_broker
 from backtest.alerts.catalog import CATALOG, context_for
+from backtest.alerts.notifier import (
+    AlertNotifier,
+    get_notifier,
+    load_notifier_config,
+    start_alert_notifier,
+    stop_alert_notifier,
+)
 from backtest.alerts.types import (
     AUDIENCE,
     EVENT_ALERT_TYPES,
@@ -32,6 +39,7 @@ __all__ = [
     "AUDIENCE",
     "Alert",
     "AlertBroker",
+    "AlertNotifier",
     "AlertType",
     "CATALOG",
     "EVENT_ALERT_TYPES",
@@ -39,5 +47,9 @@ __all__ = [
     "Severity",
     "context_for",
     "get_alert_broker",
+    "get_notifier",
+    "load_notifier_config",
     "reset_alert_broker",
+    "start_alert_notifier",
+    "stop_alert_notifier",
 ]

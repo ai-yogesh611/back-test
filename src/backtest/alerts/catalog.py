@@ -145,6 +145,24 @@ CATALOG: Dict[str, Dict[str, Any]] = {
             "Consider pausing runners until the feed recovers.",
         ],
     },
+    AlertType.RISK_LIMIT_BREACH.value: {
+        "title": "Circuit breaker tripped",
+        "section": "pi-root",
+        "what_it_means": [
+            "A portfolio-level risk limit was breached and the breaker "
+            "latched: the affected bucket (or the whole book) stopped taking "
+            "new entries — drawdown trips also flatten positions.",
+            "The latch holds until an explicit reset even if the metric "
+            "recovers: the platform is stopping a bad day from becoming an "
+            "unrecoverable one.",
+        ],
+        "typical_responses": [
+            "Review what caused the drawdown/loss before considering a reset.",
+            "Reset the breaker (scoped or master) from the Portfolio page "
+            "once acknowledged.",
+            "Keep it halted — a halted bucket is a decision, not a failure.",
+        ],
+    },
 }
 
 

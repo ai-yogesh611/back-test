@@ -27,6 +27,7 @@ class AlertType(str, Enum):
     CORRELATION_SPIKE = "correlation_spike"
     LIQUIDITY_DRY_UP = "liquidity_dry_up"
     DATA_FEED_STALE = "data_feed_stale"
+    RISK_LIMIT_BREACH = "risk_limit_breach"
 
     def __str__(self) -> str:  # "portfolio_gamma_critical", not "AlertType.X"
         return self.value
@@ -69,6 +70,7 @@ AUDIENCE: Dict[str, tuple] = {
     AlertType.CORRELATION_SPIKE.value: ("trader",),
     AlertType.LIQUIDITY_DRY_UP.value: ("strategies",),
     AlertType.DATA_FEED_STALE.value: ("trader",),
+    AlertType.RISK_LIMIT_BREACH.value: ("trader",),
 }
 
 

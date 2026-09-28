@@ -1439,6 +1439,20 @@ class ForwardTestingEngine:
             # stays the shared path; only the provider differs.
             run_mode, _ = _classify(self)
             if run_mode == "live":
+                # Panel gate (certified v2 §0 #4/#6) — hard gate when the
+                # settings DB is configured; legacy env behavior otherwise.
+                try:
+                    from backtest.api.segments_store import assert_live_arming_allowed
+
+                    assert_live_arming_allowed()
+                except ValueError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 — fail closed
+                    raise ValidationError(
+                        "live engine refused: Cost & Risk Settings is configured "
+                        f"but unreachable ({exc}) — a panel that cannot answer "
+                        "never arms live"
+                    ) from exc
                 from backtest.simulator.fill_providers import BrokerFillProvider
 
                 fill_provider = BrokerFillProvider(broker=self._resolve_live_broker())

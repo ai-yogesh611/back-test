@@ -66,7 +66,6 @@ Market Data (OHLCV candles)
 | **Portfolio Intelligence** | Risk layer above individual strategies: portfolio Greeks in ₹ with scenario revaluation, concentration (underlying / group / strike clusters), strategy P&L correlation, volatility-regime fit, and a pub/sub alert system strategies can subscribe to — see [docs/PORTFOLIO-INTELLIGENCE.md](docs/PORTFOLIO-INTELLIGENCE.md), [docs/ALERTS-GUIDE.md](docs/ALERTS-GUIDE.md) |
 | **Risk** | 3-tiered risk management & monitoring — global circuit breakers (daily loss, drawdown, leverage), per-bucket breakers with independent halts, and a live `/risk` page + dashboard risk strip |
 | **Analytics** | `/analytics` — per-strategy performance suite (P&L attribution, trade stats, equity behaviour) plus an extended `/compare` |
-| **Dashboard** | Overview of all strategies and their status |
 
 ## Built-In Strategies
 
@@ -249,6 +248,9 @@ PYTHONPATH=src python -m backtest.web.app --host 0.0.0.0 --port 5000 --source sy
 
 # Run with real data from PostgreSQL
 PYTHONPATH=src python -m backtest.web.app --host 0.0.0.0 --port 5000 --source db
+
+# Production (Linux): gunicorn — one worker + threads, in-process trading state
+PYTHONPATH=src gunicorn -c gunicorn.conf.py backtest.web.wsgi:app
 
 # Useful switches (all also available as env vars — see .env.example)
 #   --log-level DEBUG      full trace of every request, with request ids

@@ -125,6 +125,21 @@ issue, not a market signal.
 `/api/broker/feed-quality` · consider pausing runners until it recovers.
 **Resolves** as soon as a fresh bar arrives.
 
+### 🔴 `risk_limit_breach` — Circuit breaker tripped
+**Fires when** a portfolio risk limit is breached and the breaker latches:
+one alert per halted scope — `risk_limit_breach:bucket:paper`,
+`…:bucket:live`, or `…:portfolio` for the master kill. A bucket-caused
+combined breach does not raise a duplicate master alert.
+**Means** the platform stopped new entries for that scope (and flattened
+positions on a drawdown trip) to stop a bad day turning into a terminal one.
+The latch stays until an explicit reset, even if the metric recovers.
+**Shows** limit type (daily loss vs drawdown), reason, halt mode (pause vs
+flatten), equity, daily P&L and drawdown at trip time.
+**Typical responses** review what caused the breach before resetting ·
+`reset_circuit_breaker()` (scoped or master) from the Portfolio page once
+acknowledged · keep it halted — a halted bucket is a decision, not a failure.
+**Resolves** when the breaker is reset for that scope.
+
 ---
 
 ## Lifecycle
@@ -162,6 +177,39 @@ condition true ──► CREATED ──► broadcast: widget · subscribed strat
 
 ---
 
+## Outbound notifications (Telegram / email)
+
+The widget is in-app; the notifier (`backtest.alerts.notifier`) is the way
+alerts leave the process — for when nobody is watching the dashboard
+(overnight breaker trips, stale feeds). It subscribes to every alert type
+and never blocks the trading loop: messages are queued and a background
+thread does the network I/O.
+
+**Channels.** `log` is always on (a misconfigured deployment still records
+alerts; it is also the routing floor). **Telegram** switches on when
+`TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` are set; **email** (SMTP,
+STARTTLS) when `ALERT_SMTP_HOST` + `ALERT_TO_EMAILS` are set. Routing,
+minimum severity, quiet hours (IST, `22:00–07:00`, critical exempt) and
+hourly rate limits come from `config/alerts.yaml` (profile via
+`ALERT_PROFILE`) — see `.env.example` for every variable. `ALERT_NOTIFIER=0`
+disables all outbound channels.
+
+**Behaviour worth knowing**
+
+* Critical alerts bypass quiet hours and rate limits — breaker trips are
+  exactly the messages that must not be throttled.
+* A message template is used only when every `{placeholder}` can be filled
+  from the alert's data; otherwise a plain `[SEVERITY] type — message`
+  fallback is sent.
+* Slack / Discord / SMS / desktop entries in the YAML are accepted but not
+  implemented; they are skipped (the log channel is the floor).
+* One failing channel never blocks the others.
+
+**Try it without real credentials:** set `ALERT_PROFILE=dev` for log-only
+routing, or run with `ALERT_NOTIFIER=0` to keep everything in-app.
+
+---
+
 ## FAQ
 
 **Why didn't the gamma alert fire at −1000 as in the PRD?** The default is
@@ -175,4 +223,6 @@ value (`POST /api/market/vix {"value": 17.2}`) or feed an `INDIAVIX` symbol.
 
 **Can I turn it all off?** Start the app with
 `--disable-portfolio-intelligence`: no evaluator, no widget, the API returns
-503.
+503. Note the outbound notifier still starts (breaker trips are safety
+messages, independent of the intelligence layer) — set `ALERT_NOTIFIER=0`
+to silence that too.

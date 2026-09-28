@@ -219,8 +219,10 @@ and ~8x on STT alone.
 GST (18%) applies to brokerage + exchange + SEBI charges — **not** to STT or
 stamp duty, which are themselves taxes and are not taxed again.
 
-Rates are FY 2024-25 and **do change**. Verify against a recent contract note
-before trusting a cost-sensitive result; override in `config/brokers.yaml`.
+Rates are point-in-time (re-verified 2026-09-28; equity FY 2024-25, F&O STT
+per Budget 2026 effective 2026-04-01) and **do change**. Verify against a
+recent contract note before trusting a cost-sensitive result; override in
+`config/brokers.yaml`.
 
 ### 2.10 Execution outcomes are not all failures
 

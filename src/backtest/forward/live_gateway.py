@@ -80,6 +80,19 @@ class LiveEquityGateway:
                 "live order gateway refused: set ALLOW_LIVE_ORDERS=1 to arm "
                 "live equity order placement"
             )
+        # Panel gate (certified v2 §0 #4/#6) — only bites when the settings DB
+        # is configured; otherwise the env gate above remains the sole control.
+        try:
+            from backtest.api.segments_store import assert_live_arming_allowed
+
+            assert_live_arming_allowed()
+        except ValueError:
+            raise
+        except Exception:  # noqa: BLE001 — a broken panel never arms live
+            raise ValueError(
+                "live order gateway refused: Cost & Risk Settings is configured "
+                "but unreachable — a panel that cannot answer never arms live"
+            )
         is_authed = getattr(broker, "is_authenticated", None)
         if not callable(is_authed) or not is_authed():
             raise ValueError(
