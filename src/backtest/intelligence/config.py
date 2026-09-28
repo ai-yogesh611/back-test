@@ -113,7 +113,7 @@ def load_config(
         try:
             import yaml
 
-            data = yaml.safe_load(cfg_path.read_text()) or {}
+            data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
             if isinstance(data, dict):
                 cfg.update(data)
         except Exception:  # noqa: BLE001 — a bad file must not take the app down

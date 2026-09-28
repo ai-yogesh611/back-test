@@ -149,7 +149,8 @@ via a `@register` decorator so the UI and CLI discover them automatically.
 
 Adding a strategy means subclassing the base in `strategy/base.py`, setting a
 `name`, implementing `generate_signals(df) -> Series`, and applying `@register`.
-See `docs/ADDING-NEW.md`.
+See `docs/STRATEGY-AUTHORING.md` (and `docs/archive/STRATEGIES.md` for the
+original catalog).
 
 A strategy can also express a *directional view* instead of a raw signal:
 `Strategy.generate_market_view()` returns a `MarketView` (bullish/bearish,
@@ -661,14 +662,14 @@ Straight from the code and trackers, not aspirational:
 |---|---|
 | How does the whole thing fit together? | `docs/ARCHITECTURE.md` |
 | How does the backtest engine work? | `docs/BACKTEST-ENGINE.md` |
-| How do I add a strategy or data source? | `docs/ADDING-NEW.md` |
-| What are the strategies doing? | `docs/STRATEGIES.md` |
+| How do I add a strategy or data source? | `docs/STRATEGY-AUTHORING.md` (strategies), `docs/DATA-SOURCES.md` (sources) |
+| What are the strategies doing? | `docs/STRATEGY-AUTHORING.md` §6 (catalog + engine guarantees) |
 | How does forward testing work? | `docs/FORWARD-TESTING.md` |
 | Multi-strategy portfolios? | `docs/PORTFOLIO-CENTER.md` |
 | Options paper & live trading? | `docs/OPTIONS-PAPER-LIVE.md` |
-| Live/Paper separation design | `instructions/REFACTOR-PORTFOLIO-LIVE-PAPER-SEPARATION.md` |
+| Live/Paper separation design | `docs/archive/REFACTOR-PORTFOLIO-LIVE-PAPER-SEPARATION.md` (shipped) |
 | Schema and migrations? | `docs/DATABASE.md`, `db/archive/DB-IMPLEMENTATION-GUIDE.md` |
 | Something is broken | `instructions/ENGINEERING-NOTES.md`, `docs/LOGGING.md` |
-| What is done, what is planned? | `instructions/ROADMAP.md`, `instructions/BACKLOG.md` |
+| What is done, what is planned? | `docs/OPEN-ITEMS-TRACKER.md` (planned work noted in `docs/MULTI-BROKER-PRD.md`) |
 | Invariants I must not break | `PROJECT-CONTEXT.md` |
 | mStock endpoints | `docs/archive/mstock-typea-api-reference.md` |

@@ -94,7 +94,8 @@ class SegmentsStore:
                     return
                 row.commission_model = {**row.commission_model, "enabled": bool(enabled)}
                 self._audit(
-                    session, KILL_SWITCH_ID, "live_kill_switch", str(old), str(bool(enabled)), changed_by
+                    session, KILL_SWITCH_ID, "live_kill_switch",
+                    str(old), str(bool(enabled)), changed_by,
                 )
 
     # -- segments CRUD ------------------------------------------------------

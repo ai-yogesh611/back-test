@@ -118,8 +118,8 @@ forward-test wiring, and an end-to-end integration suite.
 - **Execution Engine:** `src/backtest/forward/execution_engine.py` — C2 data-ownership rule (strategies NEVER call broker/quote APIs, all bars+chain snapshots flow engine→strategy, enforced via `_assert_data_ownership()`), C3 two-tier exits `EXIT_PRECEDENCE` (0 emergency Engine unconditional >1 stop >2 target >3 DTE >4 flip, re-entry next bar only default false, evidence -₹41,844 same-bar churn), C4 risk envelope `estimated:true` flag rendered in UI as "estimated" badge, C5 `create_app` exists `web/app.py:244` and `emergency_stop` endpoint `api/portfolio.py:310`
 - **Portfolio Integration:** `get_portfolio_summary()` totals = runners + manual book (dashboard_book merged, honest), `emergency_flatten_all(mode)` closes BOTH books, Manual Options Book tab makes legacy trades visible — fixes original UX wound
 - **UI:** Portfolio tabs `Equity | Positions | 📚 Playbooks | 📦 Manual Options Book | Log`, Playbooks tab card grid with name, underlying·structure·strike·qty, exit bits, risk cap + "estimated" badge + version badge, Deploy/Edit/Delete/New, Manual Book tab structures+legs Close/Flatten, banners unified (Strategy WHAT / Engine HOW) + dashboard-book count
-- **Conditions C1-C5 cleared (U0.1):** C1 mutable defaults fixed via `field(default_factory=...)` + regression tests, C2 doc+assert, C3 precedence list, C4 estimated flag, C5 verified — see `tests/test_playbooks_conditions.py` (6 tests PASS) and `docs/UNIFIED-TRADING-TASKS.md` U0.1
-- **Docs:** [docs/ARCHITECTURE-UNIFIED-TRADING.md](docs/ARCHITECTURE-UNIFIED-TRADING.md) (signed off with conditions, Q6 hard-delete criteria: zero new manual structures in 14d AND ≥10 playbook runners), [docs/UNIFIED-TRADING-TASKS.md](docs/UNIFIED-TRADING-TASKS.md) (P0-P5, 8 days, critical path U1.1→U2.1→U3.2→U4.2)
+- **Conditions C1-C5 cleared (U0.1):** C1 mutable defaults fixed via `field(default_factory=...)` + regression tests, C2 doc+assert, C3 precedence list, C4 estimated flag, C5 verified — see `tests/test_playbooks_conditions.py` (6 tests PASS)
+- **Docs:** [docs/ARCHITECTURE-UNIFIED-TRADING.md](docs/ARCHITECTURE-UNIFIED-TRADING.md) — signed off with conditions, Q6 hard-delete criteria: zero new manual structures in 14d AND ≥10 playbook runners. (Full implementation log: `docs/archive/UNIFIED-TRADING-TASKS.md` — P0–P6 all done.)
 
 ### Live Order Management (the two trading tabs)
 
@@ -129,7 +129,7 @@ The Portfolio Command Center is a trading console, not just a monitor — automa
 - **Orders tab** is the engine's own `OrderLedger`: PENDING (age + the only cancel button in the app), FILLED (requested vs fill → adverse slippage per unit), REJECTED. Phase-3 additions: **amend a working order at its venue** (venue asked first — a refusal leaves local state untouched), **order-aging alerts** (warn 60 s / alert 5 min, one audit entry per band), and **bounded opt-in auto-retry** of safe refusals (`retry_policy` — live placement errors are *never* auto-resent; a lost acknowledgment can mean the order already exists).
 - On a live runner a close/cancel returns `status: "placed"` — the UI says so instead of claiming the position is closed.
 
-Endpoints, semantics and the two tabs: [docs/PORTFOLIO-CENTER.md](docs/PORTFOLIO-CENTER.md) · plain-English explainer: [docs/ORDER-MANAGEMENT-EXPLAINED.md](docs/ORDER-MANAGEMENT-EXPLAINED.md)
+Endpoints, semantics, the plain-English "why" and the two tabs: [docs/PORTFOLIO-CENTER.md](docs/PORTFOLIO-CENTER.md)
 
 ### Risk Management & Monitoring (3 tiers)
 
@@ -159,8 +159,8 @@ bar-by-bar over historical candles with deterministic synthetic pricing:
 - **All results are model results**: outputs carry the disclaimer that
   they price synthetic Black-Scholes, not historical market premiums
 
-See [docs/OPTIONS-BACKTEST-PRD.md](docs/OPTIONS-BACKTEST-PRD.md) and the
-task tracker [docs/OPTIONS-BACKTEST-TASKS.md](docs/OPTIONS-BACKTEST-TASKS.md).
+See [docs/OPTIONS-BACKTEST-PRD.md](docs/OPTIONS-BACKTEST-PRD.md) for the design;
+the Phase-A build log lives at `docs/archive/OPTIONS-BACKTEST-TASKS.md`.
 
 ## Data Sources
 
@@ -268,16 +268,26 @@ Open `http://localhost:5000` → Backtest tab → Pick a strategy → Hit **Run 
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System architecture |
 | [docs/WEB-UI.md](docs/WEB-UI.md) | Every page and tab |
 | [docs/PORTFOLIO-CENTER.md](docs/PORTFOLIO-CENTER.md) | Command Center: runners, buckets, breakers, order management endpoints & semantics |
-| [docs/ORDER-MANAGEMENT-EXPLAINED.md](docs/ORDER-MANAGEMENT-EXPLAINED.md) | Plain-English LOM explainer: what it's for, how it helps trading |
 | [docs/OPTIONS-PAPER-LIVE.md](docs/OPTIONS-PAPER-LIVE.md) / [docs/OPTIONS-BACKTEST-PRD.md](docs/OPTIONS-BACKTEST-PRD.md) | Options paper/live and options backtest |
 | [docs/ARCHITECTURE-UNIFIED-TRADING.md](docs/ARCHITECTURE-UNIFIED-TRADING.md) | Playbooks (unified trading) |
 | [docs/FORWARD-TESTING.md](docs/FORWARD-TESTING.md) / [docs/OPTIONS-FORWARD-TESTING.md](docs/OPTIONS-FORWARD-TESTING.md) | Forward test engine |
-| [docs/DATA-SOURCES.md](docs/DATA-SOURCES.md) / [docs/DATABASE.md](docs/DATABASE.md) | Data sources, PostgreSQL/TimescaleDB |
-| [docs/STRATEGY-AUTHORING.md](docs/STRATEGY-AUTHORING.md) / [docs/ADDING-NEW.md](docs/ADDING-NEW.md) | Writing strategies/plugins |
+| [docs/DATA-SOURCES.md](docs/DATA-SOURCES.md) / [docs/DATABASE.md](docs/DATABASE.md) | Data sources (incl. how to add one), PostgreSQL/TimescaleDB (incl. how to add a table) |
+| [docs/STRATEGY-AUTHORING.md](docs/STRATEGY-AUTHORING.md) | Writing strategies/plugins — flow, hooks, hard rules, conformance battery, catalog, lifecycle |
 | [docs/STRATEGY-GUIDELINES.md](docs/STRATEGY-GUIDELINES.md) | Rules & review checklist for new strategies (+ `templates/strategy_test_template.py`) |
 | [docs/LOGGING.md](docs/LOGGING.md) | Logging levels, request ids, debugging table |
 | [docs/PORTFOLIO-INTELLIGENCE.md](docs/PORTFOLIO-INTELLIGENCE.md) / [docs/ALERTS-GUIDE.md](docs/ALERTS-GUIDE.md) / [docs/STRATEGY-ALERTS.md](docs/STRATEGY-ALERTS.md) | Portfolio Intelligence: Greeks, concentration, regime; alert system + strategy subscription hooks |
-| [docs/MULTI-BROKER-PRD.md](docs/MULTI-BROKER-PRD.md) | **DRAFT** — concurrent multi-broker sessions, segmented capital allocation, cross-broker risk |
+| [docs/MULTI-BROKER-PRD.md](docs/MULTI-BROKER-PRD.md) | Concurrent multi-broker sessions, segmented capital allocation, cross-broker risk |
+| [docs/OPEN-ITEMS-TRACKER.md](docs/OPEN-ITEMS-TRACKER.md) | Current status: what is done, what is open |
+| [docs/project-overview.md](docs/project-overview.md) | Plain-language platform tour, written from the code |
+| [docs/archive/](docs/archive/) | Shipped epics' task logs, past status snapshots, superseded design docs — provenance only |
+
+## Parameter Optimization
+
+`POST /api/optimize/*` (grid / random / Bayesian / genetic search + walk-forward
+validation) runs parameter sweeps through the same backtest driver, with an
+O(1)-memory SQLite result store, pruned candidate cache and a UI page. Migrations
+009–013 back the runs table. See the optimizer section in
+[docs/BACKTEST-ENGINE.md](docs/BACKTEST-ENGINE.md).
 
 ## Tests
 

@@ -1,4 +1,4 @@
-"""ExecutionEngine core — U2.1 per UNIFIED-TRADING-TASKS.md
+"""ExecutionEngine core — U2.1 per docs/archive/UNIFIED-TRADING-TASKS.md
 
 Responsibilities (architecture §1):
 - resolve quote source (synthetic→BS provider, mstock→LiveQuoteProvider when session valid,

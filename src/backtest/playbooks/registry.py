@@ -2,7 +2,7 @@
 
 Delete blocks pb_default_* IDs. Mirrors the existing pattern in options/playbook.py
 but is the canonical location per ARCHITECTURE-UNIFIED-TRADING.md §2 /
-UNIFIED-TRADING-TASKS.md U1.1.
+docs/archive/UNIFIED-TRADING-TASKS.md U1.1.
 
 U1.1 requires: thread-safe singleton _REGISTRY, 3 seeded defaults (bull call spread /
 bear put spread / long call),

@@ -5,7 +5,7 @@ margin failure → OrderRejected("margin").
 No live path on synthetic fallback — live orders require authenticated broker session,
 else OrderRejected("no_session"). Paper mode never queries margin.
 
-Tests per UNIFIED-TRADING-TASKS.md U2.3.
+Tests per docs/archive/UNIFIED-TRADING-TASKS.md U2.3.
 """
 
 from decimal import Decimal

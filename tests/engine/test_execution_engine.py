@@ -1,6 +1,6 @@
 """U2.1 — ExecutionEngine core
 
-Tests per UNIFIED-TRADING-TASKS.md U2.1:
+Tests per docs/archive/UNIFIED-TRADING-TASKS.md U2.1:
 - routing table (mode × source)
 - C2 ownership (a strategy stub that tries a broker API call gets nothing — engine feeds data)
 - lot-size resolution

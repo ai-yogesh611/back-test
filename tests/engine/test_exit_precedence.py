@@ -4,7 +4,7 @@ Per-bar order as code: engine tier (breakers → emergency flatten, first and un
 → playbook tier in priority order: stop_loss_pct → take_profit_pct → time/DTE square-off → signal_flip.
 Re-entry only on next bar, default off (C3).
 
-Tests per UNIFIED-TRADING-TASKS.md U2.2:
+Tests per docs/archive/UNIFIED-TRADING-TASKS.md U2.2:
 - stop beats target
 - stop beats flip
 - DTE beats flip

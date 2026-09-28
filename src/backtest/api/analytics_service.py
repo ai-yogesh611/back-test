@@ -4,7 +4,7 @@ Provides quantitative performance analytics, risk ratios, equity & drawdown curv
 trade distribution, monthly breakdowns, and edge degradation detection for
 individual running strategies as well as portfolio-level aggregation.
 
-Conventions (ANALYTICS-TAB-GAPS fixes, 2026-09-28):
+Conventions (docs/archive/ANALYTICS-TAB-GAPS.md fixes, 2026-09-28):
 
 * **Clock** — naive timestamps are IST market time (bar/exit stamps come off
   the exchange clock); aware timestamps are trusted as-is. All period

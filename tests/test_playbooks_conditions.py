@@ -3,7 +3,7 @@
 C1 mutable defaults → field(default_factory=...) on Playbook.tags/exit_config.
 C4 risk_envelope() returns estimated: true.
 
-These are the two conditions that have automated regression tests per UNIFIED-TRADING-TASKS.md.
+These are the two conditions that have automated regression tests per docs/archive/UNIFIED-TRADING-TASKS.md.
 C2, C3, C5 are doc/assert verified — see execution_engine.py and web/app.py.
 """
 

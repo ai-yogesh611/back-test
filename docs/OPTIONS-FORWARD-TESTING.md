@@ -8,7 +8,7 @@
 >
 > Companion docs: [OPTIONS-PAPER-LIVE.md](OPTIONS-PAPER-LIVE.md) (options
 > pipeline) · [FORWARD-TESTING.md](FORWARD-TESTING.md) (forward engine) ·
-> [Gap-Analysis-Remediation-PRD.md](Gap-Analysis-Remediation-PRD.md) (§P2 is
+> [archive/Gap-Analysis-Remediation-PRD.md](archive/Gap-Analysis-Remediation-PRD.md) (§P2 is
 > the same finding as A2 below).
 
 ## Why this tracker exists

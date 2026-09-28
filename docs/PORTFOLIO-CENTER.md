@@ -136,10 +136,12 @@ decide for themselves ([STRATEGY-ALERTS.md](STRATEGY-ALERTS.md)).
   but **not re-armed** on boot (a halt guards one session's P&L — a restored latch trapped
   the dashboard in a permanent "🔴 HALTED"), and **ledger orders are not persisted**, so the
   Orders tab starts empty after a restart and fills the moment new orders route through.
-- **Paper vs live:** `mode=paper` = simulated fills everywhere; `mode=live` buckets
-  are wired for tags/UI but **live broker fills are still open** (findings F-12 —
-  `BrokerFillProvider` + `MStockLiveFeed` exist but the forward-engine wiring and
-  `poll_fill` in the broker ABC remain).
+- **Paper vs live:** `mode=paper` = simulated fills everywhere; `mode=live`
+  equity fills route through `LiveEquityGateway` (cumulative-delta `poll_fill`,
+  reconcile every 300 ticks — `tests/test_live_equity_gateway.py`), and
+  options/multi-broker fills through `ExecutionRouter.poll_fill(order_id,
+  broker)` incl. the Dhan order contract (Phase C, 2026-09-28). F-12 is
+  **CLOSED**.
 
 ## Tests & benchmark
 
@@ -154,6 +156,15 @@ PYTHONPATH=src python benchmarks/benchmark_portfolio.py
 ---
 
 ## Live Order Management (the two trading tabs)
+
+Live Order Management (LOM) is the operator's **manual steering wheel** on top
+of the automated strategy runners. Until LOM the Command Center could only
+*display* what strategies were doing — you watched positions and P&L but could
+not touch anything between strategy decisions. LOM adds the **Actions column on
+the Open Positions tab** (modify stop-loss, modify target, close 50%, close all)
+and the dedicated **Orders tab** (the engine's own order ledger with cancel,
+amend, aging alerts, slippage, and bounded auto-retry). It is the difference
+between a dashboard you can only look at and a trading console you can drive.
 
 The Command Center answers "what am I holding" and "did my order fill" with two
 separate tabs — the positions tab was **enhanced**, the Orders tab is new, and
@@ -216,6 +227,25 @@ risk limit N times:
   on a long venue outage or hammering it.
 * Successful retries clear the block; `get_state()["order_retries"]` reports
   `pending` / `blocked` / `raised` / `recovered` / `exhausted`.
+
+### How LOM helps trading
+
+| Without LOM | With LOM |
+|---|---|
+| Strategy hangs or a news event invalidates the thesis → you watch the position bleed until the strategy itself exits | Hit ✕ All and flatten at market, or arm a manual 🛑 SL the engine enforces on the very next tick |
+| Stop too wide / target too close → wait for the strategy config, restart the runner | 🛑 / 🎯 buttons re-arm levels in place, validated against the live mark |
+| One leg of an option structure goes bad → no way to act | Structures close atomically; net row + legs shown together |
+| Order stuck PENDING at the broker → invisible | Orders tab shows age with warn(60 s)/alert(5 min) bands; cancel or amend at the venue |
+| Rejected order (margin blip, circuit filter) → strategy may silently stop trading | Bounded auto-retry (opt-in) recovers safe refusals with a full audit lineage |
+| "Did I get a fair fill?" → guesswork | FILLED rows show requested vs fill → per-unit adverse slippage, measurable |
+
+Key files: `api/portfolio.py` (the four action/order endpoints),
+`forward/portfolio_manager.py` + `forward/paper_runner.py` (manual-level
+enforcement, `OrderLedger`, amend/aging/retry machinery),
+`forward/options_bridge.py` + `forward/live_gateway.py` (venue-first routing for
+live actions), `web/static/js/components/position_actions.js` + `orders_tab.js`
+(the two tabs; Orders rows poll at 3 s only while the tab is visible),
+`state_store.py` (manual levels round-trip across restarts).
 
 ---
 

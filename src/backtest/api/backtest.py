@@ -32,6 +32,7 @@ line in the server log (the id is quoted back in the JSON body as
 from __future__ import annotations
 
 import logging
+import os
 import traceback
 from concurrent.futures import ProcessPoolExecutor
 from typing import Any
@@ -422,6 +423,9 @@ def run_single_backtest(params: dict) -> dict:
                 "from_date": from_date,
                 "to_date": to_date,
                 "engine": engine,
+                # Worker-process pid: proves the slot ran in its own process
+                # (P2.3) and is handy for cross-referencing worker logs.
+                "worker_pid": os.getpid(),
             }
         )
         # NOTE: the [result]/[slot ...] INFO lines are emitted by the ENDPOINT
