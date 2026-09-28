@@ -18,7 +18,6 @@
             <span id="halt-pill-text">LIVE</span>
         </div>
         <div class="nav-links">
-            <a href="/dashboard"  class="nav-link" data-key="dashboard">Dashboard</a>
             <a href="/backtest"   class="nav-link" data-key="backtest">Backtest</a>
             <a href="/compare"    class="nav-link" data-key="compare">📊 Compare Backtests</a>
             <a href="/forward"    class="nav-link" data-key="forward">Forward Test</a>
@@ -26,12 +25,15 @@
             <a href="/analytics"  class="nav-link" data-key="analytics">📈 Analytics</a>
             <a href="/optimize"   class="nav-link" data-key="optimize">🎯 Optimize</a>
             <a href="/risk"       class="nav-link" data-key="risk">🛡️ Risk</a>
+            <a href="/settings"   class="nav-link" data-key="settings">⚙️ Settings</a>
             <a href="/data"       class="nav-link" data-key="data">Data</a>
         </div>
         <button id="broker-status" class="broker-status" type="button"
-                title="Broker connection status" aria-label="Broker connection status">
+                title="Broker connections" aria-label="Broker connections">
+            <span id="broker-strip" class="broker-strip"></span>
             <span id="broker-status-dot" class="broker-dot" data-state="unknown">⚪</span>
-            <span id="broker-status-name">Broker</span>
+            <span id="broker-status-name">Brokers</span>
+            <span class="broker-strip-caret">▾</span>
         </button>
     </nav>
 
@@ -75,7 +77,14 @@
 
     <div id="toast-stack" class="toast-stack"></div>
 
+    {% if config.get("PORTFOLIO_INTELLIGENCE_ENABLED", True) %}
+    <!-- Portfolio Intelligence alert widget (every page). Information only —
+         it shows what the platform detected; it never trades. -->
+    <div id="alert-widget" class="alert-widget" data-state="minimized" aria-live="polite"></div>
+    {% endif %}
+
     {% include "components/broker_auth_modal.html" %}
+    {% include "components/broker_board.html" %}
 
     <!-- Risk Flatten Confirmation Modal (Tier 1) -->
     <div id="risk-flatten-modal" class="modal-overlay" hidden>
@@ -95,13 +104,22 @@
     <script src="{{ url_for('static', filename='js/components/currency.js') }}"></script>
     <script src="{{ url_for('static', filename='js/components/option_config.js') }}"></script>
     <script src="{{ url_for('static', filename='js/components/option_view.js') }}"></script>
+    <!-- Live Order Management: the positions table's action modals and the
+         Orders tab. Loaded globally (like the other components) because every
+         page that includes _portfolio_center.html renders both. -->
+    <script src="{{ url_for('static', filename='js/components/position_actions.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/components/orders_tab.js') }}"></script>
     <script src="{{ url_for('static', filename='js/session_state.js') }}"></script>
     <script src="{{ url_for('static', filename='js/components/toast.js') }}"></script>
     <script src="{{ url_for('static', filename='js/components/loader.js') }}"></script>
     <script src="{{ url_for('static', filename='js/components/risk_strip.js') }}"></script>
     <script src="{{ url_for('static', filename='js/broker_status.js') }}"></script>
     <script src="{{ url_for('static', filename='js/broker_auth_modal.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/broker_board.js') }}"></script>
     <script src="{{ url_for('static', filename='js/playbooks.js') }}"></script>
+    {% if config.get("PORTFOLIO_INTELLIGENCE_ENABLED", True) %}
+    <script src="{{ url_for('static', filename='js/components/alert_widget.js') }}"></script>
+    {% endif %}
     {% block scripts %}{% endblock %}
 </body>
 </html>

@@ -41,11 +41,51 @@
       const data = await fetchJSON(url);
       currentRisk = data.risk;
       renderDashboard(data.risk);
+      renderBrokerCards(data.risk);
       renderExposure(data.risk);
     } catch (e) {
       const grid = $("risk-dashboard-grid");
       if (grid) grid.innerHTML = `<div class="card-error">Failed: ${e.message}</div>`;
     }
+  }
+
+  // Multi-broker Phase D: per-broker + per-segment risk cards. Hidden when
+  // there is at most one broker and no segments (single-broker page is
+  // pixel-identical to the pre-multi-broker one).
+  function renderBrokerCards(risk) {
+    const box = $("risk-broker-cards");
+    if (!box) return;
+    const byBroker = risk.by_broker || [];
+    const segments = risk.segments || {};
+    const segNames = Object.keys(segments);
+    if (byBroker.length <= 1 && !segNames.length) { box.hidden = true; return; }
+    box.hidden = false;
+    const brokerCards = byBroker.map((b) => `
+      <div class="risk-broker-card">
+        <div class="risk-broker-card-head"><strong>${b.broker}</strong>
+          <span class="muted">${b.runner_count} runner${b.runner_count === 1 ? "" : "s"}</span></div>
+        <div>Equity <strong>${fmtMoney(b.equity || 0)}</strong></div>
+        <div>Day P&amp;L <strong class="${(b.daily_pnl || 0) >= 0 ? "pos" : "neg"}">${fmtMoney(b.daily_pnl || 0)}</strong></div>
+        <div class="muted">${b.open_positions || 0} open position${(b.open_positions || 0) === 1 ? "" : "s"}</div>
+      </div>`).join("");
+    const segCards = segNames.map((name) => {
+      const s = segments[name] || {};
+      const halted = !!s.halted;
+      return `
+      <div class="risk-broker-card${halted ? " risk-broker-card-halted" : ""}">
+        <div class="risk-broker-card-head"><strong>${s.display_name || name}</strong>
+          <span class="muted">${s.broker} · ${s.mode}</span></div>
+        <div>Equity <strong>${fmtMoney(s.equity || 0)}</strong> / alloc ${fmtMoney(s.allocated_capital || 0)}</div>
+        <div>Day P&amp;L <strong class="${(s.daily_pnl || 0) >= 0 ? "pos" : "neg"}">${fmtMoney(s.daily_pnl || 0)}</strong>
+          ${s.risk && s.risk.daily_loss_limit ? `<span class="muted">/ limit ${fmtMoney(s.risk.daily_loss_limit)}</span>` : ""}</div>
+        <div>${halted
+          ? `<span class="risk-halt-flag">⛔ HALTED</span> <span class="muted">${s.halt_reason || ""}</span>`
+          : `<span class="muted">${s.runner_count || 0} live runner${(s.runner_count || 0) === 1 ? "" : "s"} · breaker armed</span>`}</div>
+      </div>`;
+    }).join("");
+    box.innerHTML =
+      (byBroker.length > 1 ? `<h4 class="risk-broker-title">By broker</h4><div class="risk-broker-grid">${brokerCards}</div>` : "") +
+      (segNames.length ? `<h4 class="risk-broker-title">Segments — independent breakers</h4><div class="risk-broker-grid">${segCards}</div>` : "");
   }
 
   function renderDashboard(risk) {

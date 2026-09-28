@@ -51,7 +51,7 @@ RESULT_METRIC_COLUMNS: dict[str, str] = {
 #: Columns the results table may be sorted by (API whitelist).
 SORTABLE = ("objective_score", "rank", *RESULT_METRIC_COLUMNS)
 
-#: Default presets seeded by migration 009 (mirrored for create_all installs).
+#: Default presets seeded by migration 013 (mirrored for create_all installs).
 DEFAULT_PRESETS = (
     ("00000000-0000-4000-8000-000000000001", "Conservative",
      "Low risk preset with tight stop-loss and moderate targets",
@@ -153,7 +153,7 @@ class OptimizationStore:
     def ensure_schema(self, seed: bool = True) -> None:
         """Create missing optimization tables (idempotent) + default presets.
 
-        Production PostgreSQL is migrated by Alembic (005–009); this keeps
+        Production PostgreSQL is migrated by Alembic (009–013); this keeps
         SQLite dev databases and ``:memory:`` test databases usable without a
         migration step. ``checkfirst`` makes it a no-op on a migrated DB.
         """

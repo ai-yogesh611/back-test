@@ -294,7 +294,8 @@ quote-implied vol.
 ## 6. Fees (the honest part)
 
 Option costs are **not** just ₹20 brokerage. The full NFO stack for one
-NIFTY lot (75 units at a ₹120.50 premium), mStock flat plan, FY 2024-25:
+NIFTY lot (75 units at a ₹120.50 premium), mStock flat plan, re-verified
+2026-09-28 (F&O STT per Budget 2026, effective 2026-04-01):
 
 | Component | Rate | Amount |
 |---|---|---|
@@ -303,7 +304,7 @@ NIFTY lot (75 units at a ₹120.50 premium), mStock flat plan, FY 2024-25:
 | SEBI turnover | ₹10/crore | 0.01 |
 | IPFT | ₹10/crore | 0.01 |
 | Stamp duty | 0.003%, **buy side only** | 0.27 |
-| STT | 0.1% of premium, **sell side only** | — (buy) / 9.04 (sell) |
+| STT | 0.15% of premium, **sell side only** | — (buy) / 13.56 (sell) |
 | GST | 18% on brokerage + exchange + SEBI + IPFT (never on STT/stamp) | 4.17 |
 | **Total (buy leg)** | | **27.63** |
 
@@ -415,9 +416,9 @@ V1 dashboard binds to a single process-wide `OptionPaperBroker`
 | Fee stack rates (validated vs contract note) | Paper fills at LTP ± slippage, no order book |
 | mStock option chain + quote fetch (`get_option_chain`) | No partial-fill simulation on paper legs |
 | Black-Scholes Greeks + IV solver | Margin is a SPAN *approximation* (floors) |
-| Atomic multi-leg semantics (both paper and live paths) | Statutory fees recorded but not yet cash-bearing on paper |
-| Rollback on failed live legs | One paper book per process, in-memory only |
-| DeltaSelector uses a distance heuristic, not true delta | Restart wipes broker/manager state |
+| Atomic multi-leg semantics (both paper and live paths) | ~~Statutory fees recorded but not yet cash-bearing on paper~~ **fees are cash-bearing since Gap G4.1** (`tests/test_options_gap_remediation.py::TestCashBearingFees`) |
+| Rollback on failed live legs | One paper book per process (but DB-persisted since Gap G4.2 — survives restart) |
+| DeltaSelector uses a distance heuristic, not true delta | ~~Restart wipes broker/manager state~~ **persistence landed:** dashboard book via G4.2 (`trade_structures`), runners via P2.4 (`PORTFOLIO_STATE_PATH`) |
 
 ## 10. Tests
 

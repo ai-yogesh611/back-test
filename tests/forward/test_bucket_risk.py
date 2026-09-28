@@ -18,7 +18,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
-from forward.test_live_engine import FakeLiveBroker, ThresholdStrategy, _bar, _run_live_until
+from forward.helpers import FakeLiveBroker, ThresholdStrategy, _run_live_until
 
 from backtest.simulator.errors import ValidationError
 

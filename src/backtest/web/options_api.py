@@ -36,7 +36,7 @@ from typing import Any
 
 from flask import Flask, jsonify, request
 
-from backtest.options.paper_trading import OptionPaperBroker
+from backtest.options.paper_trading import InsufficientMarginError, OptionPaperBroker
 from backtest.options.persistence import StructurePersistence
 from backtest.options.portfolio_greeks import PortfolioGreeksCalculator
 from backtest.options.expiry import ExpiryManager
@@ -529,6 +529,10 @@ def register_options_routes(app: Flask) -> None:
             result = _execute_trade(payload)
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
+        except InsufficientMarginError as exc:
+            # Gap-PRD P3: the broker's hard cash guard is a clean client
+            # rejection (same family as PreTradeRiskCheck), not a server error.
+            return jsonify({"error": str(exc), "rejected": True}), 400
         except Exception as exc:  # noqa: BLE001 — report, don't 500 the UI
             logger.exception("[options] trade execution failed")
             return jsonify({"error": f"execution failed: {exc}"}), 500

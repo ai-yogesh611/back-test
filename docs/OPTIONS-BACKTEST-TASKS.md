@@ -19,7 +19,9 @@ decision, PRD §7.1) or `A5` (metrics — its design constraint is already
 recorded). `A6` is **partially done**: the three runtime non-determinism
 sources (both `uuid4` ID sites, `alert_id`) landed with A4 because the
 loop's determinism test exposed them; the `date.today()` fallbacks in
-`quote_providers.py` remain.
+`quote_providers.py` were hardened 2026-09-28 (pinnable clock, single
+audit point — see A6). A6's remaining bullets: the `OptionPosition`
+`last_updated` default and the multi-expiry determinism test.
 
 ---
 
@@ -304,11 +306,19 @@ Four named sources (PRD §9). **Three landed with A4** (2026-09-15): both
 `uuid4()` ID sites → monotonic counters, `alert_id` → sha256 content
 digest. Remaining:
 
-- [ ] `date.today()` fallbacks in `quote_providers.py`
+- [x] `date.today()` fallbacks in `quote_providers.py`
   (`next_monthly_expiry` ref, `available_expiries`, `price_contract`) —
-  the driver already bypasses all three by passing explicit
-  `expiry`/`reference` values, so this is now *audit-and-default*
-  hardening rather than a correctness gap.
+  ✅ DONE (2026-09-28). `SyntheticChainGenerator` gained a pinnable clock:
+  `set_reference(dt)` / `reference=` ctor kwarg; all three former inline
+  fallbacks now route through ONE audit point (`_reference_date` /
+  `_reference_datetime`) with precedence *explicit arg > pin > wall clock*.
+  Unpinned behaviour is byte-identical to V1. Do NOT pin the shared
+  forward-bus generator (one per underlying across runners) — pin only in
+  single-book contexts (tests, the backtest driver); the bus keeps passing
+  explicit per-bar references. 11 tests:
+  `tests/test_quote_provider_clock.py`; full suite 2933/0.
+  *(Motivation: the 2026-09-24 expiry-day and 2026-09-27/28 post-roll
+  incidents — 15 date-brittle failures — were exactly these fallbacks.)*
 - [ ] The unconditional `last_updated = datetime.utcnow()` default on
   `OptionPosition` (clock injection cannot reach it). Note the broker now
   always passes `opened_at`/`closed_at` explicitly in the historical path;

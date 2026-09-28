@@ -329,8 +329,39 @@ def app(monkeypatch):
     reset_option_state()
 
 
+def _pin_pricing_clock(days_before_expiry: int = 7) -> None:
+    """Pin the synthetic pricing clock N days before the chain's expiry.
+
+    Date-rot guard (2026-09-28): the wall-clock DTE swings from ~30 days
+    (just after a monthly expiry) to ~0 (on expiry day), which swings ATM
+    premiums by ~6× and flips the 2%-of-capital pre-trade loss cap. One test
+    (``test_open_long_call_201``) was already pinned this way on 2026-09-24
+    — this extends the same fix to every trade-driver test via the ``client``
+    fixture, so the suite prices in the SAME premium regime on any run date.
+    """
+    from backtest.web.options_api import get_quote_provider
+
+    try:
+        provider = get_quote_provider()
+    except Exception:  # noqa: BLE001 — pinning must never break a test setup
+        return
+    generator = getattr(provider, "generator", None) or getattr(
+        getattr(provider, "inner", None), "generator", None
+    )
+    if generator is None:
+        return
+    expiry = generator.next_monthly_expiry()
+    # set_reference lives on the inner synthetic provider, not the TTL cache.
+    inner = getattr(provider, "inner", provider)
+    if hasattr(inner, "set_reference"):
+        inner.set_reference(
+            datetime.combine(expiry - timedelta(days=days_before_expiry), datetime.min.time())
+        )
+
+
 @pytest.fixture()
 def client(app):
+    _pin_pricing_clock()
     return app.test_client()
 
 
@@ -438,6 +469,23 @@ class TestTradeDriverApi:
         )
         assert resp.status_code == 400
         assert resp.get_json().get("rejected") is True
+
+    def test_insufficient_cash_is_a_clean_400(self, client):
+        """Gap-PRD P3: the broker's own hard cash guard used to surface as
+        '500 execution failed'. It is a client-side rejection — same family
+        as the PreTradeRiskCheck — so it must map to 400 + rejected."""
+        broker = get_option_broker()
+        # Drain the cash but leave ``capital`` at ₹10L: PreTradeRiskCheck
+        # (which reads capital) passes, so execution reaches the hard guard.
+        broker.available_cash = D("10")
+        resp = client.post(
+            "/api/options/trade",
+            json={"underlying": "NIFTY", "structure_type": "long_call", "quantity": 1},
+        )
+        assert resp.status_code == 400
+        out = resp.get_json()
+        assert out.get("rejected") is True
+        assert "available" in out["error"]
 
     def test_invalid_structure_400(self, client):
         resp = client.post("/api/options/trade", json={"structure_type": "iron_condor"})

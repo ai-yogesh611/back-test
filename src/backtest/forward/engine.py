@@ -1439,6 +1439,20 @@ class ForwardTestingEngine:
             # stays the shared path; only the provider differs.
             run_mode, _ = _classify(self)
             if run_mode == "live":
+                # Panel gate (certified v2 §0 #4/#6) — hard gate when the
+                # settings DB is configured; legacy env behavior otherwise.
+                try:
+                    from backtest.api.segments_store import assert_live_arming_allowed
+
+                    assert_live_arming_allowed()
+                except ValueError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 — fail closed
+                    raise ValidationError(
+                        "live engine refused: Cost & Risk Settings is configured "
+                        f"but unreachable ({exc}) — a panel that cannot answer "
+                        "never arms live"
+                    ) from exc
                 from backtest.simulator.fill_providers import BrokerFillProvider
 
                 fill_provider = BrokerFillProvider(broker=self._resolve_live_broker())
@@ -1796,10 +1810,15 @@ class ForwardTestingEngine:
                     # loss limit and the consecutive-loss breaker live.
                     now_utc = datetime.now(timezone.utc)
                     for res in results or []:
-                        if res.did_trade and res.fill is not None and self.risk_manager is not None:
+                        if (
+                            res.did_trade
+                            and res.fill is not None
+                            and self.risk_manager is not None
+                        ):
                             try:
                                 self.risk_manager._record_fill_pnl(res.fill, when=now_utc)
-                            except Exception:  # noqa: BLE001 — risk telemetry never breaks the fill path
+                            except Exception:  # noqa: BLE001
+                                # Risk telemetry never breaks the fill path.
                                 logger.exception("fill pnl recording failed")
 
                     # Mark to market at the close of the bars just processed.

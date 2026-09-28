@@ -159,13 +159,14 @@ doc is stale, this file follows the code.
    clean; schema mismatch is ignored; a failed write never corrupts the last
    good state. No path → byte-identical V1 behaviour. 16 tests:
    `tests/forward/test_state_persistence.py`.
-5. **Portfolio-page option trade rows.** API exposes them; render
-   per-structure rows in the instance/bucket trade table UI (U3.1 backend
-   landed, UI polish remains).
-6. **Options-tab hard delete (U5.2 checklist).** Criteria: zero new
-   manual-book structures in trailing 14 days **and** ≥10 playbook-spawned
-   runners; review by **2026-09-30** regardless. Delete
-   `options.html` + `options.js` shell; keep chain/Greeks/expiry services.
+5. ~~**Portfolio-page option trade rows.**~~ **DONE** — per-structure rows
+   render in the matrix + deep-dive (`portfolio.js` `OptionView.openStructures`);
+   `tests/engine/test_portfolio_options_rows.py` + `tests/js/test_option_view.mjs`.
+6. ~~**Options-tab hard delete (U5.2 checklist).**~~ **DONE 2026-09-22**
+   (GAP-3 resolved as REMOVE, owner decision): `/options` page, nav link,
+   `options.html` + `options.js` deleted; JSON endpoints + book singleton
+   kept (portfolio merge + emergency flatten). See
+   `docs/RUNNER-FAQ-AND-UI-GAPS.md` GAP-3.
 7. **Consultant sign-off on 6 open questions** (root **`CONSULTANT_RESPONSE.md`**, "Open Questions" §0.4 — *path corrected; no `docs/consultant quest review.md` exists*):
    playbook scope (option-only vs equity), risk-envelope V2 (BS+IV+SPAN
    inputs), exit precedence confirmation, re-enter policy, playbook
@@ -177,7 +178,10 @@ doc is stale, this file follows the code.
    slippage), trade log export (CSV/JSON). *Scope correction: sizers already
    exist on the forward side (`strategy_adapter.py`, `simulator/position_sizing.py`,
    `backtest_driver.size_fn`) — the gap is presets/exposure on the vectorized path.*
-9. Richer metrics: Sortino, expectancy, profit factor, monthly heatmap.
+9. Richer metrics: ~~Sortino, expectancy, profit factor~~ **DONE 2026-09-21**
+   (`engine/metrics.py`: Sortino, profit factor, expectancy, VaR/ES, max
+   consecutive losses, exposure); monthly heatmap remains (the Analytics tab
+   has a monthly breakdown, the vectorized report does not).
 10. Parameter optimization + walk-forward analysis (grid/random search,
     rolling in-sample/out-of-sample), Monte-Carlo / deflated Sharpe.
 11. Chain-shape refactor for multi-leg V2 structures (straddles/condors) —
@@ -187,12 +191,15 @@ doc is stale, this file follows the code.
 12. ~~Orphaned code: `forward/live_engine.py` (697 lines)~~ **already deleted**
     (folded into `data/mstock_live_feed.py` per P3.4; its old tests now exercise
     `ForwardTestingEngine`) ~~dead config files (`market_data.yaml`, `time_sync.yaml`)~~
-    **already removed** — both closed by architect review. Remaining here:
-    legacy `/dashboard` route + `dashboard.html` template slated for retirement.
-12b. **(New) Repo hygiene:** `graphify-out/` + `.idea/` tracked despite
-    `.gitignore` (52 files) → `git rm -r --cached`; move shared test fixtures
-    out of test-to-test imports (`test_bucket_risk.py` ← `test_live_engine.py`)
-    into a helpers/conftest module.
+    **already removed** — both closed by architect review.
+    ~~legacy `/dashboard` route + `dashboard.html` template~~ **retired
+    (2026-09-28)** — route, template, `dashboard.js` and the nav link removed.
+12b. **(New) Repo hygiene:** ~~`graphify-out/` + `.idea/` tracked despite
+    `.gitignore` (52 files) → `git rm -r --cached`~~ **DONE (2026-09-28)** —
+    untracked from the index. ~~move shared test fixtures out of test-to-test
+    imports (`test_bucket_risk.py` ← `test_live_engine.py`) into a
+    helpers/conftest module~~ **DONE** — `tests/forward/helpers.py` hosts the
+    shared live fixtures; both test modules import from it.
 12c. ~~**(New) Corporate actions**~~ — **DONE (2026-09-17).** Policy wired:
      `src/backtest/data/corporate_actions.py`. Storage stays RAW;
      back-adjustment happens at READ time (`AdjustedSource`, wrapped into
@@ -209,14 +216,23 @@ doc is stale, this file follows the code.
      `tests/test_corporate_actions.py`. **Operator TODO:** populate
      `data/corporate_actions.csv` for the live universe (NSE announcements),
      then flip `enabled: true`.
-13. **Production server:** still Flask dev server. #4 (state persistence) is
-    DONE — the restart-survival half of the Gunicorn blocker is closed; the
-    multi-worker trap remains (shared mutable state across workers), so
-    Gunicorn still wants `--workers 1` + `--preload`, or an external store
-    before scaling out.
+13. ~~**Production server:** still Flask dev server.~~ **DONE (2026-09-28)** —
+    `backtest.web.wsgi:app` + `gunicorn.conf.py` (workers=1, gthread, preload
+    OFF: create_app starts per-process daemon threads, so a preloaded import
+    would fork them dead). The multi-worker trap stands — one worker until
+    live state (runners/broker session/alerts) is externalised.
 14. Timeframe cosmetic on synthetic/CSV (daily bars only — gap G6).
 15. Money inexact on SQLite (NUMERIC→float) — Postgres for anything reported.
-16. Broker cost rates are FY 2024-25 — re-verify against a fresh contract note.
+16. ~~Broker cost rates are FY 2024-25 — re-verify against a fresh contract
+    note.~~ **DONE (2026-09-28)** — re-verified against published FY 2026-27
+    rates. Budget 2026 raised F&O STT effective 2026-04-01: futures sell
+    0.02%→0.05%, options sell 0.1%→0.15%, exercise 0.125%→0.15% (exercise not
+    modelled). Updated `IndiaEquityFees` defaults, the mstock block in
+    `config/brokers.yaml`, tests and docs. Equity rates (delivery 0.1% both
+    sides, intraday 0.025% sell), NSE exchange txn (0.00297/0.00173/0.03503%),
+    SEBI ₹10/cr, IPFT ₹10/cr, stamp duty and GST 18% all confirmed unchanged.
+    **Remaining manual step:** reconcile a fresh mStock contract note via
+    `CommissionCalculator.validate_against_contract_note()` (T8.3 workflow).
 17. Alerts (email/Telegram) for breaker trips; strategy auto-kill on
     underperformance (Roadmap 3d).
 

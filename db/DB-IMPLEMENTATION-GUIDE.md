@@ -426,7 +426,7 @@ Once every box is ticked, Step 1 is done and **Step 2 (Database Connection
 Manager)** can begin.
 ---
 
-## 11. Parameter optimization engine (migrations 005–009)
+## 11. Parameter optimization engine (migrations 009–013)
 
 Adds the storage behind `/optimize` (see
 [`docs/OPTIMIZATION-ENGINE.md`](../docs/OPTIMIZATION-ENGINE.md)). Apply it
@@ -443,8 +443,8 @@ by hand, run `alembic stamp 009` afterwards.
 | 009 | `009_optimization_seed_presets.sql` | three default presets (Conservative / Moderate / Aggressive), fixed UUIDs, `ON CONFLICT DO NOTHING` |
 
 Rollback of all five, which destroys optimization data only:
-`005_009_optimization_rollback.sql`. The SQLite mirror is
-`005_009_optimization_engine.sqlite.sql`; 008 is PostgreSQL-only and is skipped there.
+`009_013_optimization_rollback.sql`. The SQLite mirror is
+`009_013_optimization_engine.sqlite.sql`; 008 is PostgreSQL-only and is skipped there.
 
 ```bash
 for f in 005_optimization_core 006_optimization_audit_presets 007_optimization_indexes \
@@ -470,5 +470,5 @@ SELECT name FROM parameter_presets WHERE strategy_id = 'default';         -- 3 r
 SELECT * FROM v_optimization_summary;                                      -- empty until a run
 ```
 
-Tests: `tests/db/test_migrations_005_009.py`. Set `OPTIMIZATION_TEST_PG_URL`
+Tests: `tests/db/test_migrations_009_013.py`. Set `OPTIMIZATION_TEST_PG_URL`
 to run a real upgrade → downgrade → upgrade round trip in a throwaway database.

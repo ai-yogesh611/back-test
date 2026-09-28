@@ -1,5 +1,16 @@
 # PRD: Options Trading for Paper & Live Trading Only
 
+> **⚠️ STATUS (2026-09-28): HISTORICAL DOCUMENT — the epic SHIPPED.**
+> The ~157 checkboxes below were never ticked retroactively; do not read
+> them as open work. Current truth lives in:
+> * `docs/OPTIONS-PAPER-LIVE.md` — what was built (paper + live option stack)
+> * `docs/Gap-Analysis-Remediation-PRD.md` — gap closure record (P1–P6)
+> * `docs/STATUS-AND-NEXT-STEPS.md` — consolidated project status
+> * `docs/OPEN-ITEMS-TRACKER.md` — the only live open-items list
+> Note: the "skip historical options backtesting" scope decision below was
+> later superseded — a synthetic-chain options backtest loop exists
+> (`docs/OPTIONS-BACKTEST-PRD.md` / `OPTIONS-BACKTEST-TASKS.md`).
+
 ## Executive Summary
 
 Implement options trading support **exclusively for paper trading and live trading**, bypassing historical backtesting. This approach prioritizes real-world validation (paper) and production deployment (live) over synthetic historical analysis, which is data-intensive and difficult to validate for options.

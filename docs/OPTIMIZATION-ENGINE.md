@@ -8,7 +8,7 @@ deliberately, live) runner with a full audit trail and one-click rollback.
 - **UI:** `🎯 Optimize` in the nav → `/optimize` (setup) → `/optimize/runs/<id>` (progress + results)
 - **API:** `/api/optimize/*` (`src/backtest/api/optimize.py`)
 - **Engine:** `src/backtest/optimization/`
-- **Schema:** migrations 005–009 (PostgreSQL + SQLite mirror). See [`db/DB-IMPLEMENTATION-GUIDE.md`](../db/DB-IMPLEMENTATION-GUIDE.md) §11.
+- **Schema:** migrations 009–013 (PostgreSQL + SQLite mirror). See [`db/DB-IMPLEMENTATION-GUIDE.md`](../db/DB-IMPLEMENTATION-GUIDE.md) §11.
 
 ---
 
@@ -214,7 +214,7 @@ The acting user comes from the `X-User` / `X-Forwarded-User` header.
 
 ---
 
-## 7. Schema (migrations 005–009)
+## 7. Schema (migrations 009–013)
 
 | Rev | Content |
 |---|---|
@@ -235,17 +235,17 @@ Beyond the PRD draft, the runs table also stores `baseline_params`,
 | seed via `json.dumps` | JSONB receives dicts | `json.dumps` double-encodes the JSON |
 | `onupdate=NOW()` | trigger | `onupdate=` has no database effect |
 
-Rollback: `alembic downgrade 004`, or `psql -f db/migrations/005_009_optimization_rollback.sql`.
+Rollback: `alembic downgrade 008`, or `psql -f db/migrations/009_013_optimization_rollback.sql`.
 
 ---
 
 ## 8. Tests
 
 ```bash
-PYTHONPATH=src pytest tests/optimization tests/db/test_migrations_005_009.py -q
+PYTHONPATH=src pytest tests/optimization tests/db/test_migrations_009_013.py -q
 # + real PostgreSQL round trip (creates and drops its own scratch database):
 OPTIMIZATION_TEST_PG_URL=postgresql+psycopg2://postgres@localhost/postgres \
-  PYTHONPATH=src pytest tests/db/test_migrations_005_009.py -q
+  PYTHONPATH=src pytest tests/db/test_migrations_009_013.py -q
 ```
 
 The suite has ~105 tests and runs in about 25 s, with coverage of 83–96 % per

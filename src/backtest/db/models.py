@@ -1122,11 +1122,11 @@ class OptionChainSnapshot(Base):
         )
 
 
-# ===========================================================================
+# ====================================================================
 # Parameter Optimization Engine (PRD "Parameter Optimization Engine" v1.0)
 # ===========================================================================
 #
-# Mirrors Alembic revisions 005-009 / db/migrations/005-009_*.sql. PostgreSQL
+# Mirrors Alembic revisions 009-013 / db/migrations/009-013_*.sql. PostgreSQL
 # is the production target (native UUID + JSONB, GIN index on result params,
 # updated_at triggers, analytics views); the same models run on SQLite for
 # local development and the test suite via ``create_all``.
@@ -1476,3 +1476,304 @@ OPTIMIZATION_TABLES = (
     ParameterPreset.__table__,
     OptimizationAudit.__table__,
 )
+# ---------------------------------------------------------------------------
+# Portfolio Intelligence & Alerts (migration 005)
+# ---------------------------------------------------------------------------
+
+
+class AlertSeverity(StrEnum):
+    CRITICAL = "critical"
+    WARNING = "warning"
+    INFO = "info"
+
+
+class PortfolioAlert(Base):
+    """Alert audit trail — one row per alert, updated through its lifecycle.
+
+    Written by :class:`backtest.intelligence.persistence.IntelligencePersister`
+    (fail-soft, off the tick thread). ``alert_key`` is the dedupe identity
+    (``type:subject``); ``notified_strategies`` records which strategy
+    subscribers were called and whether their callback succeeded.
+    """
+
+    __tablename__ = "alerts"
+
+    alert_id: Mapped[str] = mapped_column(UUIDStr, primary_key=True, default=_uuid4_str)
+    alert_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    alert_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    data: Mapped[dict[str, Any]] = mapped_column(
+        JSONVariant, nullable=False, server_default=text("'{}'")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    dismissed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    dismissed_by: Mapped[Optional[str]] = mapped_column(String(100))
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    notified_strategies: Mapped[Optional[list[Any]]] = mapped_column(JSONVariant)
+
+    __table_args__ = (
+        CheckConstraint(_in_check("severity", AlertSeverity), name="ck_alerts_severity"),
+        Index("idx_alerts_type", "alert_type"),
+        Index("idx_alerts_created", text("created_at DESC")),
+        Index("idx_alerts_active", "alert_type", "resolved_at"),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<PortfolioAlert {self.alert_type} {self.severity}>"
+
+
+class PortfolioGreeksSnapshot(Base):
+    """Periodic portfolio Greeks snapshot (historical analysis, not per tick).
+
+    Units: ``net_delta`` share-equivalents, ``net_gamma`` Δ per 1% move,
+    ``net_vega`` ₹ per IV point, ``net_theta`` ₹ per day.
+    """
+
+    __tablename__ = "portfolio_greeks_history"
+
+    snapshot_id: Mapped[str] = mapped_column(UUIDStr, primary_key=True, default=_uuid4_str)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    net_delta: Mapped[Optional[Decimal]] = mapped_column(Numeric(16, 2))
+    net_gamma: Mapped[Optional[Decimal]] = mapped_column(Numeric(16, 2))
+    net_vega: Mapped[Optional[Decimal]] = mapped_column(Numeric(16, 2))
+    net_theta: Mapped[Optional[Decimal]] = mapped_column(Numeric(16, 2))
+    greeks_by_strategy: Mapped[Optional[list[Any]]] = mapped_column(JSONVariant)
+    concentration_by_underlying: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONVariant)
+    concentration_by_strike: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONVariant)
+
+    __table_args__ = (Index("idx_greeks_time", text("timestamp DESC")),)
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<PortfolioGreeksSnapshot {self.timestamp}>"
+
+
+class MarketRegimeSnapshot(Base):
+    """Market regime samples (5-minute cadence + every transition)."""
+
+    __tablename__ = "market_regime_history"
+
+    regime_id: Mapped[str] = mapped_column(UUIDStr, primary_key=True, default=_uuid4_str)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    regime: Mapped[str] = mapped_column(String(20), nullable=False)
+    vix: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 2))
+    realized_vol: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 2))
+    source: Mapped[Optional[str]] = mapped_column(String(64))
+    previous_regime: Mapped[Optional[str]] = mapped_column(String(20))
+    regime_changed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+
+    __table_args__ = (Index("idx_regime_time", text("timestamp DESC")),)
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<MarketRegimeSnapshot {self.regime} {self.vix}>"
+
+
+# ---------------------------------------------------------------------------
+# 9. Cost & Risk Settings — broker cost-model profiles (certified panel, v2 §0)
+# ---------------------------------------------------------------------------
+
+
+class BrokerProfileRow(Base):
+    """An editable broker cost model (Phase 1 of the certified settings panel).
+
+    One row per broker profile. Built-in presets are seeded from
+    ``config/brokers.yaml`` / ``BROKER_PRESETS`` with ``is_preset=True`` and
+    are shown read-only in the UI; user overrides/edits are separate rows
+    (or the preset row updated by an admin — the audit table records which).
+
+    ``commission_model`` / ``statutory_rates`` are JSON dicts in the exact
+    shape :class:`~backtest.simulator.fees.BrokerProfile` accepts (see
+    ``to_profile()``), so the fee engine needs no adapter code.
+    """
+
+    __tablename__ = "broker_profiles"
+
+    @classmethod
+    def ensure_schema(cls, manager: Any) -> None:
+        """Create just this table (same convention as the snapshot asset)."""
+        engine = manager.engine if hasattr(manager, "engine") else manager
+        Base.metadata.create_all(engine, tables=[cls.__table__])
+
+    profile_id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    profile_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    is_preset: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, server_default="INR")
+    default_segment: Mapped[str] = mapped_column(
+        String(30), nullable=False, server_default="equity_delivery"
+    )
+    commission_model: Mapped[dict[str, Any]] = mapped_column(
+        JSONVariant, nullable=False, server_default=text("'{}'")
+    )
+    statutory_rates: Mapped[dict[str, Any]] = mapped_column(
+        JSONVariant, nullable=False, server_default=text("'{}'")
+    )
+    minimum_commission: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    validated_on: Mapped[Optional[date]] = mapped_column(Date)
+    contract_note_ref: Mapped[Optional[str]] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), onupdate=func.now()
+    )
+
+    def to_profile_kwargs(self) -> dict[str, Any]:
+        """Keyword arguments for ``BrokerProfile(**kwargs)`` (validated there).
+
+        The stored ``commission_model`` is the composite the panel edits
+        (``default`` / ``delivery`` / ``options`` sub-models); it unpacks to
+        the three separate BrokerProfile fields here.
+        """
+        composite = dict(self.commission_model or {})
+        default = composite.get("default")
+        if not isinstance(default, dict):
+            default = composite if composite else {"model": "zero"}
+        return {
+            "name": self.profile_id,
+            "commission_model": default,
+            "delivery_commission_model": composite.get("delivery"),
+            "options_commission_model": composite.get("options"),
+            "fee_schedule": {"schedule": "india_equity", **(self.statutory_rates or {})},
+            "minimum_commission": self.minimum_commission,
+            "currency": self.currency,
+            "default_segment": self.default_segment,
+        }
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<BrokerProfileRow {self.profile_id} preset={self.is_preset}>"
+
+
+class BrokerProfileAudit(Base):
+    """Append-only audit trail for every broker-profile change (v2 §0 #5).
+
+    One row per field change: who, when, old → new. Never updated, never
+    deleted — the tax-audit trail the contract-note validator stamps into.
+    """
+
+    __tablename__ = "broker_profile_audit"
+
+    @classmethod
+    def ensure_schema(cls, manager: Any) -> None:
+        """Create just this table (same convention as the snapshot asset)."""
+        engine = manager.engine if hasattr(manager, "engine") else manager
+        Base.metadata.create_all(engine, tables=[cls.__table__])
+
+    audit_id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    profile_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    field_changed: Mapped[str] = mapped_column(String(100), nullable=False)
+    old_value: Mapped[Optional[str]] = mapped_column(Text)
+    new_value: Mapped[Optional[str]] = mapped_column(Text)
+    changed_by: Mapped[Optional[str]] = mapped_column(String(50), server_default="admin")
+    changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (Index("idx_broker_audit_profile", "profile_id", "changed_at"),)
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<BrokerProfileAudit {self.profile_id}.{self.field_changed}>"
+
+
+# ---------------------------------------------------------------------------
+# 10. Cost & Risk Settings — segments + global live kill-switch (Phase 2, v2 §0)
+# ---------------------------------------------------------------------------
+
+
+class SegmentRow(Base):
+    """A trading segment — capital + mandate + broker + mode + risk limits.
+
+    Certified v2 §0 #2: risk limits belong to SEGMENTS, not brokers. One row
+    per named segment (``equity_intraday``, ``options_selling``, …) with:
+
+    * ``allocated_capital`` — the segment's ring-fenced capital;
+    * ``broker_profile_id`` — the execution venue (FK-shaped, not enforced);
+    * ``mode`` — ``paper`` | ``live`` (per-segment half of the two-tier gate);
+    * ``risk_limits`` — JSON: ``daily_loss_limit`` (abs ₹, MANDATORY before a
+      segment can arm live — fail closed), ``max_drawdown_pct``,
+      ``max_positions``, ``max_gross_exposure_pct``, ``max_leverage``.
+
+    A missing/empty segment table means "panel not configured" — the live
+    arming gates treat that as the legacy behavior (env-gated), not as a
+    block, so a deployment without the panel keeps working.
+    """
+
+    __tablename__ = "segments"
+
+    @classmethod
+    def ensure_schema(cls, manager: Any) -> None:
+        """Create just this table (same convention as the snapshot asset)."""
+        engine = manager.engine if hasattr(manager, "engine") else manager
+        Base.metadata.create_all(engine, tables=[cls.__table__])
+
+    segment_id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    segment_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    mode: Mapped[str] = mapped_column(String(10), nullable=False, server_default="paper")
+    allocated_capital: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2))
+    broker_profile_id: Mapped[Optional[str]] = mapped_column(String(50))
+    risk_limits: Mapped[dict[str, Any]] = mapped_column(
+        JSONVariant, nullable=False, server_default=text("'{}'")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), onupdate=func.now()
+    )
+
+    #: The risk-limit vocabulary the panel edits (v2 §0 #2).
+    RISK_LIMIT_FIELDS: tuple = (
+        "daily_loss_limit",
+        "weekly_loss_limit",
+        "max_drawdown_pct",
+        "max_positions",
+        "max_gross_exposure_pct",
+        "max_leverage",
+    )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "segment_id": self.segment_id,
+            "segment_name": self.segment_name,
+            "mode": self.mode,
+            "allocated_capital": (
+                float(self.allocated_capital) if self.allocated_capital is not None else None
+            ),
+            "broker_profile_id": self.broker_profile_id,
+            "risk_limits": dict(self.risk_limits or {}),
+        }
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<SegmentRow {self.segment_id} mode={self.mode}>"
+
+
+class SegmentAudit(Base):
+    """Append-only audit trail for segment + kill-switch changes (v2 §0 #5)."""
+
+    __tablename__ = "segment_audit"
+
+    @classmethod
+    def ensure_schema(cls, manager: Any) -> None:
+        """Create just this table (same convention as the snapshot asset)."""
+        engine = manager.engine if hasattr(manager, "engine") else manager
+        Base.metadata.create_all(engine, tables=[cls.__table__])
+
+    audit_id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    segment_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    field_changed: Mapped[str] = mapped_column(String(100), nullable=False)
+    old_value: Mapped[Optional[str]] = mapped_column(Text)
+    new_value: Mapped[Optional[str]] = mapped_column(Text)
+    changed_by: Mapped[Optional[str]] = mapped_column(String(50), server_default="admin")
+    changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (Index("idx_segment_audit_segment", "segment_id", "changed_at"),)
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<SegmentAudit {self.segment_id}.{self.field_changed}>"

@@ -100,7 +100,7 @@ __all__ = [
     # Options (Gap G4.2)
     "TradeStructure",
     "TradeStructureStatus",
-    # Parameter optimization engine (revisions 005-009)
+    # Parameter optimization engine (revisions 009-013)
     "OptimizationRun",
     "OptimizationResult",
     "ParameterPreset",

@@ -1,11 +1,15 @@
 # =============================================================================
 # Forward Testing Simulator — Alert & Notification Configuration (Step 21)
 # =============================================================================
-# Loaded by backtest.alerts.manager.AlertManager
+# Loaded by backtest.alerts.notifier (load_notifier_config / start_alert_notifier)
 #
-#   from backtest.alerts.manager import AlertManager
-#   manager = AlertManager()  # loads this file + env overrides
-#   manager.send_alert("info", "Trade executed: INFY BUY 100 @ 1500", channels=["telegram"])
+#   from backtest.alerts.notifier import start_alert_notifier
+#   start_alert_notifier()  # platform alerts → routing below → channels
+#
+# Only the `log`, `telegram` and `email` channels are implemented today;
+# slack/discord/sms/desktop entries are accepted and skipped (the log
+# channel is the floor — an alert that passes min_level is never dropped).
+# Profiles are merged over `default`; env vars override this file.
 #
 # Secrets (tokens, passwords) should be in .env, not here:
 #   TELEGRAM_BOT_TOKEN=123456:ABC-DEF...

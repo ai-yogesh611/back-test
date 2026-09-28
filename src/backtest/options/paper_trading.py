@@ -226,6 +226,24 @@ class QuoteProvider(Protocol):
         ...
 
 
+def _execution_quote(provider: Any, instrument_token: str, side: str) -> dict[str, Any]:
+    """Fill-price quote for one leg (Gap-PRD P4 seam).
+
+    When the provider offers ``execution_quote`` (the opt-in
+    :class:`~backtest.options.quote_providers.BidAskQuoteProvider` wrapper),
+    fills cross the spread — buy at ask, sell at bid. Every other provider
+    keeps the V1 behaviour byte-identical: fill at LTP.
+    """
+    execution_quote = getattr(provider, "execution_quote", None)
+    if callable(execution_quote):
+        quote = execution_quote(instrument_token, side)
+        # Guard against duck-typing accidents (e.g. MagicMock providers in
+        # tests "have" every attribute): only trust a real quote dict.
+        if isinstance(quote, dict):
+            return quote
+    return provider.get_quote(instrument_token)
+
+
 class FakeQuoteProvider:
     """Returns a fixed price for all instruments (for testing)."""
 
@@ -348,7 +366,7 @@ class OptionPaperBroker:
         fills = []
         net_cost = ZERO
         for leg in intent.legs:
-            quote = quote_provider.get_quote(leg.instrument_token)
+            quote = _execution_quote(quote_provider, leg.instrument_token, leg.side)
             fill_price = self._apply_slippage(
                 Decimal(str(quote.get("ltp", 0))), leg.side
             )
@@ -512,7 +530,11 @@ class OptionPaperBroker:
         closing_fills: list[dict[str, Any]] = []
 
         for position in open_legs:
-            quote = quote_provider.get_quote(position.instrument_token)
+            quote = _execution_quote(
+                quote_provider,
+                position.instrument_token,
+                "SELL" if position.is_long else "BUY",
+            )
             exit_price = Decimal(str(quote.get("ltp", 0)))
             exit_price = self._apply_slippage(exit_price, "SELL" if position.is_long else "BUY")
 

@@ -39,7 +39,7 @@ from backtest.engine.backtester import BacktestConfig, BacktestResult
 from backtest.engine.metrics import compute_metrics
 from backtest.runner import run_on_candles
 from backtest.simulator.bucket_risk import resolve_bucket_risk
-from backtest.simulator.execution import free_executor
+from backtest.simulator.execution import costed_executor, free_executor
 from backtest.simulator.portfolio import Portfolio
 from backtest.simulator.position_sizing import all_in_size
 from backtest.strategy.registry import get_strategy
@@ -178,6 +178,7 @@ def run_backtest(
     params: dict[str, Any] | None,
     symbol: str,
     initial_capital: float,
+    broker: str | None = None,
 ) -> BacktestResult:
     """Run the CANONICAL engine: ``BacktestDriver`` over simulator/.
 
@@ -189,6 +190,14 @@ def run_backtest(
     are wall-clock, not bar time, so they must not be used for this).
     Metrics and trades come from the same ``engine/metrics`` +
     ``engine/trades`` code the vectorized path uses.
+
+    ``broker``: name of a broker preset (``mstock``, ``zerodha``, ...) or
+    ``None`` (default). ``None`` keeps the historical zero-cost executor
+    (``free_executor``) — results are reproducible and unchanged. A name
+    swaps in :func:`backtest.simulator.execution.costed_executor` so the
+    run charges that broker's real statutory stack — the R-E1 cost
+    haircut. The chosen broker is stamped into ``result.metrics`` as
+    ``broker`` and the fee total as ``fees_paid``.
     """
     strategy_instance = get_strategy(strategy)(**(params or {}))
     active = int((strategy_instance.generate_signals(candles).fillna(0) != 0).sum())
@@ -211,11 +220,15 @@ def run_backtest(
     # P&L is unchanged.
     _, paper_bucket = resolve_bucket_risk("paper", "synthetic")
     portfolio.limits = paper_bucket.to_portfolio_limits()
+    if broker:
+        executor = costed_executor(portfolio, broker=broker)
+    else:
+        executor = free_executor(portfolio, max_participation="1")
     driver = BacktestDriver(
         source=FrameSource(candles),
         strategy=strategy_instance,
         portfolio=portfolio,
-        executor=free_executor(portfolio, max_participation="1"),
+        executor=executor,
         symbols=[str(symbol).strip().upper()],
         size_fn=all_in_size,
     )
@@ -243,6 +256,9 @@ def run_backtest(
     result.metrics["symbol"] = symbol
     result.metrics["stop_loss"] = result.config.stop_loss
     result.metrics["take_profit"] = result.config.take_profit
+    if broker:
+        result.metrics["broker"] = broker
+        result.metrics["fees_paid"] = float(portfolio.total_commission)
     return result
 
 

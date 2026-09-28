@@ -16,6 +16,7 @@ engine imports (plugin-safe).
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from backtest.strategy.base import Strategy
@@ -66,21 +67,26 @@ class EmaPullback(Strategy):
         fast_ema = candles["close"].ewm(span=fast_n, adjust=False).mean()
         slow_ema = candles["close"].ewm(span=slow_n, adjust=False).mean()
 
-        signals = pd.Series(0, index=candles.index, dtype=int)
+        # Vectorised hold-state machine (the naive .loc-per-bar loop costs
+        # ~40 ms per 500-bar evaluation — over the 20 ms R-P1 budget):
+        # entry = close in (fast, slow] band while below the slow regime EMA
+        # (slow_v NaN-safe: comparisons with NaN are False, matching `continue`)
+        close = candles["close"]
+        entry = (close <= fast_ema) & (close > slow_ema)
+        # exit while held = trend break or stretch target hit
+        exit_cond = (close < slow_ema) | (close >= fast_ema * (1.0 + stretch / 100.0))
+
         held = False
-        for i in candles.index:
-            close = candles["close"].loc[i]
-            fast_v = fast_ema.loc[i]
-            slow_v = slow_ema.loc[i]
-            if pd.isna(slow_v):
-                continue
+        entries = entry.to_numpy(copy=True)
+        exits = exit_cond.to_numpy(copy=True)
+        out = np.zeros(len(candles), dtype=np.int64)
+        for i in range(len(out)):
             if not held:
-                if close > slow_v and close <= fast_v:
+                if entries[i]:
                     held = True
-                    signals.loc[i] = 1
+                    out[i] = 1
+            elif exits[i]:
+                held = False
             else:
-                if close < slow_v or close >= fast_v * (1.0 + stretch / 100.0):
-                    held = False
-                else:
-                    signals.loc[i] = 1
-        return signals
+                out[i] = 1
+        return pd.Series(out, index=candles.index, dtype=int)
