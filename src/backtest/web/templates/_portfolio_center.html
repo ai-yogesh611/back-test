@@ -416,56 +416,16 @@
             <div id="risk-cb-status" style="margin-bottom:12px;"></div>
             <div id="risk-warnings" class="warning-banner" style="margin-bottom:16px;"></div>
 
-            <!-- Two column: global config + trade stats -->
-            <div style="display:grid; grid-template-columns: 1fr 2fr; gap:16px; margin-bottom:16px;">
-                <div class="card" style="padding:12px;">
-                    <h4 style="margin:0 0 8px;">Global Risk Config</h4>
-                    <div id="risk-global-config" class="risk-kv-list"></div>
-                    <div class="muted" style="margin-top:8px; font-size:.75rem;">Source: RiskSupervisor + risk.yaml. Tune via config/risk.yaml and env. Live caps are in bucket_risk.py.</div>
+            <!-- Pointer to the Risk page: config editing, per-bucket limits, exposure
+                 breakdown and the audit timeline live there (single authority) —
+                 duplicated here they were two renderers of the same payload drifting apart. -->
+            <div class="card" style="padding:12px; margin-bottom:16px; display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+                <div class="muted" style="margin:0;">
+                    🛡️ Global risk config, per-bucket limits & usage, exposure by symbol/correlation
+                    group, closed-trade risk stats and the risk-events audit timeline live on the
+                    <strong>Risk page</strong> — the single authority for those views.
                 </div>
-                <div class="card" style="padding:12px;">
-                    <h4 style="margin:0 0 8px;">Closed Trade Risk Stats (aggregated)</h4>
-                    <div id="risk-trade-stats"></div>
-                </div>
-            </div>
-
-            <!-- Bucket limits -->
-            <div class="card" style="padding:12px; margin-bottom:16px;">
-                <h4 style="margin:0 0 8px;">Per-Bucket Risk Limits & Usage</h4>
-                <div class="table-scroll">
-                    <table class="matrix-table">
-                        <thead><tr><th>Bucket</th><th class="num">Runners</th><th class="num">Equity</th><th class="num">Daily PnL</th><th class="num">Drawdown</th><th class="num">Open Pos</th><th class="num">Max Pos %</th><th class="num">Max Value</th><th>Allowed Sources</th><th>Status</th></tr></thead>
-                        <tbody id="risk-bucket-table"></tbody>
-                    </table>
-                </div>
-            </div>
-
-            <!-- Exposure breakdown -->
-            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin-bottom:16px;">
-                <div class="card" style="padding:12px;">
-                    <h4 style="margin:0 0 8px;">Exposure by Symbol <span id="risk-exposure-summary" class="muted" style="font-weight:400; font-size:.8rem;"></span></h4>
-                    <div class="table-scroll" style="max-height:300px;">
-                        <table class="matrix-table">
-                            <thead><tr><th>Symbol</th><th class="num">Notional</th><th class="num">Qty</th><th class="num">Runners</th><th>Sides</th></tr></thead>
-                            <tbody id="risk-exposure-symbol"></tbody>
-                        </table>
-                    </div>
-                </div>
-                <div class="card" style="padding:12px;">
-                    <h4 style="margin:0 0 8px;">Exposure by Correlation Group</h4>
-                    <div class="table-scroll" style="max-height:300px;">
-                        <table class="matrix-table">
-                            <thead><tr><th>Group</th><th class="num">Notional</th><th class="num">Count</th><th>Symbols</th><th>Status</th></tr></thead>
-                            <tbody id="risk-exposure-correlation"></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Risk audit -->
-            <div class="card" style="padding:12px;">
-                <h4 style="margin:0 0 8px;">Risk Events Timeline (audit log)</h4>
-                <div id="risk-audit" class="audit-log"></div>
+                <a href="/risk" class="btn btn-ghost btn-small">🛡️ Open full Risk page →</a>
             </div>
         </div>
         <div class="tab-panel" id="tab-aggregated-trades" hidden>
@@ -789,7 +749,7 @@
         <div class="modal-head"><h3>🔴 Emergency Flatten All</h3>
             <button class="modal-close" data-close="emergency-modal" type="button">✕</button></div>
         <div class="modal-body">
-            <p>This will <strong>cancel new entries and market-exit every open position
+            <p id="emergency-scope-line">This will <strong>cancel new entries and market-exit every open position
             across all runners</strong>, then halt the portfolio.</p>
             <p class="muted">Use only for risk emergencies. This cannot be undone.</p>
         </div>

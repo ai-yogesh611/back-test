@@ -1,9 +1,17 @@
 {% extends "base.html" %}
-{% block title %}Forward Test · Trading Bot{% endblock %}
+{% block title %}Engine Playground · Trading Bot{% endblock %}
 
 {% block content %}
-<h1 class="page-title">Forward Test</h1>
-<p class="muted small page-sub">Paper forward replay — simulated fills over historical/synthetic bars, watched in real-time (ticket #8: real-fill runs use the engine path; this page never paper-fills a live label).</p>
+<h1 class="page-title">🔧 Engine Playground <span class="muted small" style="font-weight:400;">(session diagnostics)</span></h1>
+<p class="muted small page-sub">Single-strategy paper replay watched in real time — a diagnostics bench for the engine, not a trading book.</p>
+
+<div class="banner" style="border-left:4px solid #f59e0b; background:rgba(245,158,11,0.08); padding:10px 14px; margin-bottom:16px;">
+    📚 <strong>For real books, use the Portfolio Command Center.</strong> Runs spawned there go through the
+    PortfolioManager: isolated capital buckets, circuit breakers, order ledger, persistence across restarts
+    and the alert system. This page runs the raw <code>ForwardTestingEngine</code> for one strategy —
+    in-memory session, no bucket risk, fills anchored differently (next bar's open) — so its numbers are
+    not directly comparable with Portfolio runners on gapped data.
+</div>
 
 <div id="prefillBanner" class="banner" hidden>Pre-filled from a backtest / compare result</div>
 
