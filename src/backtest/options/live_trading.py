@@ -196,6 +196,19 @@ class LiveOptionTrader:
                     "kill-switch ALLOW_LIVE_ORDERS is not set — export "
                     "ALLOW_LIVE_ORDERS=1 to allow real order placement"
                 )
+            # Panel gate (certified v2 §0 #4/#6) — only bites when the
+            # settings DB is configured; legacy env behavior otherwise.
+            try:
+                from backtest.api.segments_store import assert_live_arming_allowed
+
+                assert_live_arming_allowed()
+            except ValueError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — fail closed
+                raise ValueError(
+                    "[live-options] refusing to arm live orders: Cost & Risk "
+                    f"Settings is configured but unreachable ({exc})"
+                ) from exc
             logger.warning(
                 "[live-options] LIVE MODE ARMED — real orders will be placed "
                 "via %r; every submission is logged",

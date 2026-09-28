@@ -42,7 +42,6 @@ Once the server is running, open any of these in a browser:
 Common pages:
 
 - http://127.0.0.1:5000/  (home)
-- http://127.0.0.1:5000/dashboard
 - http://127.0.0.1:5000/portfolio
 - http://127.0.0.1:5000/forward
 
@@ -57,6 +56,19 @@ Expected response:
 ```json
 {"source":"synthetic","status":"ok"}
 ```
+
+## Production (Linux server)
+
+```bash
+gunicorn -c gunicorn.conf.py backtest.web.wsgi:app
+```
+
+- One worker, N threads — trading state lives inside the process (runners,
+  broker session, alert broker); see `gunicorn.conf.py` before changing.
+- Overrides: `GUNICORN_BIND` (default `127.0.0.1:5000`), `GUNICORN_THREADS` (8),
+  `GUNICORN_TIMEOUT` (600 s), `BACKTEST_SOURCE`.
+- The app has no login of its own: keep it bound to localhost or put an
+  authenticated reverse proxy in front before exposing it.
 
 ## Notes
 

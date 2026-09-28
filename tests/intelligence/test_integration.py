@@ -420,7 +420,7 @@ def test_api_disabled_returns_503(mgr, client):
 
 
 def test_alert_widget_renders_on_every_page(client):
-    for page in ("/dashboard", "/backtest", "/portfolio", "/risk", "/data"):
+    for page in ("/", "/backtest", "/portfolio", "/risk", "/data"):
         html = client.get(page).get_data(as_text=True)
         assert 'id="alert-widget"' in html, page
         assert "alert_widget.js" in html, page
@@ -435,7 +435,7 @@ def test_risk_board_has_intelligence_sections(client):
 
 def test_widget_hidden_when_disabled(client):
     client.application.config["PORTFOLIO_INTELLIGENCE_ENABLED"] = False
-    html = client.get("/dashboard").get_data(as_text=True)
+    html = client.get("/").get_data(as_text=True)
     assert 'id="alert-widget"' not in html
 
 

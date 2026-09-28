@@ -26,7 +26,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _JS_HARNESS = _REPO_ROOT / "tests" / "js" / "test_broker_status.mjs"
 _MODAL_HARNESS = _REPO_ROOT / "tests" / "js" / "test_broker_auth_modal.mjs"
 
-_PAGES = ["/", "/backtest", "/dashboard", "/compare", "/forward"]
+_PAGES = ["/", "/backtest", "/compare", "/forward"]
 
 
 @pytest.fixture()

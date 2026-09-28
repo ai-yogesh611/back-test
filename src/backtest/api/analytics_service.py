@@ -188,7 +188,9 @@ def compute_metrics_from_trades(
     trade_dates = []
     for t in trades:
         ts = _parse_ts(t.get("exit_ts") or t.get("timestamp") or t.get("entry_ts"))
-        trade_dates.append((ts.date() if ts else datetime.now(timezone.utc).date(), float(t.get("pnl", 0.0))))
+        trade_dates.append(
+            (ts.date() if ts else datetime.now(timezone.utc).date(), float(t.get("pnl", 0.0)))
+        )
 
     df_pnl = pd.DataFrame(trade_dates, columns=["date", "pnl"])
     if not df_pnl.empty:
@@ -205,16 +207,28 @@ def compute_metrics_from_trades(
 
         downside = ret_series[ret_series < 0]
         downside_std = downside.std(ddof=0)
-        sortino = math.sqrt(252.0) * (excess_mean / downside_std) if downside_std > 0 else (sharpe if sharpe > 0 else 0.0)
+        sortino = (
+            math.sqrt(252.0) * (excess_mean / downside_std)
+            if downside_std > 0
+            else (sharpe if sharpe > 0 else 0.0)
+        )
     elif len(pnls) >= 2:
         # Approximate per-trade Sharpe annualized assuming ~250 trading periods
         pnl_series = pd.Series(pnls) / capital
         std_pnl = pnl_series.std(ddof=0)
         mean_pnl = pnl_series.mean()
-        sharpe = math.sqrt(min(252, max(12, len(pnls)))) * (mean_pnl / std_pnl) if std_pnl > 0 else 0.0
+        sharpe = (
+            math.sqrt(min(252, max(12, len(pnls)))) * (mean_pnl / std_pnl)
+            if std_pnl > 0
+            else 0.0
+        )
         downside = pnl_series[pnl_series < 0]
         downside_std = downside.std(ddof=0)
-        sortino = math.sqrt(min(252, max(12, len(pnls)))) * (mean_pnl / downside_std) if downside_std > 0 else sharpe
+        sortino = (
+            math.sqrt(min(252, max(12, len(pnls)))) * (mean_pnl / downside_std)
+            if downside_std > 0
+            else sharpe
+        )
     else:
         sharpe = 0.0
         sortino = 0.0
@@ -263,7 +277,9 @@ class AnalyticsService:
     def __init__(self):
         self.mgr = get_portfolio_manager()
 
-    def get_portfolio_overview(self, period: str = "30d", mode: Optional[str] = None) -> Dict[str, Any]:
+    def get_portfolio_overview(
+        self, period: str = "30d", mode: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Aggregate performance overview across all runners."""
         runners_summary = self.mgr.list_instances(mode=mode)
         all_closed_trades: List[Dict[str, Any]] = []
@@ -352,7 +368,9 @@ class AnalyticsService:
             "alerts": alerts,
         }
 
-    def get_strategy_detail(self, instance_id: str, period: str = "90d") -> Optional[Dict[str, Any]]:
+    def get_strategy_detail(
+        self, instance_id: str, period: str = "90d"
+    ) -> Optional[Dict[str, Any]]:
         """Deep dive analytics for a single strategy runner."""
         runner = self.mgr.get_runner(instance_id)
         if not runner:
@@ -379,7 +397,9 @@ class AnalyticsService:
         equity_curve_data = self._build_runner_equity_curve(runner, period_trades, allocated)
         monthly_breakdown = self._build_monthly_breakdown(period_trades, allocated)
         trade_distribution = self._build_trade_distribution(period_trades)
-        rolling_metrics = self._calculate_rolling_metrics(period_trades, allocated, window_trades=10)
+        rolling_metrics = self._calculate_rolling_metrics(
+            period_trades, allocated, window_trades=10
+        )
         edge_degradation = self._detect_edge_degradation(rolling_metrics, metrics)
 
         return {
@@ -404,9 +424,14 @@ class AnalyticsService:
             "recent_trades": period_trades[-50:],
         }
 
-    def _build_portfolio_equity_curve(self, runners_summary: List[Dict[str, Any]], period: str) -> List[Dict[str, Any]]:
+    def _build_portfolio_equity_curve(
+        self, runners_summary: List[Dict[str, Any]], period: str
+    ) -> List[Dict[str, Any]]:
         points_map: Dict[str, float] = {}
-        total_initial = sum(float(r.get("allocated_capital", 100_000.0)) for r in runners_summary) or 100_000.0
+        total_initial = (
+            sum(float(r.get("allocated_capital", 100_000.0)) for r in runners_summary)
+            or 100_000.0
+        )
 
         for r_meta in runners_summary:
             runner = self.mgr.get_runner(r_meta.get("instance_id"))
@@ -440,7 +465,9 @@ class AnalyticsService:
             })
         return curve
 
-    def _build_runner_equity_curve(self, runner, period_trades: List[Dict[str, Any]], capital: float) -> List[Dict[str, Any]]:
+    def _build_runner_equity_curve(
+        self, runner, period_trades: List[Dict[str, Any]], capital: float
+    ) -> List[Dict[str, Any]]:
         curve = []
         if runner.equity_curve and len(runner.equity_curve) > 1:
             peak = capital
@@ -489,7 +516,9 @@ class AnalyticsService:
             })
         return curve
 
-    def _build_monthly_breakdown(self, trades: List[Dict[str, Any]], capital: float) -> List[Dict[str, Any]]:
+    def _build_monthly_breakdown(
+        self, trades: List[Dict[str, Any]], capital: float
+    ) -> List[Dict[str, Any]]:
         if not trades:
             return []
 
@@ -517,7 +546,11 @@ class AnalyticsService:
             # Approximate monthly Sharpe
             if len(pnls) >= 2:
                 s = pd.Series(pnls)
-                sh = float(s.mean() / s.std(ddof=0)) * math.sqrt(len(pnls)) if s.std(ddof=0) > 0 else 0.0
+                sh = (
+                    float(s.mean() / s.std(ddof=0)) * math.sqrt(len(pnls))
+                    if s.std(ddof=0) > 0
+                    else 0.0
+                )
             else:
                 sh = 0.0
 
@@ -560,7 +593,9 @@ class AnalyticsService:
             insights.append(f"Average win is ₹{int(sum(wins)/len(wins)):,}")
         if losses:
             insights.append(f"Average loss is ₹{int(abs(sum(losses))/len(losses)):,}")
-        fat_tail = [p for p in losses if abs(p) > 2 * (abs(sum(losses)/len(losses)) if losses else 1)]
+        fat_tail = [
+            p for p in losses if abs(p) > 2 * (abs(sum(losses) / len(losses)) if losses else 1)
+        ]
         if fat_tail:
             insights.append(f"⚠️ {len(fat_tail)} outlier losses exceeded 2x average loss.")
 
@@ -569,7 +604,9 @@ class AnalyticsService:
             "insights": insights,
         }
 
-    def _calculate_rolling_metrics(self, trades: List[Dict[str, Any]], capital: float, window_trades: int = 10) -> List[Dict[str, Any]]:
+    def _calculate_rolling_metrics(
+        self, trades: List[Dict[str, Any]], capital: float, window_trades: int = 10
+    ) -> List[Dict[str, Any]]:
         if len(trades) < window_trades:
             return []
 
@@ -595,7 +632,9 @@ class AnalyticsService:
             })
         return rolling
 
-    def _detect_edge_degradation(self, rolling: List[Dict[str, Any]], current_metrics: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _detect_edge_degradation(
+        self, rolling: List[Dict[str, Any]], current_metrics: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
         if len(rolling) < 4:
             return None
 
@@ -613,14 +652,19 @@ class AnalyticsService:
                 return {
                     "alert_type": "sharpe_decline",
                     "severity": "warning" if recent_avg >= 1.0 else "critical",
-                    "message": f"Rolling Sharpe dropped by {drop_pct}% (from {earlier_avg:.2f} to {recent_avg:.2f})",
+                    "message": (
+                        f"Rolling Sharpe dropped by {drop_pct}% "
+                        f"(from {earlier_avg:.2f} to {recent_avg:.2f})"
+                    ),
                     "recent_sharpe": round(recent_avg, 2),
                     "baseline_sharpe": round(earlier_avg, 2),
                     "drop_pct": drop_pct,
                 }
         return None
 
-    def _generate_overview_alerts(self, strategy_cards: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _generate_overview_alerts(
+        self, strategy_cards: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
         alerts = []
         for c in strategy_cards:
             m = c["metrics"]
@@ -629,7 +673,10 @@ class AnalyticsService:
                     "strategy": c["name"],
                     "instance_id": c["instance_id"],
                     "severity": "warning",
-                    "message": f"{c['name']}: Low Sharpe ratio ({m['sharpe_ratio']}) across {m['total_trades']} trades.",
+                    "message": (
+                        f"{c['name']}: Low Sharpe ratio ({m['sharpe_ratio']}) "
+                        f"across {m['total_trades']} trades."
+                    ),
                 })
             if m["max_drawdown_pct"] > 15.0:
                 alerts.append({
@@ -644,6 +691,9 @@ class AnalyticsService:
                     "strategy": c["name"],
                     "instance_id": c["instance_id"],
                     "severity": "info",
-                    "message": f"{c['name']}: Longest losing streak reached {streaks['max_loss_streak']} trades.",
+                    "message": (
+                        f"{c['name']}: Longest losing streak reached "
+                        f"{streaks['max_loss_streak']} trades."
+                    ),
                 })
         return alerts

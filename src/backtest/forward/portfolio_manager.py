@@ -1338,6 +1338,9 @@ class PortfolioManager:
                     self._audit_log("RESET_BREAKER all", scope="all", detail="master reset")
                 except Exception:
                     pass
+                self._resolve_breaker_alerts(
+                    ["portfolio", "bucket:paper", "bucket:live"]
+                )
             else:
                 # Scoped reset: only one bucket
                 mode = str(mode).strip().lower()
@@ -1359,6 +1362,11 @@ class PortfolioManager:
                     self._audit_log(f"RESET_BREAKER {mode}", scope=mode, detail=f"bucket={mode}")
                 except Exception:
                     pass
+                cleared = [f"bucket:{mode}"]
+                if not self.halted:
+                    # Manager-level was cleared alongside (no buckets left halted)
+                    cleared.append("portfolio")
+                self._resolve_breaker_alerts(cleared)
             self._refresh_anchors()
 
     # ------------------------------------------------------------------ #
@@ -1650,6 +1658,9 @@ class PortfolioManager:
         also tracks a global halt for the master-kill path.
         """
         now_ts = datetime.now(timezone.utc).isoformat()
+        # Buckets that tripped *in this pass* — the master alert is suppressed
+        # when one of them already raised its own (no double notification).
+        fresh_buckets = []
 
         # --- Per-bucket risk evaluation (independent breakers) ---
         for mode in ("paper", "live"):
@@ -1677,11 +1688,21 @@ class PortfolioManager:
                 self._bucket_halt_reason[mode] = report.halt_reason
                 self._bucket_halt_mode[mode] = report.halt_mode
                 self._bucket_halted_ts[mode] = now_ts
+                fresh_buckets.append(mode)
                 logger.critical(
                     "BUCKET HALT [%s]: %s (mode=%s)",
                     mode.upper(),
                     report.halt_reason,
                     report.halt_mode,
+                )
+                self._raise_breaker_alert(
+                    scope="bucket",
+                    bucket=mode,
+                    reason=report.halt_reason,
+                    halt_mode=report.halt_mode,
+                    equity=equity,
+                    daily_pnl=daily_pnl,
+                    drawdown_pct=report.drawdown_pct,
                 )
                 # Only pause/flatten runners in THIS bucket
                 for runner in bucket_runners:
@@ -1712,6 +1733,19 @@ class PortfolioManager:
             self.halt_mode = report.halt_mode
             self.halted_ts = now_ts
             logger.critical("PORTFOLIO HALT: %s (mode=%s)", self.halt_reason, self.halt_mode)
+            if not fresh_buckets:
+                # Combined-book breach with no single bucket tripping: this is
+                # its own alert. When a bucket tripped in this same pass, its
+                # alert already covers the trader-facing notification.
+                self._raise_breaker_alert(
+                    scope="portfolio",
+                    bucket=None,
+                    reason=report.halt_reason,
+                    halt_mode=report.halt_mode,
+                    equity=equity,
+                    daily_pnl=report.daily_pnl,
+                    drawdown_pct=report.drawdown_pct,
+                )
             # Master kill: pause ALL runners across ALL buckets
             for runner in all_runners:
                 if runner.status == STATUS_RUNNING:
@@ -1722,6 +1756,71 @@ class PortfolioManager:
         elif self.halted and not report.halted:
             # Supervisor says clear but latch stays until explicit reset.
             pass
+
+    def _raise_breaker_alert(
+        self,
+        *,
+        scope: str,
+        bucket: Optional[str],
+        reason: str,
+        halt_mode: str,
+        equity: float,
+        daily_pnl: float,
+        drawdown_pct: float,
+    ) -> None:
+        """Publish a breaker trip as a platform alert (best-effort).
+
+        The supervisor already logs trips; the alert broker is what the
+        widget *and* the outbound notifier (Telegram/email) read. Bucket
+        trips use subject ``bucket:<mode>``; the master kill uses
+        ``portfolio``. Never raises — alerting must not break the halt path.
+        """
+        try:
+            from backtest.alerts.broker import get_alert_broker
+            from backtest.alerts.types import AlertType
+
+            reason_text = str(reason or "risk limit breached")
+            limit_type = (
+                "portfolio_max_drawdown"
+                if "drawdown" in reason_text.lower()
+                else "portfolio_daily_loss"
+            )
+            subject = f"bucket:{bucket}" if scope == "bucket" else "portfolio"
+            label = str(bucket or "portfolio").upper()
+            get_alert_broker().raise_alert(
+                AlertType.RISK_LIMIT_BREACH.value,
+                "critical",
+                f"{label} halted: {reason_text}",
+                subject=subject,
+                data={
+                    "scope": scope,
+                    "bucket": bucket,
+                    "symbol": label,
+                    "limit_type": limit_type,
+                    "reason": reason_text,
+                    "halt_mode": str(halt_mode or ""),
+                    "equity": round(float(equity), 2),
+                    "daily_pnl": round(float(daily_pnl), 2),
+                    "drawdown_pct": round(float(drawdown_pct or 0.0), 4),
+                },
+            )
+        except Exception:  # noqa: BLE001 — alerting never breaks the halt path
+            logger.exception("breaker alert raise failed")
+
+    @staticmethod
+    def _resolve_breaker_alerts(subjects: List[str]) -> None:
+        """Resolve breaker alerts for scopes a reset cleared (best-effort)."""
+        try:
+            from backtest.alerts.broker import get_alert_broker
+            from backtest.alerts.types import AlertType
+
+            broker = get_alert_broker()
+            for subject in subjects:
+                broker.resolve_key(
+                    AlertType.RISK_LIMIT_BREACH.value, subject, reason="breaker reset"
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("breaker alert resolve failed")
 
     # ------------------------------------------------------------------ #
     # Aggregation
@@ -2155,10 +2254,13 @@ def reset_portfolio_manager(
         if _MANAGER is not None:
             _MANAGER.shutdown()
         # Alerts belong to the manager's book: a fresh manager starts with a
-        # fresh alert broker (no stale alerts/subscriptions from the old one).
+        # fresh alert broker (no stale alerts/subscriptions from the old one),
+        # and the outbound notifier is stopped before its broker goes away.
         try:
             from backtest.alerts.broker import reset_alert_broker
+            from backtest.alerts.notifier import stop_alert_notifier
 
+            stop_alert_notifier()
             reset_alert_broker()
         except Exception:  # noqa: BLE001
             pass

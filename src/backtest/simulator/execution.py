@@ -54,7 +54,13 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Sequence
 
 from backtest.simulator.enums import OrderStatus, OrderType, TimeInForce
 from backtest.simulator.errors import ValidationError
-from backtest.simulator.fees import PAPER_FREE_PROFILE, CommissionCalculator, TradeSegment
+from backtest.simulator.fees import (
+    PAPER_FREE_PROFILE,
+    BrokerProfile,
+    CommissionCalculator,
+    TradeSegment,
+    get_broker_preset,
+)
 from backtest.simulator.fill import Fill
 from backtest.simulator.fill_providers import (
     BrokerFillProvider,
@@ -83,6 +89,7 @@ __all__ = [
     "OrderExecutor",
     "free_executor",
     "load_execution_config",
+    "costed_executor",
     "DEFAULT_EXECUTION_CONFIG_PATH",
     # ticket P3.3 — the pluggable fill seam (re-exported for convenience)
     "FillDecision",
@@ -381,6 +388,41 @@ def free_executor(
         config=config,
         slippage=SlippageCalculator.disabled(),
         fees=CommissionCalculator(broker=PAPER_FREE_PROFILE),
+        portfolio=portfolio,
+    )
+
+
+def costed_executor(
+    portfolio: "Portfolio | None" = None,
+    broker: str | BrokerProfile | None = "mstock",
+    max_participation: Decimal | str | None = "1",
+) -> "OrderExecutor":
+    """Deterministic, FULL-COST :class:`OrderExecutor` (rule R-E1).
+
+    Same deterministic execution contract as :func:`free_executor` (fixed
+    seed, no slippage, no price improvement, no market-hours gate) but the
+    fee engine prices the real statutory stack for the named broker
+    (mstock default: ₹20/order equity intraday, full STT/exchange/SEBI/
+    IPFT/stamp/GST). Use it wherever a backtest must answer "does this
+    strategy survive realistic costs?" — the R-E1 haircut check.
+
+    Deterministic like ``free_executor``: same bars + params → identical
+    fills and fees, every run.
+    """
+    config = ExecutionConfig(
+        seed=42,
+        price_improvement_probability=Decimal("0"),
+        enforce_market_hours=False,
+    )
+    if max_participation is not None:
+        config.max_participation = Decimal(max_participation)
+    profile = get_broker_preset(broker) if isinstance(broker, str) else broker
+    if profile is None:
+        profile = PAPER_FREE_PROFILE
+    return OrderExecutor(
+        config=config,
+        slippage=SlippageCalculator.disabled(),
+        fees=CommissionCalculator(broker=profile),
         portfolio=portfolio,
     )
 

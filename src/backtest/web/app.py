@@ -30,6 +30,7 @@ from backtest.api import (
     forward_bp,
     intelligence_bp,
     portfolio_bp,
+    settings_bp,
     strategies_bp,
 )
 from backtest.api.playbooks import playbooks_bp
@@ -351,6 +352,7 @@ def create_app(
     app.register_blueprint(intelligence_bp)
     app.register_blueprint(playbooks_bp)
     app.register_blueprint(analytics_bp)
+    app.register_blueprint(settings_bp)
 
     # SSE broadcast cadence for the portfolio command center.
     app.config.setdefault("PORTFOLIO_SSE_INTERVAL", 1.0)
@@ -405,10 +407,6 @@ def create_app(
             source=app.config.get("BACKTEST_SOURCE", "synthetic"),
         )
 
-    @app.get("/dashboard")
-    def dashboard_page() -> Any:
-        return render_template("dashboard.html", active="dashboard")
-
     @app.get("/compare")
     def compare_page() -> Any:
         return render_template("compare.html", active="compare")
@@ -450,6 +448,10 @@ def create_app(
     @app.get("/risk")
     def risk_page() -> Any:
         return render_template("risk.html", active="risk")
+
+    @app.get("/settings")
+    def settings_page() -> Any:
+        return render_template("settings.html", active="settings")
 
     @app.get("/data")
     def data_page() -> Any:
@@ -497,9 +499,20 @@ def create_app(
 def start_portfolio_intelligence(enabled: bool = True, interval: "float | None" = None) -> None:
     """Start the alert evaluator thread + alert/history persistence.
 
+    Also starts the outbound notifier (Telegram/email) — it subscribes to the
+    alert broker directly and is deliberately started *before* the
+    intelligence toggle below: breaker-trip alerts are safety messages and
+    must leave the process even when the intelligence layer is disabled.
+
     Tests never call this (they drive ``evaluate()`` directly). Fail-soft: a
     broken intelligence layer logs and leaves trading untouched.
     """
+    try:
+        from backtest.alerts.notifier import start_alert_notifier
+
+        start_alert_notifier()
+    except Exception:  # noqa: BLE001 — notifications are best-effort
+        logger.exception("[alerts] outbound notifier failed to start")
     try:
         from backtest.forward.portfolio_manager import get_portfolio_manager
 

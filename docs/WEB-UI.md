@@ -108,12 +108,6 @@ only when the broker `version` changes; expanded state in
 page content can keep clear of it. Pinned by `tests/js/test_alert_widget.mjs`.
 See `docs/ALERTS-GUIDE.md`.
 
-### 4. Dashboard (`/dashboard`)
-**Template:** `templates/dashboard.html`
-**JS:** `static/js/dashboard.js`
-
-Overview of all strategies and their status.
-
 ## Money formatting
 
 Every amount goes through `static/js/components/currency.js` (`Money.format`,
@@ -207,7 +201,6 @@ reference: `docs/PORTFOLIO-INTELLIGENCE.md`.
 - `backtest.js` — Orchestrates backtest page
 - `compare.js` — Orchestrates compare page
 - `forward.js` — Orchestrates forward test page
-- `dashboard.js` — Orchestrates dashboard
 - `session_state.js` — LocalStorage session persistence
 - `broker_auth_modal.js` — Auth modal for broker login
 - `broker_status.js` — Broker connection status indicator
@@ -222,7 +215,6 @@ static/
 │   ├── compare/       # Compare-specific charts
 │   ├── backtest.js    # Backtest page controller
 │   ├── compare.js     # Compare page controller
-│   ├── forward.js     # Forward test page controller
-│   └── dashboard.js   # Dashboard controller
+│   └── forward.js     # Forward test page controller
 └── img/           # Images
 ```

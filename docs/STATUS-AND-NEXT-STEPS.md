@@ -187,12 +187,15 @@ doc is stale, this file follows the code.
 12. ~~Orphaned code: `forward/live_engine.py` (697 lines)~~ **already deleted**
     (folded into `data/mstock_live_feed.py` per P3.4; its old tests now exercise
     `ForwardTestingEngine`) ~~dead config files (`market_data.yaml`, `time_sync.yaml`)~~
-    **already removed** — both closed by architect review. Remaining here:
-    legacy `/dashboard` route + `dashboard.html` template slated for retirement.
-12b. **(New) Repo hygiene:** `graphify-out/` + `.idea/` tracked despite
-    `.gitignore` (52 files) → `git rm -r --cached`; move shared test fixtures
-    out of test-to-test imports (`test_bucket_risk.py` ← `test_live_engine.py`)
-    into a helpers/conftest module.
+    **already removed** — both closed by architect review.
+    ~~legacy `/dashboard` route + `dashboard.html` template~~ **retired
+    (2026-09-28)** — route, template, `dashboard.js` and the nav link removed.
+12b. **(New) Repo hygiene:** ~~`graphify-out/` + `.idea/` tracked despite
+    `.gitignore` (52 files) → `git rm -r --cached`~~ **DONE (2026-09-28)** —
+    untracked from the index. ~~move shared test fixtures out of test-to-test
+    imports (`test_bucket_risk.py` ← `test_live_engine.py`) into a
+    helpers/conftest module~~ **DONE** — `tests/forward/helpers.py` hosts the
+    shared live fixtures; both test modules import from it.
 12c. ~~**(New) Corporate actions**~~ — **DONE (2026-09-17).** Policy wired:
      `src/backtest/data/corporate_actions.py`. Storage stays RAW;
      back-adjustment happens at READ time (`AdjustedSource`, wrapped into
@@ -209,14 +212,23 @@ doc is stale, this file follows the code.
      `tests/test_corporate_actions.py`. **Operator TODO:** populate
      `data/corporate_actions.csv` for the live universe (NSE announcements),
      then flip `enabled: true`.
-13. **Production server:** still Flask dev server. #4 (state persistence) is
-    DONE — the restart-survival half of the Gunicorn blocker is closed; the
-    multi-worker trap remains (shared mutable state across workers), so
-    Gunicorn still wants `--workers 1` + `--preload`, or an external store
-    before scaling out.
+13. ~~**Production server:** still Flask dev server.~~ **DONE (2026-09-28)** —
+    `backtest.web.wsgi:app` + `gunicorn.conf.py` (workers=1, gthread, preload
+    OFF: create_app starts per-process daemon threads, so a preloaded import
+    would fork them dead). The multi-worker trap stands — one worker until
+    live state (runners/broker session/alerts) is externalised.
 14. Timeframe cosmetic on synthetic/CSV (daily bars only — gap G6).
 15. Money inexact on SQLite (NUMERIC→float) — Postgres for anything reported.
-16. Broker cost rates are FY 2024-25 — re-verify against a fresh contract note.
+16. ~~Broker cost rates are FY 2024-25 — re-verify against a fresh contract
+    note.~~ **DONE (2026-09-28)** — re-verified against published FY 2026-27
+    rates. Budget 2026 raised F&O STT effective 2026-04-01: futures sell
+    0.02%→0.05%, options sell 0.1%→0.15%, exercise 0.125%→0.15% (exercise not
+    modelled). Updated `IndiaEquityFees` defaults, the mstock block in
+    `config/brokers.yaml`, tests and docs. Equity rates (delivery 0.1% both
+    sides, intraday 0.025% sell), NSE exchange txn (0.00297/0.00173/0.03503%),
+    SEBI ₹10/cr, IPFT ₹10/cr, stamp duty and GST 18% all confirmed unchanged.
+    **Remaining manual step:** reconcile a fresh mStock contract note via
+    `CommissionCalculator.validate_against_contract_note()` (T8.3 workflow).
 17. Alerts (email/Telegram) for breaker trips; strategy auto-kill on
     underperformance (Roadmap 3d).
 

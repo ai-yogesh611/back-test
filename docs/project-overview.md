@@ -528,7 +528,7 @@ backtest papertrade --mode walkforward --strategies X --from D1 --to D2
 ### Web pages
 
 `/` · `/backtest` · `/compare` · `/forward` · `/portfolio` · `/portfolio/live` ·
-`/portfolio/paper` · `/options` · `/dashboard` · `/data` · `/health`
+`/portfolio/paper` · `/data` · `/health`
 
 ### REST API
 
@@ -648,9 +648,10 @@ Straight from the code and trackers, not aspirational:
    for reported numbers.
 10. **Legacy `dashboard/app.py`** duplicates `/forward` and is slated for
     retirement (tracker item #11).
-11. **Broker cost rates are FY 2024-25** and India changes them regularly —
-    `config/brokers.yaml` warns to check a recent contract note before trusting
-    cost-sensitive results.
+11. **Broker cost rates drift** — point-in-time figures, re-verified
+    2026-09-28 (equity FY 2024-25; F&O STT per Budget 2026, effective
+    2026-04-01). India changes rates regularly — `config/brokers.yaml` warns to
+    check a recent contract note before trusting cost-sensitive results.
 
 ---
 

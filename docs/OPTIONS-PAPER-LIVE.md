@@ -294,7 +294,8 @@ quote-implied vol.
 ## 6. Fees (the honest part)
 
 Option costs are **not** just ₹20 brokerage. The full NFO stack for one
-NIFTY lot (75 units at a ₹120.50 premium), mStock flat plan, FY 2024-25:
+NIFTY lot (75 units at a ₹120.50 premium), mStock flat plan, re-verified
+2026-09-28 (F&O STT per Budget 2026, effective 2026-04-01):
 
 | Component | Rate | Amount |
 |---|---|---|
@@ -303,7 +304,7 @@ NIFTY lot (75 units at a ₹120.50 premium), mStock flat plan, FY 2024-25:
 | SEBI turnover | ₹10/crore | 0.01 |
 | IPFT | ₹10/crore | 0.01 |
 | Stamp duty | 0.003%, **buy side only** | 0.27 |
-| STT | 0.1% of premium, **sell side only** | — (buy) / 9.04 (sell) |
+| STT | 0.15% of premium, **sell side only** | — (buy) / 13.56 (sell) |
 | GST | 18% on brokerage + exchange + SEBI + IPFT (never on STT/stamp) | 4.17 |
 | **Total (buy leg)** | | **27.63** |
 

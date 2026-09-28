@@ -162,7 +162,9 @@ def save_session(token: str, expires_at: datetime, broker: str = "mstock") -> bo
             except OSError:
                 pass
             raise
-        logger.info("remember-session: %s session saved (expires %s)", broker, expires_at.isoformat())
+        logger.info(
+            "remember-session: %s session saved (expires %s)", broker, expires_at.isoformat()
+        )
         return True
     except Exception:  # noqa: BLE001 — persistence must never break auth
         logger.warning("remember-session save failed: %s", path, exc_info=True)
@@ -193,7 +195,9 @@ def load_session() -> Optional[dict[str, Any]]:
         return None
 
     if _now() >= expires_at:
-        logger.info("remember-session: saved %s session already expired — removing", data.get("broker"))
+        logger.info(
+            "remember-session: saved %s session already expired — removing", data.get("broker")
+        )
         delete_saved_session()
         return None
 

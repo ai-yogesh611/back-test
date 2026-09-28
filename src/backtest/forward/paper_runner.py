@@ -2646,7 +2646,10 @@ class StrategyRunner:
         # convention): a clean watch session spawns with 0/0 and never
         # auto-pauses. A 0 limit can't mean "zero tolerance" — it would trip
         # on the first ₹1 (or instantly, 0 >= 0).
-        if self.config.max_drawdown_pct > 0 and self.max_drawdown_pct >= self.config.max_drawdown_pct:
+        if (
+            self.config.max_drawdown_pct > 0
+            and self.max_drawdown_pct >= self.config.max_drawdown_pct
+        ):
             breach = (
                 f"instance max drawdown {self.max_drawdown_pct:.1%} >= "
                 f"{self.config.max_drawdown_pct:.1%}"

@@ -61,7 +61,9 @@ STRIKES = [D(s) for s in (24400, 24500, 24600, 24700, 24800, 24900, 25000, 25100
 # A realistic ~3-week horizon: Black-Scholes becomes degenerate (delta -> 1)
 # for very long expiries, and the Greeks assertions need sane math.
 EXPIRY = date.today() + timedelta(days=21)
-# 0.1% sell-side STT anchor: 75 x 120.50 premium -> 9.04 STT, 27.63 total.
+# Buy-side contract-note anchor (contains no sell-side STT): 75 x 120.50
+# premium -> ₹27.63 total. The sell side pays STT at 0.15% of premium
+# post-2026-04-01 (Budget 2026).
 CONTRACT_NOTE_ANCHOR = D("27.63")
 
 
@@ -344,8 +346,8 @@ class TestFeesThroughPipeline:
         )
         # Per-leg itemisation present and consistent with the merged totals.
         assert fees.get("leg_0_stt") == D("0")
-        assert fees.get("leg_1_stt") == D("7.13")  # 0.1% of 75 x 95
-        assert fees.get("stt") == D("7.13")
+        assert fees.get("leg_1_stt") == D("10.69")  # 0.15% of 75 x 95
+        assert fees.get("stt") == D("10.69")
         assert fees.get("brokerage") == D("40.00")
 
 
