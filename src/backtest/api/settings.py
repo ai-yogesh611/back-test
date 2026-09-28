@@ -19,10 +19,11 @@ runs started after the save).
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any
 
 from flask import Blueprint, jsonify, request
 
+from backtest.api.broker_profiles_store import _diverges
 from backtest.logging_config import get_logger
 
 settings_bp = Blueprint("settings_api", __name__)
@@ -115,29 +116,6 @@ def _db_segments() -> list[dict[str, Any]]:
         return []
 
 
-def _normalised(value: Any) -> Any:
-    """Compare rates across yaml/DB without caring how a number was written."""
-    if isinstance(value, dict):
-        return {key: _normalised(item) for key, item in sorted(value.items())}
-    if isinstance(value, str):
-        try:
-            return float(value)
-        except ValueError:
-            return value
-    return value
-
-
-def _diverges(stored: Mapping[str, Any], reference: Mapping[str, Any] | None) -> bool:
-    """True when the panel's numbers differ from the file/preset they came from."""
-    if not reference:
-        return False
-    for key in ("statutory_rates", "commission_model", "minimum_commission", "currency",
-                "default_segment"):
-        if _normalised(stored.get(key)) != _normalised(reference.get(key)):
-            return True
-    return False
-
-
 def _reference_rows() -> dict[str, dict[str, Any]]:
     """What the file/preset says, keyed by broker — the comparison baseline."""
     from backtest.api.broker_profiles_store import _preset_rows, _yaml_rows
@@ -178,6 +156,9 @@ def list_broker_profiles() -> tuple:
         if row.get("origin") != "db":
             # No stored row: the number in force is the file/preset as written.
             reasons.append("config/brokers.yaml" if in_file else "built-in preset")
+        elif row.get("matches_file"):
+            # Stored, but still exactly what the file says — nothing to explain.
+            reasons.append("config/brokers.yaml")
         elif _diverges(row, reference):
             # The stored row is what prices a run, so when it disagrees with the
             # file a later edit there would silently do nothing. Say it here.

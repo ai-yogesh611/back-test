@@ -153,6 +153,37 @@ def _seed_rows() -> list[dict[str, Any]]:
 #: Actor recorded when the seed pass re-applies the file to a cached row.
 YAML_SYNC_ACTOR = "yaml-sync"
 
+#: Fields that decide whether a stored row still says what its source says.
+_COMPARED_FIELDS = (
+    "statutory_rates",
+    "commission_model",
+    "minimum_commission",
+    "currency",
+    "default_segment",
+)
+
+
+def _normalised(value: Any) -> Any:
+    """Compare rates across yaml/DB without caring how a number was written."""
+    if isinstance(value, dict):
+        return {key: _normalised(item) for key, item in sorted(value.items())}
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return value
+    return value
+
+
+def _diverges(stored: Mapping[str, Any], reference: Mapping[str, Any] | None) -> bool:
+    """True when a stored row disagrees with the file/preset it came from."""
+    if not reference:
+        return False
+    return any(
+        _normalised(stored.get(field)) != _normalised(reference.get(field))
+        for field in _COMPARED_FIELDS
+    )
+
 
 class BrokerProfileStore:
     """CRUD + audit for broker cost-model profiles, DB-backed."""
@@ -313,8 +344,15 @@ class BrokerProfileStore:
             # that share this table; they are state, not brokers to trade.
             if not str(row["profile_id"]).startswith("__")
         }
-        for row in _yaml_rows():
-            stored.setdefault(row["profile_id"], row)
+        file_rows = {row["profile_id"]: row for row in _yaml_rows()}
+        for profile_id, row in stored.items():
+            # A stored row is not automatically an override: the seed copies
+            # the file, so say whether the numbers in force are still the
+            # file's (``matches_file``) or something the panel changed.
+            reference = file_rows.get(profile_id)
+            row["matches_file"] = bool(reference) and not _diverges(row, reference)
+        for profile_id, row in file_rows.items():
+            stored.setdefault(profile_id, row)
         return sorted(stored.values(), key=lambda row: row["profile_id"])
 
     def get_catalogue_profile(self, profile_id: str) -> dict[str, Any] | None:

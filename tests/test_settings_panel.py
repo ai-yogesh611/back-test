@@ -23,11 +23,17 @@ Phase 2 coverage (certified v2 §0 #2/#4/#6):
 
 from __future__ import annotations
 
+import shutil
+import subprocess
+from pathlib import Path
+
 import pytest
 
 from backtest.api.broker_profiles_store import BrokerProfileStore
 from backtest.db.models import BrokerProfileRow
 from backtest.simulator.fees import BrokerProfile, CommissionCalculator, load_broker_profile
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture()
@@ -221,7 +227,9 @@ class TestBrokerCatalogue:
         # ibkr is written in config/brokers.yaml, so it is "configured", but it
         # is still not in use — the panel does not expand it.
         assert rows["ibkr"]["group"] == "configured"
-        assert rows["ibkr"]["usage"] == [], "matches the file, so it needs no note"
+        # A stored row that still says exactly what the file says is labelled
+        # with the file — no drift, nothing to explain.
+        assert rows["ibkr"]["usage"] == ["config/brokers.yaml"]
         assert body["counts"]["in_use"] >= 2
         assert body["counts"]["configured"] >= 1
         reset_segments_config()
@@ -266,6 +274,21 @@ class TestBrokerCatalogue:
             for a in store.get_audit("zerodha")
         ), "the panel edit is the row's own record"
 
+    def test_a_stored_row_says_whether_it_still_matches_the_file(self, store):
+        """Seeded rows copy the file; a panel edit is what makes them an override."""
+        store.seed_from_yaml()
+        catalogue = {row["profile_id"]: row for row in store.list_catalogue()}
+        assert catalogue["dhan"]["matches_file"] is True
+        assert catalogue["ibkr"]["matches_file"] is True
+        # upstox is a preset the file does not define: nothing to match.
+        assert catalogue["upstox"]["matches_file"] is False
+
+        store.upsert_profile(
+            {"profile_id": "dhan", "statutory_rates": {"stt_delivery": "0.002"}}
+        )
+        after = {row["profile_id"]: row for row in store.list_catalogue()}
+        assert after["dhan"]["matches_file"] is False
+
     def test_a_validated_row_is_never_re_synced(self, store):
         """A validation stamp is a decision: the file must not undo it."""
         store.mark_validated("mstock", "CN-1")
@@ -298,6 +321,23 @@ class TestBrokerCatalogue:
 # ---------------------------------------------------------------------------
 # DB row → BrokerProfile: pricing parity with the preset
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_panel_grouping_harness():
+    """The broker cards in a stub DOM — the page's JS is inline, so drive it.
+
+    This harness is what caught the summary line's nested double quotes, which
+    killed the whole inline script (the panel rendered as static markup).
+    """
+    harness = _REPO_ROOT / "tests" / "js" / "test_settings_profiles.mjs"
+    result = subprocess.run(
+        ["node", str(harness)], cwd=_REPO_ROOT, capture_output=True, text=True, timeout=60
+    )
+    assert (
+        result.returncode == 0
+    ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "9 tests passed" in result.stdout
 
 
 class TestProfileRebuild:

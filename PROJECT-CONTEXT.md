@@ -40,15 +40,22 @@ backtest papertrade --mode walkforward --strategies X --from D1 --to D2  # Paper
 ```
 
 ## Test Status
-- ✅ 3386 passed, 28 skipped, 4 xfailed — `PYTHONPATH=src pytest tests/ -q`
-  (as of 2026-09-28, post Consolidated P&L / PRD-002; the count drifts per ticket)
-  Skips are environment-gated (mStock credentials, optional readers, node absent).
-- ✅ 82 JS behaviour assertions across 7 Node harnesses (`tests/js/*.mjs`) — positions
-  actions, Orders tab (amend + aging), and the P&L page's view models in a stub DOM
-  (`tests/test_web_components.py` + `tests/test_reporting_ui.py`; skipped without node)
-- ✅ Reporting suite: `tests/test_reporting_{core,exports,email,api,ui}.py` — tax
-  classification/estimate, ledger counting, exports read back (PDF/OOXML), the mailer's
-  never-send-by-accident rule, and every endpoint incl. its 400s
+- ✅ 3418 passed, 28 skipped, 4 xfailed, 3 xpassed — `PYTHONPATH=src pytest tests/ -q`
+  (as of 2026-09-28, post Consolidated P&L / PRD-002 + the broker-catalogue grouping;
+  the count drifts per ticket). Skips are environment-gated (mStock credentials,
+  optional readers, node absent). The xfail/xpass pair in
+  `tests/strategies/test_registry_template.py` is the per-bar-budget probe: it flips
+  with machine load, not with code (verified: 4/3 in isolation, 5/2 under a full run).
+- ✅ 91 JS behaviour assertions across 8 Node harnesses (`tests/js/*.mjs`) — positions
+  actions, Orders tab (amend + aging), the P&L page's view models, and the Cost & Risk
+  broker-card grouping (extracted from the template's inline script) in a stub DOM
+  (`tests/test_web_components.py`, `tests/test_reporting_ui.py`,
+  `tests/test_settings_panel.py`; skipped without node)
+- ✅ Reporting suite: `tests/test_reporting_{core,exports,email,api,ui}.py` +
+  `tests/test_reporting_sources.py` — tax classification/estimate, ledger counting,
+  the DB read path (broker attribution never guessed, paper zero-costs, estimated
+  stacks flagged), exports read back (PDF/OOXML), the mailer's never-send-by-accident
+  rule, and every endpoint incl. its 400s. Package coverage 93% (every module ≥88%).
 - ⚠ Sandbox note: rebuild the venv each session —
   `python3 -m venv /home/user/.venv && /home/user/.venv/bin/pip install -q -r requirements.txt pytest-cov flake8`
 

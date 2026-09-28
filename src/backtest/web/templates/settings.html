@@ -178,7 +178,12 @@
       var card = el("div", { class: "settings-card", style: "border:1px solid var(--border,#333); border-radius:10px; padding:12px;" });
       var head = el("div", { style: "display:flex; justify-content:space-between; align-items:center;" });
       head.appendChild(el("strong", null, p.profile_name));
-      if (p.is_preset) head.appendChild(el("span", { class: "muted", title: "Built-in preset — edits are audited overrides" }, "preset"));
+      var chip = p.origin === "yaml" || p.matches_file
+        ? ["config/brokers.yaml", "The numbers in force are the file's own — an edit here becomes an audited override"]
+        : p.is_preset
+          ? ["preset", "Built-in preset — edits are audited overrides"]
+          : [null, null];
+      if (chip[0]) head.appendChild(el("span", { class: "muted", title: chip[1] }, chip[0]));
       card.appendChild(head);
       card.appendChild(el("div", { class: "muted", style: "margin:4px 0;" }, p.profile_id + " · " + p.currency + " · " + p.default_segment));
       if (p.validated_on) {
@@ -227,7 +232,7 @@
     var summary = document.getElementById("settings-profile-summary");
     if (summary) {
       summary.textContent = inUse.length + " broker(s) in use · " + rest.length
-        + " more available (collapsed) — nothing outside "In use" prices a run.";
+        + ' more available (collapsed) — nothing outside "In use" prices a run.';
     }
 
     host.appendChild(groupSection("in_use", inUse, "h3"));
