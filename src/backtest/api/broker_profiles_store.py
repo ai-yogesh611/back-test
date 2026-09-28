@@ -7,6 +7,11 @@ Phase 1 of the architect-certified design (docs/drafts/BROKER-CAPITAL-SETTINGS-P
 * **YAML bootstrap**: on first use the store seeds itself from
   ``config/brokers.yaml`` (or the built-in presets when the file is absent) so
   a fresh deployment starts with the same rates the yaml path produced.
+* **YAML is also part of the catalogue**: a broker that is defined only in
+  ``config/brokers.yaml`` (e.g. ``dhan``) is listed and editable, not invisible.
+  Editing it writes a DB row — an audited override, exactly like a preset.
+  Until then the yaml file stays the source of truth for it, so editing the
+  file still takes effect (a seeded DB row would have frozen the old rates).
 * **Running runners are never mutated** (v2 §0): profiles are snapshotted into
   a :class:`~backtest.simulator.fees.CommissionCalculator` at construction;
   edits apply to runs started afterwards.
@@ -20,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import date
+from pathlib import Path
 from typing import Any, Mapping
 
 from sqlalchemy import select
@@ -28,7 +34,6 @@ from backtest.db.models import BrokerProfileAudit, BrokerProfileRow
 from backtest.simulator.fees import (
     BROKER_PRESETS,
     IndiaEquityFees,
-    get_broker_preset,
 )
 
 __all__ = ["BrokerProfileStore", "get_broker_profile_store"]
@@ -36,57 +41,113 @@ __all__ = ["BrokerProfileStore", "get_broker_profile_store"]
 logger = logging.getLogger("backtest.api.settings")
 
 
-def _preset_rows() -> list[dict[str, Any]]:
-    """Seed payloads for every built-in preset (idempotent bootstrap)."""
+def _yaml_broker_names() -> list[str]:
+    """Broker ids defined in ``config/brokers.yaml`` (may exceed the presets)."""
+    from backtest.simulator.fees import DEFAULT_BROKER_CONFIG_PATH
+
+    path = Path(DEFAULT_BROKER_CONFIG_PATH)
+    if not path.exists():
+        return []
+    try:
+        import yaml
+
+        document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception as exc:  # noqa: BLE001 — an unreadable file is not a panel error
+        logger.warning("could not read %s for the broker catalogue (%s)", path, exc)
+        return []
+    brokers = document.get("brokers") if isinstance(document, Mapping) else None
+    return sorted(str(name) for name in (brokers or {}))
+
+
+def _row_from_profile(name: str, profile: Any, *, origin: str) -> dict[str, Any]:
+    """One catalogue row: the same shape whether it came from yaml or a preset."""
+    schedule = profile.fee_schedule
+    rates: dict[str, Any] = {}
+    if isinstance(schedule, IndiaEquityFees):
+        rates = {
+            "stt_delivery": str(schedule.stt_delivery),
+            "stt_intraday_sell": str(schedule.stt_intraday_sell),
+            "exchange_txn_equity": str(schedule.exchange_txn_equity),
+            "sebi_turnover": str(schedule.sebi_turnover),
+            "ipft": str(schedule.ipft),
+            "stamp_duty_delivery": str(schedule.stamp_duty_delivery),
+            "stamp_duty_intraday": str(schedule.stamp_duty_intraday),
+            "gst_rate": str(schedule.gst_rate),
+            "dp_charges": str(schedule.dp_charges),
+        }
+    commission = profile.commission_model.to_dict()
+    delivery = (
+        profile.delivery_commission_model.to_dict()
+        if profile.delivery_commission_model is not None
+        else None
+    )
+    options = (
+        profile.options_commission_model.to_dict()
+        if profile.options_commission_model is not None
+        else None
+    )
+    return {
+        "profile_id": name,
+        "profile_name": name.replace("_", " ").title(),
+        "is_preset": origin == "preset",
+        "origin": origin,
+        "currency": profile.currency,
+        "default_segment": profile.default_segment,
+        "commission_model": {
+            "default": commission,
+            **({"delivery": delivery} if delivery else {}),
+            **({"options": options} if options else {}),
+        },
+        "statutory_rates": rates,
+        "minimum_commission": (
+            float(profile.minimum_commission)
+            if profile.minimum_commission is not None
+            else None
+        ),
+    }
+
+
+def _yaml_rows() -> list[dict[str, Any]]:
+    """Catalogue rows for brokers defined in ``config/brokers.yaml``.
+
+    The yaml path bypasses the DB on purpose: this is what the *file* says, so
+    the panel can offer a broker the fee engine already knows how to price even
+    when no DB row exists yet (``dhan``, before its first edit).
+    """
+    from backtest.simulator.fees import DEFAULT_BROKER_CONFIG_PATH, load_broker_profile
+
     rows: list[dict[str, Any]] = []
-    for name, factory in sorted(BROKER_PRESETS.items()):
-        profile = factory()
-        schedule = profile.fee_schedule
-        rates: dict[str, Any] = {}
-        if isinstance(schedule, IndiaEquityFees):
-            rates = {
-                "stt_delivery": str(schedule.stt_delivery),
-                "stt_intraday_sell": str(schedule.stt_intraday_sell),
-                "exchange_txn_equity": str(schedule.exchange_txn_equity),
-                "sebi_turnover": str(schedule.sebi_turnover),
-                "ipft": str(schedule.ipft),
-                "stamp_duty_delivery": str(schedule.stamp_duty_delivery),
-                "stamp_duty_intraday": str(schedule.stamp_duty_intraday),
-                "gst_rate": str(schedule.gst_rate),
-                "dp_charges": str(schedule.dp_charges),
-            }
-        commission = profile.commission_model.to_dict()
-        delivery = (
-            profile.delivery_commission_model.to_dict()
-            if profile.delivery_commission_model is not None
-            else None
-        )
-        options = (
-            profile.options_commission_model.to_dict()
-            if profile.options_commission_model is not None
-            else None
-        )
-        rows.append(
-            {
-                "profile_id": name,
-                "profile_name": name.replace("_", " ").title(),
-                "is_preset": True,
-                "currency": profile.currency,
-                "default_segment": profile.default_segment,
-                "commission_model": {
-                    "default": commission,
-                    **({"delivery": delivery} if delivery else {}),
-                    **({"options": options} if options else {}),
-                },
-                "statutory_rates": rates,
-                "minimum_commission": (
-                    float(profile.minimum_commission)
-                    if profile.minimum_commission is not None
-                    else None
-                ),
-            }
-        )
+    for name in _yaml_broker_names():
+        try:
+            profile = load_broker_profile(path=DEFAULT_BROKER_CONFIG_PATH, broker=name)
+        except Exception as exc:  # noqa: BLE001 — one bad entry must not hide the rest
+            logger.warning("could not read broker %r from yaml (%s)", name, exc)
+            continue
+        rows.append(_row_from_profile(name, profile, origin="yaml"))
     return rows
+
+
+def _preset_rows() -> list[dict[str, Any]]:
+    """Catalogue rows for every built-in preset."""
+    return [
+        _row_from_profile(name, factory(), origin="preset")
+        for name, factory in sorted(BROKER_PRESETS.items())
+    ]
+
+
+def _seed_rows() -> list[dict[str, Any]]:
+    """Rows for a fresh database: ``config/brokers.yaml`` wins where it speaks.
+
+    The file is the thing a human edits, so a fresh deployment must start with
+    what the file says rather than with a built-in default that silently
+    disagreed with it. Brokers the file does not mention keep their preset.
+    """
+    rows = {row["profile_id"]: row for row in _preset_rows()}
+    for row in _yaml_rows():
+        merged = dict(row)
+        merged["is_preset"] = merged["profile_id"] in BROKER_PRESETS
+        rows[merged["profile_id"]] = merged
+    return [rows[key] for key in sorted(rows)]
 
 
 class BrokerProfileStore:
@@ -115,7 +176,9 @@ class BrokerProfileStore:
         """
         with self._manager.session() as session:
             row = session.get(BrokerProfileRow, profile_id)
-            if row is None:
+            if row is None and self.get_catalogue_profile(profile_id) is None:
+                # A broker the fee engine can price (yaml/preset) is selectable
+                # even before it has a DB row; anything else is a typo.
                 raise ValueError(f"unknown profile {profile_id!r}")
             marker = session.get(BrokerProfileRow, "__active__")
             old = marker.commission_model.get("active") if marker is not None else None
@@ -142,10 +205,14 @@ class BrokerProfileStore:
                 row.profile_id
                 for row in session.execute(select(BrokerProfileRow)).scalars()
             }
-            for payload in _preset_rows():
+            for payload in _seed_rows():
                 if payload["profile_id"] in existing:
                     continue
-                session.add(BrokerProfileRow(**payload))
+                session.add(
+                    BrokerProfileRow(
+                        **{k: v for k, v in payload.items() if k != "origin"}
+                    )
+                )
                 added += 1
         if added:
             logger.info("seeded %d broker profiles from presets/yaml", added)
@@ -159,9 +226,48 @@ class BrokerProfileStore:
             return [self._row_to_dict(row) for row in rows]
 
     def get_profile(self, profile_id: str) -> dict[str, Any] | None:
+        """A stored profile (DB row only — see :meth:`get_catalogue_profile`)."""
         with self._manager.session() as session:
             row = session.get(BrokerProfileRow, profile_id)
             return self._row_to_dict(row) if row is not None else None
+
+    def list_catalogue(self) -> list[dict[str, Any]]:
+        """Everything the panel may show: stored profiles + yaml-only brokers.
+
+        A broker defined in ``config/brokers.yaml`` but never edited here has no
+        DB row, and used to be invisible in the panel — so it could not be
+        edited or contract-note validated either, even though the fee engine
+        priced it. Those come from the file with ``origin='yaml'``; stored rows
+        report ``origin='db'`` (seeded/edited) so the UI can say where a number
+        actually comes from.
+        """
+        stored = {
+            row["profile_id"]: {**row, "origin": "db"}
+            for row in self.list_profiles()
+            # ``__active__`` / ``__live_kill_switch__`` are internal marker rows
+            # that share this table; they are state, not brokers to trade.
+            if not str(row["profile_id"]).startswith("__")
+        }
+        for row in _yaml_rows():
+            stored.setdefault(row["profile_id"], row)
+        return sorted(stored.values(), key=lambda row: row["profile_id"])
+
+    def get_catalogue_profile(self, profile_id: str) -> dict[str, Any] | None:
+        """One profile for the editor: the stored row, else the yaml definition.
+
+        Internal marker rows (``__active__``, ``__live_kill_switch__``) share the
+        table but are state, not brokers — they are never editable, selectable
+        or validatable as a cost model.
+        """
+        if str(profile_id or "").startswith("__"):
+            return None
+        stored = self.get_profile(profile_id)
+        if stored is not None:
+            return {**stored, "origin": "db"}
+        for row in _yaml_rows():
+            if row["profile_id"] == profile_id:
+                return row
+        return None
 
     def get_audit(self, profile_id: str, limit: int = 100) -> list[dict[str, Any]]:
         with self._manager.session() as session:
@@ -229,11 +335,31 @@ class BrokerProfileStore:
         when: date | None = None,
         changed_by: str = "admin",
     ) -> None:
-        """Stamp a profile with the contract-note validation (v2 §0 #6)."""
+        """Stamp a profile with the contract-note validation (v2 §0 #6).
+
+        A yaml-only broker (no DB row yet) is materialised first: a PASS against
+        a real contract note is exactly the moment its rates stop being a
+        suggestion, and the stamp has to be recorded somewhere. The row keeps
+        ``is_preset=False`` so it reads as "your validated override".
+        """
         with self._manager.session() as session:
             row = session.get(BrokerProfileRow, profile_id)
             if row is None:
-                raise ValueError(f"unknown profile {profile_id!r}")
+                catalogue = self.get_catalogue_profile(profile_id)
+                if catalogue is None:
+                    raise ValueError(f"unknown profile {profile_id!r}")
+                row = BrokerProfileRow(
+                    profile_id=catalogue["profile_id"],
+                    profile_name=catalogue["profile_name"],
+                    is_preset=False,
+                    currency=catalogue["currency"],
+                    default_segment=catalogue["default_segment"],
+                    commission_model=dict(catalogue["commission_model"]),
+                    statutory_rates=dict(catalogue["statutory_rates"]),
+                    minimum_commission=catalogue.get("minimum_commission"),
+                )
+                session.add(row)
+                session.flush()
             row.validated_on = when or date.today()
             row.contract_note_ref = document_id
             self._audit(
@@ -253,7 +379,11 @@ class BrokerProfileStore:
             from backtest.simulator.fees import BrokerProfile
 
             return BrokerProfile(**BrokerProfileRow(**self._db_shape(stored)).to_profile_kwargs())
-        return get_broker_preset(profile_id)
+        # Not in the DB yet: the yaml file may still define it (``dhan``), and
+        # load_broker_profile falls through to the built-in preset after that.
+        from backtest.simulator.fees import load_broker_profile
+
+        return load_broker_profile(broker=profile_id)
 
     # -- internals ---------------------------------------------------------
 

@@ -146,6 +146,37 @@ Tax rates, reconciliation tolerances and the mailer live in
 `config/reporting.yaml` (override the file with `REPORTING_CONFIG_PATH`); every
 export carries the "estimate, verify with a chartered accountant" disclaimer.
 
+### 5. Cost & Risk Settings (`/settings`)
+**Template:** `templates/settings.html` (inline JS)
+
+Broker cost models, segments and the global live kill-switch.
+
+**Broker cards are grouped by adoption:**
+- **In use** — expanded: the active broker plus every broker a segment or the
+  data routing points at. These are the brokers that price your runs.
+- **In config/brokers.yaml** and **Built-in presets** — collapsed behind
+  *Show N other broker(s)*. This is the rate catalogue: 10+ presets exist so a
+  new broker is a rates change, not a code change. Nothing here is charged
+  until a segment points at it.
+
+Each card carries its provenance (`config/brokers.yaml`, built-in preset, or
+*this row wins* when a panel edit differs from the file), its validation stamp,
+and an **Edit / validate** button.
+
+**Where a rate comes from** — the fee engine resolves **DB row → `config/brokers.yaml`
+→ built-in preset**. So:
+1. a broker only in the yaml (e.g. `dhan`) is editable in the panel — the first
+   save creates the DB row, audited;
+2. after that, the DB row wins and a later yaml edit does nothing until the
+   panel row is changed back (the card says so);
+3. a contract-note validation stamps the profile, which is also what the live
+   arming gate checks.
+
+**Endpoints:** `GET/PUT /api/settings/brokers[/<id>]`, `GET .../<id>/audit`,
+`POST .../<id>/validate`, `GET/PUT /api/settings/active-broker`,
+`GET/PUT/DELETE /api/settings/segments[/<id>]`, the kill-switch endpoints and the
+segment live-arming checklist (see `docs/WEB-UI.md` §Reporting for the P&L side).
+
 ### Global: Alert widget (every page)
 **Template:** `templates/base.html` (`#alert-widget`, rendered only when
 `PORTFOLIO_INTELLIGENCE_ENABLED`) **JS:** `static/js/components/alert_widget.js`

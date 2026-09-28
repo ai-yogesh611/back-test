@@ -132,6 +132,20 @@ backtest papertrade --mode walkforward --strategies X --from D1 --to D2  # Paper
   (Schedule CG A3/B3 + PGBP); the s.44AD/ITR-4 presumptive route cannot carry
   capital gains, and a delivery-only book → ITR-2 (see the `guidance` sheet).
 
+## Cost & Risk Settings — broker catalogue (`/settings`)
+- The panel lists every broker the fee engine can price, grouped by adoption:
+  **In use** (active broker + segment/data-routing brokers, expanded) and
+  **everything else collapsed** (config/brokers.yaml entries + built-in presets).
+  A yaml-only broker such as `dhan` used to be invisible here, so it could not
+  be edited or contract-note validated; it now appears with its file rates.
+- Provenance chips: `config/brokers.yaml`, built-in preset, or *"differs from …
+  this row wins"* when a panel edit shadows the file. Internal marker rows
+  (`__active__`, `__live_kill_switch__`) are filtered out — they are state, not
+  brokers.
+- Resolution order for a cost model is **DB row → `config/brokers.yaml` → built-in
+  preset**; the panel's save is an audited override, and a contract-note PASS
+  stamps the profile (which is what the live-arming gate checks).
+
 ## Build Dependencies
 Python 3.10+, pandas, numpy, requests, python-dotenv, matplotlib, pytest
 

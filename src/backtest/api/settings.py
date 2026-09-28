@@ -2,7 +2,8 @@
 
 Endpoints for broker cost-model profiles:
 
-* ``GET  /api/settings/brokers``              list profiles (+ preset lineage, validation stamp)
+* ``GET  /api/settings/brokers``              list profiles (+ lineage, validation stamp,
+  in-use grouping — ``config/brokers.yaml`` brokers included, not just presets)
 * ``GET  /api/settings/brokers/<id>``         one profile
 * ``PUT  /api/settings/brokers/<id>``         upsert (audited per field)
 * ``GET  /api/settings/brokers/<id>/audit``   who/when/old→new trail
@@ -18,6 +19,8 @@ runs started after the save).
 
 from __future__ import annotations
 
+from typing import Any, Mapping
+
 from flask import Blueprint, jsonify, request
 
 from backtest.logging_config import get_logger
@@ -32,18 +35,154 @@ def _store():
     return get_broker_profile_store()
 
 
+#: Where a broker is used, in the order the panel should explain it.
+_USAGE_ACTIVE = "active broker"
+
+
+def _usage_index() -> dict[str, list[str]]:
+    """broker id → why it is in use (active broker, segments, data routing).
+
+    Fail-soft: a missing DB or an unreadable segments file means fewer reasons,
+    never a broken settings page.
+    """
+    usage: dict[str, list[str]] = {}
+
+    def add(broker: str | None, reason: str) -> None:
+        if not broker:
+            return
+        reasons = usage.setdefault(str(broker).strip().lower(), [])
+        if reason not in reasons:
+            reasons.append(reason)
+
+    try:
+        active = _store().get_active_broker()
+    except Exception:  # noqa: BLE001
+        active = None
+    if active:
+        add(active, _USAGE_ACTIVE)
+
+    try:
+        from backtest.brokers.segments import get_segments_config
+
+        config = get_segments_config()
+        for segment in config.segments.values():
+            add(segment.broker, f"segment: {segment.name}")
+        add(config.data_primary, "data: primary")
+        add(config.data_fallback, "data: fallback")
+    except Exception:  # noqa: BLE001 — segments are optional context
+        log.debug("segments unavailable for usage annotation", exc_info=True)
+
+    for segment in _db_segments():
+        add(segment.get("broker"), f"segment: {segment.get('segment_id')}")
+    return usage
+
+
+def _db_segments() -> list[dict[str, Any]]:
+    """Panel-configured segments, read without constructing the segments store.
+
+    ``SegmentsStore.__init__`` idempotently creates the live kill-switch
+    sentinel row — a *write* that also opts the deployment into the live-arming
+    gate. Listing a broker must never do that, so this reads the rows directly.
+    """
+    try:
+        from sqlalchemy import select
+
+        from backtest.db.models import SegmentRow
+
+        with _store()._manager.session() as session:
+            return [row.to_dict() for row in session.execute(select(SegmentRow)).scalars()]
+    except Exception:  # noqa: BLE001 — optional context, never a panel error
+        log.debug("DB segments unavailable for usage annotation", exc_info=True)
+        return []
+
+
+def _normalised(value: Any) -> Any:
+    """Compare rates across yaml/DB without caring how a number was written."""
+    if isinstance(value, dict):
+        return {key: _normalised(item) for key, item in sorted(value.items())}
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return value
+    return value
+
+
+def _diverges(stored: Mapping[str, Any], reference: Mapping[str, Any] | None) -> bool:
+    """True when the panel's numbers differ from the file/preset they came from."""
+    if not reference:
+        return False
+    for key in ("statutory_rates", "commission_model", "minimum_commission", "currency",
+                "default_segment"):
+        if _normalised(stored.get(key)) != _normalised(reference.get(key)):
+            return True
+    return False
+
+
+def _reference_rows() -> dict[str, dict[str, Any]]:
+    """What the file/preset says, keyed by broker — the comparison baseline."""
+    from backtest.api.broker_profiles_store import _preset_rows, _yaml_rows
+
+    rows = {row["profile_id"]: row for row in _preset_rows()}
+    for row in _yaml_rows():
+        rows[row["profile_id"]] = row  # the file wins, as in _seed_rows()
+    return rows
+
+
 @settings_bp.get("/api/settings/brokers")
 def list_broker_profiles() -> tuple:
+    """The broker catalogue, grouped by whether you actually trade through it.
+
+    ``group`` is one of ``in_use`` (active broker / referenced by a segment or
+    the data routing), ``configured`` (defined in ``config/brokers.yaml``) or
+    ``catalogue`` (a built-in preset you have not adopted). The panel renders
+    the first two and collapses the third, so the page shows the brokers that
+    matter without deleting the rate catalogue that makes a new broker a
+    one-line change.
+    """
     try:
-        return jsonify({"profiles": _store().list_profiles()}), 200
+        rows = _store().list_catalogue()
     except Exception as exc:  # noqa: BLE001 — panel must degrade, not 500-loop
         log.exception("list broker profiles failed")
         return jsonify({"error": str(exc)}), 503
 
+    usage = _usage_index()
+    references = _reference_rows()
+    counts = {"in_use": 0, "configured": 0, "catalogue": 0}
+    for row in rows:
+        broker = row["profile_id"]
+        reference = references.get(broker) or {}
+        in_file = reference.get("origin") == "yaml"
+        reasons = list(usage.get(broker, []))
+        if row.get("validated_on"):
+            reasons.append(f"validated {row['validated_on']}")
+        if row.get("origin") != "db":
+            # No stored row: the number in force is the file/preset as written.
+            reasons.append("config/brokers.yaml" if in_file else "built-in preset")
+        elif _diverges(row, reference):
+            # The stored row is what prices a run, so when it disagrees with the
+            # file a later edit there would silently do nothing. Say it here.
+            source = "config/brokers.yaml" if in_file else "the built-in preset"
+            reasons.append(f"differs from {source} — this row wins")
+        row["usage"] = reasons
+
+        # Grouping is about *adoption*, not drift: a preset you never touched
+        # does not become "in use" because its numbers moved underneath it.
+        referenced = [reason for reason in usage.get(broker, []) if reason != "config/brokers.yaml"]
+        if referenced or row.get("validated_on"):
+            row["group"] = "in_use"
+        elif in_file:
+            row["group"] = "configured"
+        else:
+            row["group"] = "catalogue"
+        counts[row["group"]] += 1
+    log.debug("broker catalogue: %s", counts)
+    return jsonify({"profiles": rows, "counts": counts}), 200
+
 
 @settings_bp.get("/api/settings/brokers/<profile_id>")
 def get_broker_profile(profile_id: str) -> tuple:
-    profile = _store().get_profile(profile_id)
+    profile = _store().get_catalogue_profile(profile_id)
     if profile is None:
         return jsonify({"error": f"unknown profile {profile_id!r}"}), 404
     return jsonify({"profile": profile}), 200

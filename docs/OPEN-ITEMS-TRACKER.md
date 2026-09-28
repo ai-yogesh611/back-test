@@ -58,8 +58,16 @@ agent work. Blocked only by item 1 passing.
 - [ ] **14. Validate the `dhan` broker profile** — *Who: You (one contract note)*.
       `config/brokers.yaml` holds an INDICATIVE dhan profile (intraday 0.03% capped
       ₹20, delivery ₹0 + stamp/DP, options flat ₹20/order). Fee *estimates* for dhan
-      trades depend on it; confirm against a real contract note via
-      Settings → broker-profile validator, then fix the numbers if they differ.
+      trades depend on it.
+
+      **Where to write the real numbers:** `/settings` → the **dhan** card (it now
+      appears under *In use*, since `equity_intraday` points at it) → paste the
+      corrected commission/statutory fields → **Save** (audited) → then
+      **Edit / validate** → contract-note validator with the note's per-component
+      amounts; an all-PASS stamps the profile. Editing `config/brokers.yaml` also
+      works *until* the panel saves a row for that broker: the fee engine resolves
+      **DB row → yaml → preset**, and the card shows *"differs from
+      config/brokers.yaml — this row wins"* when the stored row is shadowing the file.
 - [ ] **15. Turn the monthly email on** — *Who: You*. Default is dry-run: each run
       writes a complete `.eml` (HTML body + PDF) to `var/reporting/outbox`. To send:
       set `monthly_email.enabled: true` and `smtp.host` in `config/reporting.yaml`,

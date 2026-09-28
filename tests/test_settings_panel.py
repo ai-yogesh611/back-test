@@ -108,6 +108,143 @@ class TestStoreCrud:
 
 
 # ---------------------------------------------------------------------------
+# Catalogue: yaml brokers are visible, and grouped by whether you trade them
+# ---------------------------------------------------------------------------
+
+
+class TestBrokerCatalogue:
+    """``dhan`` is defined in ``config/brokers.yaml`` but is not a preset.
+
+    It used to be invisible in the panel — so it could not be edited or
+    contract-note validated there even though the fee engine priced it.
+    """
+
+    def test_internal_marker_rows_are_not_brokers(self, store):
+        """The kill-switch / active-broker markers live in the same table."""
+        from backtest.api.segments_store import KILL_SWITCH_ID
+
+        store.seed_from_yaml()
+        store.set_active_broker("mstock")
+        with store._manager.session() as session:
+            session.add(
+                BrokerProfileRow(
+                    profile_id=KILL_SWITCH_ID,
+                    profile_name="Global live kill-switch",
+                    is_preset=False,
+                    commission_model={"enabled": False},
+                    statutory_rates={},
+                )
+            )
+        ids = {row["profile_id"] for row in store.list_catalogue()}
+        assert "__active__" not in ids
+        assert KILL_SWITCH_ID not in ids
+        assert "mstock" in ids
+        # the API must not turn them into cards either
+        assert store.get_catalogue_profile(KILL_SWITCH_ID) is None
+
+    def test_yaml_only_broker_appears_with_its_rates(self, store):
+        catalogue = {row["profile_id"]: row for row in store.list_catalogue()}
+        assert "dhan" in catalogue
+        dhan = catalogue["dhan"]
+        assert dhan["currency"] == "INR"
+        # The rates come from the file, not from a made-up default.
+        assert dhan["statutory_rates"]["stt_delivery"] == "0.001"
+        assert dhan["statutory_rates"]["gst_rate"] == "0.18"
+
+    def test_yaml_only_broker_is_editable_and_resolvable(self, store):
+        before = store.get_catalogue_profile("dhan")
+        assert before is not None
+        store.upsert_profile(
+            {
+                "profile_id": "dhan",
+                "profile_name": "Dhan (validated)",
+                "statutory_rates": dict(before["statutory_rates"]),
+                "commission_model": {"default": {"model": "flat", "per_trade": "25"}},
+            }
+        )
+        after = store.get_profile("dhan")
+        assert after["commission_model"]["default"]["per_trade"] == "25"
+        # Editing is an audited override, not a silent rewrite.
+        assert any(a["field_changed"] == "__created__" for a in store.get_audit("dhan"))
+        per_trade = store.resolve("dhan").commission_model.to_dict()["per_trade"]
+        assert float(per_trade) == 25.0
+
+    def test_validation_stamp_on_a_yaml_only_broker_is_recorded(self, store):
+        store.mark_validated("dhan", "CN-2026-10-01")
+        stored = store.get_profile("dhan")
+        assert stored is not None, "the stamp needs a row to live in"
+        assert stored["validated_on"] is not None
+        assert stored["contract_note_ref"] == "CN-2026-10-01"
+
+    def test_yaml_only_broker_can_be_made_active(self, store):
+        store.set_active_broker("dhan")
+        assert store.get_active_broker() == "dhan"
+        assert load_broker_profile().name == "dhan"  # DB-first resolution
+
+    def test_api_groups_the_catalogue_and_marks_usage(self, client, monkeypatch, tmp_path):
+        import textwrap
+
+        segments = tmp_path / "segments.yaml"
+        segments.write_text(
+            textwrap.dedent(
+                """
+                segments:
+                  options_index:
+                    broker: mstock
+                    mode: paper
+                  equity_intraday:
+                    broker: dhan
+                    mode: paper
+                data:
+                  primary: mstock
+                """
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("SEGMENTS_CONFIG_PATH", str(segments))
+        from backtest.brokers.segments import reset_segments_config
+
+        reset_segments_config()
+        body = client.get("/api/settings/brokers").get_json()
+        rows = {row["profile_id"]: row for row in body["profiles"]}
+        assert rows["mstock"]["group"] == "in_use"
+        assert rows["dhan"]["group"] == "in_use"
+        assert "segment: equity_intraday" in rows["dhan"]["usage"]
+        assert "data: primary" in rows["mstock"]["usage"]
+        # A broker nobody references is not "in use" — it stays available
+        # (upstox is a preset that config/brokers.yaml does not define at all).
+        assert rows["upstox"]["group"] == "catalogue"
+        assert rows["upstox"]["usage"] == []
+        # ibkr is written in config/brokers.yaml, so it is "configured", but it
+        # is still not in use — the panel does not expand it.
+        assert rows["ibkr"]["group"] == "configured"
+        assert rows["ibkr"]["usage"] == [], "matches the file, so it needs no note"
+        assert body["counts"]["in_use"] >= 2
+        assert body["counts"]["configured"] >= 1
+        reset_segments_config()
+
+    def test_api_serves_a_yaml_only_profile_for_the_editor(self, client):
+        response = client.get("/api/settings/brokers/dhan")
+        assert response.status_code == 200
+        profile = response.get_json()["profile"]
+        assert profile["profile_id"] == "dhan"
+        assert profile["statutory_rates"]["gst_rate"] == "0.18"
+
+    def test_panel_override_of_the_file_is_flagged(self, client, store):
+        store.upsert_profile(
+            {
+                "profile_id": "dhan",
+                "profile_name": "Dhan",
+                "statutory_rates": {"stt_delivery": "0.002", "gst_rate": "0.18"},
+            }
+        )
+        payload = client.get("/api/settings/brokers").get_json()
+        rows = {r["profile_id"]: r for r in payload["profiles"]}
+        assert any("this row wins" in reason for reason in rows["dhan"]["usage"])
+        assert rows["dhan"]["group"] == "in_use"  # a segment uses it
+
+
+# ---------------------------------------------------------------------------
 # DB row → BrokerProfile: pricing parity with the preset
 # ---------------------------------------------------------------------------
 
@@ -276,7 +413,11 @@ class TestKillSwitch:
         segments.set_live_kill_switch(True)
         assert segments.is_live_kill_switch_on() is True
         segments.set_live_kill_switch(True)  # idempotent — no second audit row
-        rows = [a for a in segments.get_audit("__live_kill_switch__") if a["field_changed"] == "live_kill_switch"]
+        rows = [
+            a
+            for a in segments.get_audit("__live_kill_switch__")
+            if a["field_changed"] == "live_kill_switch"
+        ]
         assert len(rows) == 1
         assert rows[0]["new_value"] == "True"
         segments.set_live_kill_switch(False)
@@ -302,7 +443,9 @@ class TestSegmentCrud:
 
     def test_update_audits_each_field(self, segments):
         segments.upsert_segment({"segment_id": "s1", "mode": "paper"})
-        segments.upsert_segment({"segment_id": "s1", "mode": "live", "risk_limits": {"daily_loss_limit": 1000}})
+        segments.upsert_segment(
+            {"segment_id": "s1", "mode": "live", "risk_limits": {"daily_loss_limit": 1000}}
+        )
         fields = [a["field_changed"] for a in segments.get_audit("s1")]
         assert fields[0] in ("mode", "risk_limits")
         assert "mode" in fields and "risk_limits" in fields
@@ -342,7 +485,9 @@ class TestLiveArmingGate:
     def test_segment_needs_mode_limit_and_validated_broker(self, segments, store):
         segments.set_live_kill_switch(True)
         self._validated_broker(store)
-        segments.upsert_segment({"segment_id": "eq", "mode": "paper", "broker_profile_id": "mstock"})
+        segments.upsert_segment(
+            {"segment_id": "eq", "mode": "paper", "broker_profile_id": "mstock"}
+        )
         blockers = segments.live_arming_blockers("eq")
         assert any("mode is 'paper'" in b for b in blockers)
         assert any("daily_loss_limit" in b for b in blockers)
