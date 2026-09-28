@@ -40,6 +40,11 @@ backtest papertrade --mode walkforward --strategies X --from D1 --to D2  # Paper
 ```
 
 ## Test Status
+- ✅ 1582 passed, 4 skipped (mStock credentials) — `PYTHONPATH=src pytest tests/ -q`
+  (as of 2026-08-31, post-F-01; the count drifts with each refactor ticket)
+- ✅ 36 JS behaviour assertions across 4 Node harnesses (`tests/js/*.mjs`)
+- ✅ Optimization engine: `pytest tests/optimization tests/db/test_migrations_009_013.py`
+  (~105 tests, ~25 s; set `OPTIMIZATION_TEST_PG_URL` for the live PostgreSQL round trip)
 - ✅ 2712 passed, 4 skipped (mStock credentials) — `PYTHONPATH=src pytest tests/ -q`
   (as of 2026-09-23, post Live Order Management Phase 3; the count drifts per ticket)
 - ✅ 69 JS behaviour assertions across 6 Node harnesses (`tests/js/*.mjs`) — the two new
@@ -64,6 +69,8 @@ backtest papertrade --mode walkforward --strategies X --from D1 --to D2  # Paper
 | mstock.py | API client + data normalization | ✅ Complete |
 | preflight.py | DNS/HTTPS/auth checks | ✅ Complete |
 | cli.py | All 5 commands wired | ✅ Complete |
+| optimization/ | Parameter optimization engine: config → search (grid/random/Bayesian/GA) → sensitivity → walk-forward → analysis → store; apply-to-runner + rollback | ✅ New — docs/OPTIMIZATION-ENGINE.md, migrations 009–013 |
+| api/optimize.py | `/api/optimize/*` REST (503 without a DB) | ✅ New |
 | forward/portfolio_manager.py | Command center: runners/buckets/breakers + positions/orders read + manual position actions | ✅ LOM (2026-09-23) |
 | web/static/js/components/position_actions.js | Positions-table action buttons + their modals | ✅ LOM (2026-09-23) |
 | web/static/js/components/orders_tab.js | Orders tab: ledger rows, slippage, cancel, badge, amend + aging (Phase 3) | ✅ LOM (2026-09-23) |
