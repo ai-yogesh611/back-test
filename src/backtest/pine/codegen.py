@@ -122,8 +122,8 @@ class {strategy_name}(Strategy):
             lines.append(f'            "default": {default},')
             lines.append(f'            "type": "{ptype}",')
             lines.append(f'            "label": "{name.replace("_", " ").title()}",')
-            lines.append(f'            "tooltip": "Parameter from Pine Script",')
-            lines.append(f"        }},")
+            lines.append('            "tooltip": "Parameter from Pine Script",')
+            lines.append('        }},')
         return "\n".join(lines)
 
     def _generate_indicator_calculations(
@@ -152,9 +152,12 @@ class {strategy_name}(Strategy):
             elif func_key == "ta.macd" and len(args) >= 3:
                 fast = args[1] if isinstance(args[1], (int, float)) else 12
                 slow = args[2] if isinstance(args[2], (int, float)) else 26
-                signal_period = args[3] if len(args) > 3 and isinstance(args[3], (int, float)) else 9
+                signal_period = (
+                    args[3] if len(args) > 3 and isinstance(args[3], (int, float)) else 9
+                )
                 lines.append(
-                    f"        {var_name}_macd, {var_name}_signal, {var_name}_hist = self.macd(close, {fast}, {slow}, {signal_period})"
+                    f"        {var_name}_macd, {var_name}_signal, {var_name}_hist = "
+                    f"self.macd(close, {fast}, {slow}, {signal_period})"
                 )
 
             elif func_key == "ta.atr" and len(args) >= 4:
@@ -165,7 +168,8 @@ class {strategy_name}(Strategy):
                 period = args[1] if isinstance(args[1], (int, float)) else 20
                 std = args[2] if isinstance(args[2], (int, float)) else 2
                 lines.append(
-                    f"        {var_name}_upper, {var_name}_middle, {var_name}_lower = self.bollinger_bands(close, {period}, {std})"
+                    f"        {var_name}_upper, {var_name}_middle, {var_name}_lower = "
+                    f"self.bollinger_bands(close, {period}, {std})"
                 )
 
             elif func_key in ("ta.crossover", "ta.crossunder"):
@@ -195,7 +199,7 @@ class {strategy_name}(Strategy):
                             lines.append(f"            return Signal({signal})")
 
                         elif inner_stmt["function"] == "strategy.close":
-                            lines.append(f"            return Signal(0)")
+                            lines.append("            return Signal(0)")
 
                 # Handle else block
                 if statement.get("else_body"):
@@ -207,7 +211,7 @@ class {strategy_name}(Strategy):
                                 signal = "+1" if "long" in direction else "-1"
                                 lines.append(f"            return Signal({signal})")
                             elif inner_stmt["function"] == "strategy.close":
-                                lines.append(f"            return Signal(0)")
+                                lines.append("            return Signal(0)")
 
         if not lines:
             lines.append("        # No entry/exit logic found")

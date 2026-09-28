@@ -192,7 +192,7 @@
   function corrColor(v) {
     if (v == null) return "transparent";
     const a = Math.min(1, Math.abs(v));
-    return v >= 0 ? `rgba(239,68,68,${(a * 0.75).toFixed(2)})` : `rgba(59,130,246,${(a * 0.75).toFixed(2)})`;
+    return v >= 0 ? `rgba(224,147,143,${(a * 0.75).toFixed(2)})` : `rgba(59,130,246,${(a * 0.75).toFixed(2)})`;
   }
 
   function renderCorrelation(c) {

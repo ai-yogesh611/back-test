@@ -210,6 +210,9 @@ OUTPUT (Python Strategy):
     return jsonify(
         {
             "prompt": prompt,
-            "usage": "Copy this prompt + your Pine Script, paste into ChatGPT/Claude, get Python code back",
+            "usage": (
+                "Copy this prompt + your Pine Script, paste into ChatGPT/Claude, "
+                "get Python code back"
+            ),
         }
     )

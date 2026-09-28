@@ -1833,7 +1833,8 @@ class StrategyMetadata(Base):
             "signal_kind IN ('equity', 'option')", name="ck_strategy_metadata_signal_kind"
         ),
         CheckConstraint(
-            "regime_vix_low IS NULL OR regime_vix_high IS NULL OR regime_vix_low <= regime_vix_high",
+            "regime_vix_low IS NULL OR regime_vix_high IS NULL "
+            "OR regime_vix_low <= regime_vix_high",
             name="ck_strategy_metadata_vix_range",
         ),
         Index("idx_strategy_metadata_name", "strategy_name"),

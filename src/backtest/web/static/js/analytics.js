@@ -28,7 +28,7 @@
             banner.id = 'analyticsErrorBanner';
             banner.setAttribute('role', 'alert');
             banner.style.cssText = 'margin: 10px 0; padding: 10px 14px; border-radius: 6px; ' +
-                'background: rgba(239,68,68,0.12); color: var(--danger); border: 1px solid rgba(239,68,68,0.4); ' +
+                'background: rgba(224,147,143,0.12); color: var(--danger); border: 1px solid rgba(224,147,143,0.4); ' +
                 'display: flex; justify-content: space-between; align-items: center; gap: 12px;';
             const host = document.querySelector('.page-content') || document.body;
             host.insertBefore(banner, host.firstChild);
@@ -262,7 +262,7 @@
                     {
                         label: 'Portfolio Equity (₹)',
                         data: dataEquity,
-                        borderColor: '#10b981',
+                        borderColor: '#7fc8a0',
                         backgroundColor: 'rgba(16, 185, 129, 0.1)',
                         fill: true,
                         tension: 0.25,
@@ -391,7 +391,7 @@
                             labels: card.mini_curve.map((_, i) => i),
                             datasets: [{
                                 data: card.mini_curve,
-                                borderColor: m.total_return_pct >= 0 ? '#10b981' : '#ef4444',
+                                borderColor: m.total_return_pct >= 0 ? '#7fc8a0' : '#e0938f',
                                 borderWidth: 2,
                                 fill: false,
                                 pointRadius: 0,
@@ -616,7 +616,7 @@
                     {
                         label: 'Equity (₹)',
                         data: dataEquity,
-                        borderColor: '#10b981',
+                        borderColor: '#7fc8a0',
                         backgroundColor: 'rgba(16, 185, 129, 0.12)',
                         fill: true,
                         tension: 0.25,
@@ -689,7 +689,7 @@
                     {
                         label: 'Rolling Win Rate (%)',
                         data: dataWr,
-                        borderColor: '#f59e0b',
+                        borderColor: '#d4b26a',
                         backgroundColor: 'rgba(245, 158, 11, 0.1)',
                         fill: false,
                         borderDash: [3, 3],
@@ -817,8 +817,8 @@
             const pnl = Number(t.pnl || 0);
             const pnlColor = pnl >= 0 ? 'var(--success)' : 'var(--danger)';
             const pnlSign = pnl >= 0 ? '+' : '';
-            const badge = pnl >= 0 ? '<span class="badge" style="background: rgba(16,185,129,0.15); color: var(--success); padding: 2px 6px; border-radius: 4px;">WIN</span>'
-                                   : '<span class="badge" style="background: rgba(239,68,68,0.15); color: var(--danger); padding: 2px 6px; border-radius: 4px;">LOSS</span>';
+            const badge = pnl >= 0 ? '<span class="badge" style="background: rgba(127,200,160,0.15); color: var(--success); padding: 2px 6px; border-radius: 4px;">WIN</span>'
+                                   : '<span class="badge" style="background: rgba(224,147,143,0.15); color: var(--danger); padding: 2px 6px; border-radius: 4px;">LOSS</span>';
 
             // Instrument class tag (fix #10): option qty is LOTS, equity qty
             // is shares — say which one the row is.

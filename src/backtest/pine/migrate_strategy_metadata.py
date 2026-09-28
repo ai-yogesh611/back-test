@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from backtest.db.models import StrategyMetadata, Base
 from backtest.plugins import discover_plugins
-from backtest.strategy.registry import get_all, signal_kind
+from backtest.strategy.registry import get_all
 
 
 def migrate_strategy_metadata(db_url: str = "sqlite:///backtest.db"):
@@ -32,7 +32,6 @@ def migrate_strategy_metadata(db_url: str = "sqlite:///backtest.db"):
     with Session(engine) as session:
         inserted = 0
         updated = 0
-        skipped = 0
 
         for strategy_info in strategies:
             name = strategy_info["name"]
@@ -75,7 +74,7 @@ def migrate_strategy_metadata(db_url: str = "sqlite:///backtest.db"):
 
         session.commit()
 
-    print(f"\nMigration complete:")
+    print("\nMigration complete:")
     print(f"  Inserted: {inserted}")
     print(f"  Updated: {updated}")
     print(f"  Total: {len(strategies)}")

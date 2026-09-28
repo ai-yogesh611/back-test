@@ -334,7 +334,7 @@
                 },
             });
         }
-        drawLineChart('wfEquityChart', [{ label: 'Out-of-sample (stitched test windows)', points: wf.oos_curve || [], color: '#22c55e' }]);
+        drawLineChart('wfEquityChart', [{ label: 'Out-of-sample (stitched test windows)', points: wf.oos_curve || [], color: '#7fc8a0' }]);
     }
 
     // ------------------------------------------------------------ sensitivity
@@ -364,7 +364,7 @@
                     datasets: [{
                         label: 'score', data: s.scores, borderColor: '#8b5cf6', borderWidth: 2, tension: 0.15,
                         pointRadius: s.values.map((v) => (String(v) === String(s.best_value) ? 6 : 3)),
-                        pointBackgroundColor: s.values.map((v) => (String(v) === String(s.best_value) ? '#f59e0b' : (inPlateau(v) ? '#22c55e' : '#64748b'))),
+                        pointBackgroundColor: s.values.map((v) => (String(v) === String(s.best_value) ? '#d4b26a' : (inPlateau(v) ? '#7fc8a0' : '#64748b'))),
                     }],
                 },
                 options: {

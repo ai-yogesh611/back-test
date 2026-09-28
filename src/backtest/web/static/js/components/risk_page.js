@@ -364,7 +364,7 @@
           type: "pie",
           data: {
             labels: bySymbol.slice(0,8).map(s => s.symbol),
-            datasets: [{ data: bySymbol.slice(0,8).map(s => s.notional), backgroundColor: ["#3b82f6","#8b5cf6","#22c55e","#f59e0b","#ef4444","#06b6d4","#ec4899","#84cc16"] }]
+            datasets: [{ data: bySymbol.slice(0,8).map(s => s.notional), backgroundColor: ["#3b82f6","#8b5cf6","#7fc8a0","#d4b26a","#e0938f","#06b6d4","#ec4899","#84cc16"] }]
           },
           options: { responsive: true, plugins: { legend: { labels: { color: "#e2e8f0" } } } }
         });
@@ -393,8 +393,8 @@
             data: {
               labels: hist.map(h => h.ts),
               datasets: [
-                { label: "Daily Loss %", data: hist.map(h => (h.daily_loss_pct*100).toFixed(1)), borderColor: "#ef4444", tension: 0.3, pointRadius: 0 },
-                { label: "Drawdown %", data: hist.map(h => (h.drawdown_pct*100).toFixed(1)), borderColor: "#f59e0b", tension: 0.3, pointRadius: 0 },
+                { label: "Daily Loss %", data: hist.map(h => (h.daily_loss_pct*100).toFixed(1)), borderColor: "#e0938f", tension: 0.3, pointRadius: 0 },
+                { label: "Drawdown %", data: hist.map(h => (h.drawdown_pct*100).toFixed(1)), borderColor: "#d4b26a", tension: 0.3, pointRadius: 0 },
               ]
             },
             options: { responsive: true, animation: false, scales: { x: { display: false }, y: { ticks: { color: "#94a3b8" } } } }

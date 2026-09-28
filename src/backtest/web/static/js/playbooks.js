@@ -58,7 +58,7 @@
 
     const tags = (pb.tags || []).map(t => `<span class="chip">${esc(t)}</span>`).join("");
     // C4: risk_envelope estimated flag — UI must show "estimated" badge next to ₹
-    const riskCap = pb.max_loss_per_trade ? `${fmtMoney(pb.max_loss_per_trade)} <span class="chip" style="background:rgba(245,158,11,0.15); border-color:rgba(245,158,11,0.3); color:#fcd34d;">estimated</span>` : "";
+    const riskCap = pb.max_loss_per_trade ? `${fmtMoney(pb.max_loss_per_trade)} <span class="chip" style="background:rgba(212,178,106,0.15); border-color:rgba(212,178,106,0.3); color:#fcd34d;">estimated</span>` : "";
     const versionBadge = pb.version != null ? `<span class="chip" title="Playbook version — runner snapshots expression at spawn">v${esc(pb.version)}</span>` : "";
 
     return `

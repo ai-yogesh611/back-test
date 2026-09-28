@@ -40,26 +40,26 @@ class PineScriptParser:
             - statements: list of statement dicts
         """
         statements = []
-        
+
         # Keep original lines with their indentation for proper parsing
         original_lines = pine_code.split('\n')
-        
+
         i = 0
         while i < len(original_lines):
             line = original_lines[i]
             stripped = line.split('//')[0].strip()  # Remove comments
-            
+
             # Skip empty lines and version declaration
             if not stripped or stripped.startswith('//@version'):
                 i += 1
                 continue
-            
+
             # Parse declaration: fast = ta.ema(close, 12)
             decl_match = re.match(r'(\w+)\s*=\s*(.+)', stripped)
             if decl_match:
                 var_name = decl_match.group(1)
                 expr = decl_match.group(2).strip()
-                
+
                 # Check if it's a function call
                 func_match = re.match(r'(ta|math)\.(\w+)\((.*)\)', expr)
                 if func_match:
@@ -67,7 +67,7 @@ class PineScriptParser:
                     func_name = func_match.group(2)
                     args_str = func_match.group(3)
                     args = self._parse_args(args_str)
-                    
+
                     statements.append({
                         "type": "indicator_call",
                         "var_name": var_name,
@@ -82,16 +82,16 @@ class PineScriptParser:
                         "name": var_name,
                         "value": expr,
                     })
-                
+
                 i += 1
                 continue
-            
+
             # Parse if statement
             if_match = re.match(r'if\s+(.+):', stripped)
             if if_match:
                 condition_str = if_match.group(1).strip()
                 condition = self._parse_condition(condition_str)
-                
+
                 # Parse body (indented lines)
                 body = []
                 i += 1
@@ -107,7 +107,7 @@ class PineScriptParser:
                         i += 1
                     else:
                         break
-                
+
                 # Check for else
                 else_body = []
                 if i < len(original_lines):
@@ -125,7 +125,7 @@ class PineScriptParser:
                                 i += 1
                             else:
                                 break
-                
+
                 statements.append({
                     "type": "if_statement",
                     "condition": condition,
@@ -133,19 +133,19 @@ class PineScriptParser:
                     "else_body": else_body,
                 })
                 continue
-            
+
             # Parse strategy call (standalone, not in if body)
             strategy_match = re.match(r'strategy\.(entry|close)\((.*)\)', stripped)
             if strategy_match:
                 func = strategy_match.group(1)
                 args_str = strategy_match.group(2)
-                
+
                 if func == 'entry':
                     # strategy.entry("buy", strategy.long)
                     parts = [p.strip() for p in args_str.split(',')]
                     name = parts[0].strip('"\'')
                     direction = parts[1] if len(parts) > 1 else "strategy.long"
-                    
+
                     statements.append({
                         "type": "strategy_call",
                         "function": "strategy.entry",
@@ -155,20 +155,20 @@ class PineScriptParser:
                 elif func == 'close':
                     # strategy.close("buy")
                     name = args_str.strip('"\'')
-                    
+
                     statements.append({
                         "type": "strategy_call",
                         "function": "strategy.close",
                         "name": name,
                     })
-                
+
                 i += 1
                 continue
-            
+
             i += 1
-        
+
         return {"type": "script", "statements": statements}
-    
+
     def _parse_args(self, args_str: str) -> List[Any]:
         """Parse function arguments."""
         args = []
@@ -176,7 +176,7 @@ class PineScriptParser:
             arg = arg.strip()
             if not arg:
                 continue
-            
+
             # Try to parse as number
             try:
                 if '.' in arg:
@@ -186,18 +186,18 @@ class PineScriptParser:
                 continue
             except ValueError:
                 pass
-            
+
             # String literal
             if (arg.startswith('"') and arg.endswith('"')) or \
                (arg.startswith("'") and arg.endswith("'")):
                 args.append(arg)
                 continue
-            
+
             # Variable name or keyword
             args.append(arg)
-        
+
         return args
-    
+
     def _parse_condition(self, condition_str: str) -> Dict[str, Any]:
         """Parse a condition expression."""
         # Check for ta.crossover(a, b)
@@ -209,7 +209,7 @@ class PineScriptParser:
                 "function": "crossover",
                 "args": [crossover_match.group(1).strip(), crossover_match.group(2).strip()],
             }
-        
+
         # Check for ta.crossunder(a, b)
         crossunder_match = re.match(r'ta\.crossunder\(([^,]+),\s*([^)]+)\)', condition_str)
         if crossunder_match:
@@ -219,7 +219,7 @@ class PineScriptParser:
                 "function": "crossunder",
                 "args": [crossunder_match.group(1).strip(), crossunder_match.group(2).strip()],
             }
-        
+
         # Check for comparison: a > b
         comp_match = re.match(r'(.+)\s*(>|<|>=|<=|==|!=)\s*(.+)', condition_str)
         if comp_match:
@@ -229,29 +229,29 @@ class PineScriptParser:
                 "operator": comp_match.group(2),
                 "right": comp_match.group(3).strip(),
             }
-        
+
         # Default: treat as boolean variable
         return {
             "type": "identifier",
             "name": condition_str,
         }
-    
+
     def _parse_statement(self, line: str) -> Dict[str, Any] | None:
         """Parse a single statement line."""
         if not line:
             return None
-        
+
         # Strategy call
         strategy_match = re.match(r'strategy\.(entry|close)\((.*)\)', line)
         if strategy_match:
             func = strategy_match.group(1)
             args_str = strategy_match.group(2)
-            
+
             if func == 'entry':
                 parts = [p.strip() for p in args_str.split(',')]
                 name = parts[0].strip('"\'')
                 direction = parts[1] if len(parts) > 1 else "strategy.long"
-                
+
                 return {
                     "type": "strategy_call",
                     "function": "strategy.entry",
@@ -265,7 +265,7 @@ class PineScriptParser:
                     "function": "strategy.close",
                     "name": name,
                 }
-        
+
         # Assignment with function call
         decl_match = re.match(r'(\w+)\s*=\s*(ta|math)\.(\w+)\((.*)\)', line)
         if decl_match:
@@ -274,7 +274,7 @@ class PineScriptParser:
             func_name = decl_match.group(3)
             args_str = decl_match.group(4)
             args = self._parse_args(args_str)
-            
+
             return {
                 "type": "indicator_call",
                 "var_name": var_name,
@@ -282,7 +282,7 @@ class PineScriptParser:
                 "function": func_name,
                 "args": args,
             }
-        
+
         return None
 
 

@@ -10,7 +10,7 @@ import ast
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Dict, Tuple
 
 from .codegen import PineCodeGenerator
 from .parser import PineScriptParser
