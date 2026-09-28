@@ -80,15 +80,33 @@
             </div>
         </div>
 
-        <!-- Strategy Health Cards Grid -->
+        <!-- Strategy Comparison Table -->
         <div style="margin-bottom: 24px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
                 <h2 class="card-title" style="margin: 0;">Running Strategies</h2>
                 <a href="/portfolio" class="small" style="color: var(--accent); text-decoration: none;">+ Deploy / Manage in Portfolio →</a>
             </div>
-            <div id="strategyCardsGrid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px;">
-                <!-- Dynamically populated -->
+            <div class="card" style="padding: 0; overflow-x: auto;">
+                <table class="matrix-table" style="width: 100%;">
+                    <thead>
+                        <tr id="strategyTableHead">
+                            <th>Strategy</th>
+                            <th class="num" data-sort="return" title="Total return % — click to sort">Return ↕</th>
+                            <th class="num" data-sort="sharpe" title="Sharpe ratio — click to sort">Sharpe ↕</th>
+                            <th class="num" data-sort="drawdown" title="Max drawdown % — click to sort">Max DD ↕</th>
+                            <th class="num" data-sort="winrate" title="Win rate % — click to sort">Win Rate ↕</th>
+                            <th class="num" data-sort="trades" title="Closed trades in period — click to sort">Trades ↕</th>
+                            <th class="num" data-sort="pnl" title="Total P&L in ₹ — click to sort">P&L ↕</th>
+                            <th>Health</th>
+                            <th>Trend</th>
+                        </tr>
+                    </thead>
+                    <tbody id="strategyTableBody">
+                        <tr><td colspan="9" class="muted" style="padding: 16px;">Loading strategies…</td></tr>
+                    </tbody>
+                </table>
             </div>
+            <div class="small muted" style="margin-top: 6px;">Click a row for the full analytics · click a column header to sort · the health badge grades sample-size-adjusted Sharpe / drawdown / win rate.</div>
             <div id="noStrategiesEmpty" class="card empty-state" style="display: none; text-align: center; padding: 40px 20px;">
                 <p class="muted">No running strategy instances found.</p>
                 <p class="small muted" style="margin-top: 8px;">Deploy a strategy in <a href="/portfolio">Portfolio</a> or test in <a href="/forward">Forward Test</a> to view live performance analytics.</p>
@@ -128,6 +146,15 @@
                     <div id="degradationDesc" class="small muted">Rolling Sharpe has degraded significantly compared to historical performance.</div>
                 </div>
             </div>
+        </div>
+
+        <!-- Section 0: Strategy Description (how it works / takes profit / stop loss) -->
+        <div class="card" style="margin-bottom: 20px;">
+            <h3 class="card-title" style="margin-bottom: 10px;">📜 Strategy Description</h3>
+            <div id="strategyDescriptionBody" class="small" style="line-height: 1.6;">
+                <!-- Populated by renderStrategyDescription -->
+            </div>
+            <div id="strategyDescriptionMeta" class="small muted" style="margin-top: 8px;"></div>
         </div>
 
         <!-- Section 1: Key Metrics Header Grid -->

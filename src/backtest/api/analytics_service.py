@@ -52,6 +52,36 @@ _PERF_CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "performanc
 _rf_cache: Optional[float] = None
 
 
+def strategy_description(strategy_name: Any) -> Optional[Dict[str, Any]]:
+    """Registry metadata for a strategy — ``None`` when unregistered.
+
+    Built-ins and plugins both carry ``description`` (the conformance battery
+    enforces it), so this is real content for anything registered. Older
+    strategies may have a stub sentence — the UI renders a backfill
+    placeholder when the text is empty; keep the placeholder client-side so
+    the backfill PR only touches strategy files, not UI code.
+    """
+    name = str(strategy_name or "").strip()
+    if not name:
+        return None
+    try:
+        from backtest.strategy.registry import get_strategy
+
+        cls = get_strategy(name)
+    except Exception:  # noqa: BLE001 — unknown strategy is a display concern
+        return None
+    if cls is None:
+        return None
+    description = str(getattr(cls, "description", "") or "").strip()
+    if not description:
+        return None
+    return {
+        "description": description,
+        "version": str(getattr(cls, "version", "") or ""),
+        "author": str(getattr(cls, "author", "") or ""),
+    }
+
+
 def _risk_free_rate() -> float:
     """Annual risk-free rate: env override → config/performance.yaml → 6%.
 
@@ -573,6 +603,10 @@ class AnalyticsService:
                 "last_trade_ts": closed[-1].get("exit_ts") if closed else None,
             })
 
+        # Registry metadata (description/version/author) per strategy type —
+        # one lookup per distinct strategy_name, not per runner.
+        self._card_descriptions(strategy_cards)
+
         portfolio_metrics = compute_metrics_from_trades(
             all_closed_trades,
             allocated_capital=total_allocated_capital or 100_000.0,
@@ -595,6 +629,15 @@ class AnalyticsService:
             "portfolio_equity_curve": portfolio_equity_curve,
             "alerts": alerts,
         }
+
+    def _card_descriptions(self, cards: List[Dict[str, Any]]) -> None:
+        """Attach ``strategy_meta`` (description/version/author) to each card."""
+        cache: Dict[str, Optional[Dict[str, Any]]] = {}
+        for card in cards:
+            sname = str(card.get("strategy_name") or "")
+            if sname not in cache:
+                cache[sname] = strategy_description(sname)
+            card["strategy_meta"] = cache[sname]
 
     def get_strategy_detail(
         self, instance_id: str, period: str = "90d"
@@ -643,6 +686,7 @@ class AnalyticsService:
             "timeframe": state.get("timeframe"),
             "allocated_capital": allocated,
             "params": detail.get("params", {}),
+            "strategy_meta": strategy_description(state.get("strategy_name")),
             "period": period,
             "metrics": metrics,
             "health": health,
