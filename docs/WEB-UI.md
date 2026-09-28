@@ -119,6 +119,33 @@ and the page are visible. Section state: `localStorage["pi.section.<name>"]`.
 Deep links `…?tab=risk#pi-<section>` switch tab, expand and flash the section.
 See `docs/PORTFOLIO-INTELLIGENCE.md`.
 
+### 4. Consolidated P&L (`/reporting`)
+**Template:** `templates/reporting.html`
+**JS:** `static/js/reporting.js`
+
+One statement across every broker and both books: gross → fees → net → estimated
+tax → net after tax, then by-broker, by-tax-category and the trade ledger, with
+export buttons for the PDF statement, the ITR annexure workbook (xlsx) and the
+trade ledger (csv) — plus a contract-note reconciliation box per broker and a
+dry-run "email this" button.
+
+**UI Elements:**
+- Period selector (defaults to FY-to-date), `include_paper` toggle, broker filter (csv)
+- Ladder card row: Gross P&L · Net P&L · Estimated tax · Net after tax · Cost+tax drag
+- By-broker and tax-categorisation tables (rate, schedule, treatment, loss rule)
+- "What this report does and does not know" — warnings, data notes, source provenance
+- Reconciliation per broker: paste the note's net P&L (+ optional fees) → PASS/WARNING/FAIL
+- Export buttons → `POST /api/reporting/pnl/export/{pdf,itr,trades}`
+- Demo-book toggle (labelled `SIMULATED`, excluded from tax) for previews
+
+**Endpoints:** `GET /api/reporting/pnl/consolidated`, `GET /api/reporting/config`,
+`POST /api/reporting/pnl/export/{pdf,itr,trades}`, `POST /api/reporting/pnl/reconcile`,
+`POST /api/reporting/email`.
+
+Tax rates, reconciliation tolerances and the mailer live in
+`config/reporting.yaml` (override the file with `REPORTING_CONFIG_PATH`); every
+export carries the "estimate, verify with a chartered accountant" disclaimer.
+
 ### Global: Alert widget (every page)
 **Template:** `templates/base.html` (`#alert-widget`, rendered only when
 `PORTFOLIO_INTELLIGENCE_ENABLED`) **JS:** `static/js/components/alert_widget.js`
@@ -204,6 +231,18 @@ Details: [FORWARD-TESTING.md](FORWARD-TESTING.md).
 | GET | `/api/alerts/active` · `/api/alerts/history` · `/api/alerts/<id>` · `/api/alerts/subscriptions` | Alerts |
 | POST | `/api/alerts/<id>/dismiss` · `/review` · `/resolve` | Alert lifecycle |
 
+### Reporting (PRD-002)
+| Method | Endpoint | Response |
+|--------|----------|----------|
+| GET | `/api/reporting/pnl/consolidated?from_date=&to_date=&include_paper=&brokers=&demo=` | The consolidated report (summary ladder, by broker/mode/category, tax, trades) |
+| GET | `/api/reporting/config` | Tax rules, reconciliation thresholds, mailer state (never the password) |
+| POST | `/api/reporting/pnl/export/pdf` · `/itr` · `/trades` | PDF statement (`itr`: `format=xlsx\|csv\|json`) |
+| POST | `/api/reporting/pnl/reconcile` | `{broker, contract_note_pnl, contract_note_fees?, fees_total?}` or `{notes: {broker: {pnl, fees}}}` |
+| POST | `/api/reporting/email` | `{dry_run: true}` writes a `.eml` to `var/reporting/outbox`; sending needs SMTP configured |
+
+Malformed dates / missing note figures are 400s; a missing database is an empty
+report with a warning, never a 500.
+
 All return 503 when started with `--disable-portfolio-intelligence`. Full
 reference: `docs/PORTFOLIO-INTELLIGENCE.md`.
 
@@ -227,6 +266,7 @@ reference: `docs/PORTFOLIO-INTELLIGENCE.md`.
 - `backtest.js` — Orchestrates backtest page
 - `compare.js` — Orchestrates compare page
 - `forward.js` — Orchestrates forward test page
+- `reporting.js` — Consolidated P&L page (view models + exports/reconcile wiring)
 - `session_state.js` — LocalStorage session persistence
 - `broker_auth_modal.js` — Auth modal for broker login
 - `broker_status.js` — Broker connection status indicator

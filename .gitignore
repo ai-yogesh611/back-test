@@ -38,6 +38,9 @@ coverage.xml
 # Tooling output
 graphify-out/
 
+# Local runtime state (report output, dry-run mail outbox)
+/var/
+
 # OS noise
 .DS_Store
 Thumbs.db
