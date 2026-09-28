@@ -34,6 +34,7 @@ from backtest.api import (
     strategies_bp,
 )
 from backtest.api.playbooks import playbooks_bp
+from backtest.api.segments import segments_bp
 from backtest.api.portfolio import list_instances
 from backtest.api.symbols import symbols_bp
 from backtest.brokers.session_manager import get_session_manager
@@ -274,6 +275,19 @@ def create_app(
         → 1.0.
     """
     configure_logging(log_level, log_file)
+    if source == "mock_broker":
+        # Gap-PRD P5: literal `--source mock_broker` — zero-credential
+        # dry-run. Registers the auto-authenticating MockBroker (orders
+        # logged, never submitted) and runs the DATA pipeline as synthetic,
+        # so every downstream source tag stays a known value.
+        from backtest.brokers.session_manager import enable_mock_broker
+
+        enable_mock_broker()
+        source = "synthetic"
+        logger.warning(
+            "[mock-broker] dry-run venue enabled — no credentials required; "
+            "orders are LOGGED, never submitted; data source runs synthetic"
+        )
     app = Flask(
         __name__,
         template_folder=_TEMPLATE_DIR,
@@ -352,6 +366,7 @@ def create_app(
     app.register_blueprint(intelligence_bp)
     app.register_blueprint(playbooks_bp)
     app.register_blueprint(analytics_bp)
+    app.register_blueprint(segments_bp)
     app.register_blueprint(settings_bp)
 
     # SSE broadcast cadence for the portfolio command center.
@@ -594,8 +609,11 @@ def main() -> None:
     parser.add_argument(
         "--source",
         default="synthetic",
-        choices=["synthetic", "csv", "mstock", "dhan", "db"],
-        help="Data source: synthetic | csv | mstock | dhan | db",
+        choices=["synthetic", "csv", "mstock", "dhan", "db", "mock_broker"],
+        help=(
+            "Data source: synthetic | csv | mstock | dhan | db | mock_broker "
+            "(mock_broker = synthetic data + zero-credential dry-run broker, Gap-PRD P5)"
+        ),
     )
     parser.add_argument("--debug", action="store_true")
     parser.add_argument(

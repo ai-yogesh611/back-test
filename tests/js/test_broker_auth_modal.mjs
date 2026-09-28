@@ -222,7 +222,7 @@ await test("open() when unauthenticated shows the credentials view", async () =>
     assert.equal($("broker-auth-step-credentials").hidden, false);
     assert.equal($("broker-auth-step-totp").hidden, true);
     assert.equal($("broker-auth-step-authenticated").hidden, true);
-    assert.match($("broker-auth-title").textContent, /Broker Login/); // generic since the multi-broker registry
+    assert.match($("broker-auth-title").textContent, /Login/); // broker-aware title ("mStock Login" via the registry default, "Broker Login" as the fallback)
     BrokerAuthUI.close();
 });
 

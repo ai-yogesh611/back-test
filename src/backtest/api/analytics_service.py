@@ -3,12 +3,32 @@
 Provides quantitative performance analytics, risk ratios, equity & drawdown curves,
 trade distribution, monthly breakdowns, and edge degradation detection for
 individual running strategies as well as portfolio-level aggregation.
+
+Conventions (ANALYTICS-TAB-GAPS fixes, 2026-09-28):
+
+* **Clock** — naive timestamps are IST market time (bar/exit stamps come off
+  the exchange clock); aware timestamps are trusted as-is. All period
+  filtering compares in absolute time, so the UTC↔IST 5h30 skew can no
+  longer shift "today" boundaries (fix #2).
+* **Breakeven trades are neutral** — ``pnl == 0`` neither extends nor is a
+  win/loss streak, in BOTH the max counters and the current streak (fix #8).
+* **No-loss books** — ``profit_factor`` is ``None`` (frontend renders ∞),
+  never a 99.99 magic number; ``sortino_ratio`` is ``None`` when there is no
+  downside deviation to divide by (frontend renders "n/a") (fixes #5/#8).
+* **Persisted history** — when the portfolio manager has a live trade
+  persister, per-runner analytics merge the DB `trades` rows with the
+  in-memory tail (memory wins on natural-key collisions) and report
+  provenance in a ``history`` block, so the 200-trade memory cap stops
+  silently truncating long histories (fix #3).
 """
 
 from __future__ import annotations
 
 import math
-from datetime import datetime, timezone
+import os
+import re
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -19,16 +39,65 @@ from backtest.logging_config import get_logger
 
 log = get_logger(__name__)
 
+#: Indian market clock — naive bar/exit timestamps are stamped in this zone.
+IST = timezone(timedelta(hours=5, minutes=30))
+
+#: Health ratings below this sample size are statistically meaningless.
+MIN_HEALTH_SAMPLE = 30
+
+#: Option trading symbols end in the strike + CE/PE (e.g. NIFTY26OCT24800CE).
+_OPTION_SYMBOL_RE = re.compile(r"\d+(CE|PE)$", re.IGNORECASE)
+
+_PERF_CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "performance.yaml"
+_rf_cache: Optional[float] = None
+
+
+def _risk_free_rate() -> float:
+    """Annual risk-free rate: env override → config/performance.yaml → 6%.
+
+    Fix #8: the rate used to be hardcoded at 6%; now a config change is a
+    config change. ``ANALYTICS_RISK_FREE_RATE`` wins (ops knob), then the
+    active profile in ``config/performance.yaml`` (the same file the
+    simulator's PerformanceCalculator reads), then the legacy 0.06 default.
+    """
+    global _rf_cache
+    env = os.getenv("ANALYTICS_RISK_FREE_RATE")
+    if env:
+        try:
+            return float(env)
+        except ValueError:
+            log.warning("ANALYTICS_RISK_FREE_RATE=%r is not a number — ignoring", env)
+    if _rf_cache is not None:
+        return _rf_cache
+    rate = 0.06
+    try:
+        import yaml
+
+        raw = yaml.safe_load(_PERF_CONFIG_PATH.read_text()) or {}
+        profile = str(raw.get("active_profile", "default"))
+        block = raw.get(profile) or (raw.get("profiles") or {}).get(profile) or {}
+        default_block = raw.get("default") or {}
+        rate = float(block.get("risk_free_rate", default_block.get("risk_free_rate", rate)))
+    except Exception:  # noqa: BLE001 — config trouble must never break analytics
+        log.debug("performance.yaml risk_free_rate unavailable — using %.2f", rate)
+    _rf_cache = rate
+    return rate
+
 
 def _parse_ts(ts_val: Any) -> Optional[datetime]:
+    """Parse a trade/equity timestamp; NAIVE values are IST market time.
+
+    Fix #2: naive stamps used to be assumed UTC, shifting every period
+    boundary by 5h30 against the exchange clock the runners actually stamp.
+    """
     if not ts_val:
         return None
     if isinstance(ts_val, datetime):
-        return ts_val if ts_val.tzinfo else ts_val.replace(tzinfo=timezone.utc)
+        return ts_val if ts_val.tzinfo else ts_val.replace(tzinfo=IST)
     try:
         dt = pd.to_datetime(ts_val)
         if dt.tzinfo is None:
-            dt = dt.tz_localize("UTC")
+            dt = dt.tz_localize(IST)
         return dt.to_pydatetime()
     except Exception:
         return None
@@ -80,14 +149,20 @@ def _calculate_streaks(pnls: List[float]) -> Dict[str, Any]:
             cur_win = 0
             cur_loss = 0
 
-    last_p = pnls[-1]
-    current_is_win = last_p >= 0
+    # Current streak — SAME convention as the max counters (fix #8):
+    # breakeven (pnl == 0) is neutral, it neither extends a streak nor
+    # belongs to one. A breakeven LAST trade means "no current streak".
+    current_is_win = False
     current_len = 0
-    for p in reversed(pnls):
-        if (p >= 0) == current_is_win:
-            current_len += 1
-        else:
-            break
+    if pnls[-1] != 0:
+        current_is_win = pnls[-1] > 0
+        for p in reversed(pnls):
+            if p == 0:
+                break  # neutral terminates the run
+            if (p > 0) == current_is_win:
+                current_len += 1
+            else:
+                break
 
     return {
         "max_win_streak": max_win,
@@ -100,10 +175,18 @@ def _calculate_streaks(pnls: List[float]) -> Dict[str, Any]:
 def compute_metrics_from_trades(
     trades: List[Dict[str, Any]],
     allocated_capital: float = 100_000.0,
-    risk_free_rate: float = 0.06,
+    risk_free_rate: Optional[float] = None,
     equity_history: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    """Calculate Sharpe, Sortino, Calmar, Win Rate, Drawdown, Expectancy, and Streaks."""
+    """Calculate Sharpe, Sortino, Calmar, Win Rate, Drawdown, Expectancy, and Streaks.
+
+    ``risk_free_rate=None`` (default) resolves via :func:`_risk_free_rate`
+    (env → config/performance.yaml → 6%). Sentinels: ``profit_factor`` is
+    ``None`` for a no-loss book (∞); ``sortino_ratio`` is ``None`` when
+    there is no downside deviation ("n/a", NOT silently the Sharpe).
+    """
+    if risk_free_rate is None:
+        risk_free_rate = _risk_free_rate()
     capital = max(1.0, float(allocated_capital))
     pnls = [float(t.get("pnl", 0.0)) for t in trades]
     total_trades = len(pnls)
@@ -113,6 +196,7 @@ def compute_metrics_from_trades(
             "total_trades": 0,
             "total_pnl": 0.0,
             "total_return_pct": 0.0,
+            "annualized_return_pct": 0.0,
             "sharpe_ratio": 0.0,
             "sortino_ratio": 0.0,
             "calmar_ratio": 0.0,
@@ -143,9 +227,9 @@ def compute_metrics_from_trades(
     gross_profit = sum(wins)
     gross_loss = abs(sum(losses))
     if gross_loss > 0:
-        profit_factor = round(gross_profit / gross_loss, 2)
+        profit_factor: Optional[float] = round(gross_profit / gross_loss, 2)
     elif gross_profit > 0:
-        profit_factor = 99.99
+        profit_factor = None  # ∞ — no losing trades (fix #8: null, not 99.99)
     else:
         profit_factor = 0.0
 
@@ -198,6 +282,7 @@ def compute_metrics_from_trades(
         daily_ret = daily_pnl / capital
         daily_returns_list = daily_ret.tolist()
 
+    sortino: Optional[float]
     if len(daily_returns_list) >= 2:
         ret_series = pd.Series(daily_returns_list)
         std_ret = ret_series.std(ddof=0)
@@ -207,10 +292,10 @@ def compute_metrics_from_trades(
 
         downside = ret_series[ret_series < 0]
         downside_std = downside.std(ddof=0)
+        # Fix #5: no downside deviation → "n/a" (None), never silently the
+        # Sharpe number wearing a Sortino label.
         sortino = (
-            math.sqrt(252.0) * (excess_mean / downside_std)
-            if downside_std > 0
-            else (sharpe if sharpe > 0 else 0.0)
+            math.sqrt(252.0) * (excess_mean / downside_std) if downside_std > 0 else None
         )
     elif len(pnls) >= 2:
         # Approximate per-trade Sharpe annualized assuming ~250 trading periods
@@ -218,33 +303,41 @@ def compute_metrics_from_trades(
         std_pnl = pnl_series.std(ddof=0)
         mean_pnl = pnl_series.mean()
         sharpe = (
-            math.sqrt(min(252, max(12, len(pnls)))) * (mean_pnl / std_pnl)
-            if std_pnl > 0
-            else 0.0
+            math.sqrt(min(252, max(12, len(pnls)))) * (mean_pnl / std_pnl) if std_pnl > 0 else 0.0
         )
         downside = pnl_series[pnl_series < 0]
         downside_std = downside.std(ddof=0)
         sortino = (
             math.sqrt(min(252, max(12, len(pnls)))) * (mean_pnl / downside_std)
             if downside_std > 0
-            else sharpe
+            else None
         )
     else:
         sharpe = 0.0
         sortino = 0.0
 
-    # Calmar: Annualized Return / Max Drawdown
-    if max_dd_pct > 0:
-        calmar = round(total_return_pct / max_dd_pct, 2)
+    # Calmar = ANNUALIZED return / max drawdown (fix #5). The old numerator
+    # was the raw window return, so a 30d and a 1y view of the same book
+    # produced incomparable "Calmar" numbers. Annualize over the observed
+    # trade span (first→last exit, floor 1 day).
+    parsed_dates = [d for d, _ in trade_dates if d is not None]
+    if parsed_dates:
+        span_days = max((max(parsed_dates) - min(parsed_dates)).days, 1)
     else:
-        calmar = round(total_return_pct, 2) if total_return_pct > 0 else 0.0
+        span_days = 1
+    annualized_return_pct = round(total_return_pct * (365.0 / span_days), 2)
+    if max_dd_pct > 0:
+        calmar = round(annualized_return_pct / max_dd_pct, 2)
+    else:
+        calmar = annualized_return_pct if annualized_return_pct > 0 else 0.0
 
     return {
         "total_trades": total_trades,
         "total_pnl": round(total_pnl, 2),
         "total_return_pct": total_return_pct,
+        "annualized_return_pct": annualized_return_pct,
         "sharpe_ratio": round(float(sharpe), 2),
-        "sortino_ratio": round(float(sortino), 2),
+        "sortino_ratio": round(float(sortino), 2) if sortino is not None else None,
         "calmar_ratio": calmar,
         "win_rate": win_rate,
         "winning_trades": winning_trades,
@@ -262,13 +355,59 @@ def compute_metrics_from_trades(
     }
 
 
-def get_health_rating(sharpe: float, max_dd_pct: float, win_rate: float) -> Dict[str, str]:
-    """Return health status indicator 🟢 / 🟡 / 🔴 and descriptive label."""
-    if sharpe >= 1.5 and max_dd_pct <= 10.0 and win_rate >= 50.0:
+def get_health_rating(
+    sharpe: float,
+    max_dd_pct: float,
+    win_rate: Optional[float] = None,
+    profit_factor: Optional[float] = ...,  # type: ignore[assignment]
+    total_trades: Optional[int] = None,
+) -> Dict[str, str]:
+    """Return health status indicator ⚪ / 🟢 / 🟡 / 🔴 and descriptive label.
+
+    Fix #6 (2026-09-28):
+
+    * ``win_rate`` no longer participates — a 50% WR floor punished valid
+      low-winrate/high-RR structures (credit spreads lose most days by
+      design). Edge quality is judged by **profit factor** instead
+      (``None`` = no losing trades = passes).
+    * ``total_trades`` gates the rating: below :data:`MIN_HEALTH_SAMPLE`
+      trades the honest answer is "insufficient sample", not 🟢 on 3 trades.
+
+    ``win_rate`` is retained (ignored) for call-site compatibility; the
+    ``...`` sentinel on ``profit_factor`` distinguishes "not provided"
+    (legacy caller — PF criterion skipped) from ``None`` (∞ — passes).
+    """
+    if total_trades is not None and total_trades < MIN_HEALTH_SAMPLE:
+        return {
+            "status": "gray",
+            "badge": "⚪ Insufficient sample",
+            "label": f"Insufficient sample (n={total_trades} < {MIN_HEALTH_SAMPLE})",
+        }
+    if profit_factor is ...:
+        pf_healthy = True  # legacy caller — no PF available
+    else:
+        pf_healthy = profit_factor is None or float(profit_factor) >= 1.5
+    if sharpe >= 1.5 and max_dd_pct <= 10.0 and pf_healthy:
         return {"status": "green", "badge": "🟢 Healthy", "label": "Excellent / Healthy"}
     if sharpe >= 1.0 and max_dd_pct <= 15.0:
         return {"status": "yellow", "badge": "🟡 Warning", "label": "Moderate / Watch closely"}
     return {"status": "red", "badge": "🔴 Alert", "label": "Underperforming / Critical"}
+
+
+def _natural_key(t: Dict[str, Any]) -> tuple:
+    """Dedupe key matching LiveTradePersister's flush key (exit+symbol+pnl)."""
+    exit_ts = str(t.get("exit_ts") or "")[:19]
+    return (exit_ts, str(t.get("symbol") or ""), f"{float(t.get('pnl') or 0.0):.2f}")
+
+
+def _instrument_class(t: Dict[str, Any]) -> str:
+    """equity | option — from the runner's ``kind`` tag, else symbol shape."""
+    kind = str(t.get("kind") or "").lower()
+    if kind in ("equity", "option"):
+        return kind
+    if _OPTION_SYMBOL_RE.search(str(t.get("symbol") or "")):
+        return "option"
+    return "equity"
 
 
 class AnalyticsService:
@@ -276,6 +415,85 @@ class AnalyticsService:
 
     def __init__(self):
         self.mgr = get_portfolio_manager()
+
+    # ------------------------------------------------------------------
+    # Persisted trade history (fix #3 — memory is a cache, not the truth)
+    # ------------------------------------------------------------------
+
+    def _load_persisted_trades(self, runner: Any) -> List[Dict[str, Any]]:
+        """Cross-session trades for ``runner`` from the DB `trades` table.
+
+        Reads through the SAME DatabaseManager the manager's
+        LiveTradePersister writes with, keyed by the persister's portfolio
+        naming convention (``"<name> [<instance8>]"``). Fail-soft: any
+        problem (no persister, no DB, schema drift) returns ``[]`` and the
+        tab falls back to the in-memory tail exactly as before.
+        """
+        persister = getattr(self.mgr, "_trade_persister", None)
+        db = getattr(persister, "db", None)
+        if db is None:
+            return []
+        try:
+            from backtest.db.models import Portfolio as PortfolioRow
+            from backtest.db.models import Trade as TradeRow
+
+            name = f"{runner.config.name} [{runner.instance_id[:8]}]"
+            out: List[Dict[str, Any]] = []
+            with db.session() as session:
+                row = (
+                    session.query(PortfolioRow)
+                    .filter(PortfolioRow.name == name)
+                    .one_or_none()
+                )
+                if row is None:
+                    return []
+                rows = (
+                    session.query(TradeRow)
+                    .filter(TradeRow.portfolio_id == row.portfolio_id)
+                    .order_by(TradeRow.exit_time)
+                    .all()
+                )
+                for r in rows:
+                    symbol = str(r.symbol or "")
+                    trade = {
+                        "symbol": symbol,
+                        "kind": "option" if _OPTION_SYMBOL_RE.search(symbol) else "equity",
+                        "side": "LONG" if str(r.direction or "long") == "long" else "SHORT",
+                        "qty": float(r.quantity or 0),
+                        "entry_price": float(r.entry_price or 0),
+                        "exit_price": float(r.exit_price or 0),
+                        "entry_ts": r.entry_time.isoformat() if r.entry_time else None,
+                        "exit_ts": r.exit_time.isoformat() if r.exit_time else None,
+                        "pnl": round(float(r.net_pnl or 0), 2),
+                        "win": float(r.net_pnl or 0) >= 0,
+                        "persisted": True,
+                    }
+                    out.append(trade)
+            return out
+        except Exception:  # noqa: BLE001 — persistence must never break the tab
+            log.debug("persisted trade read failed — memory-only analytics", exc_info=True)
+            return []
+
+    def _runner_trades_with_history(self, runner: Any) -> tuple:
+        """(merged trades, provenance dict) — DB rows + in-memory tail.
+
+        Memory wins on natural-key collisions (it carries richer fields:
+        coids, exit reasons, structure ids). Result is exit-time sorted.
+        """
+        memory = [dict(t) for t in runner.closed_trades]  # never mutate runner state
+        persisted = self._load_persisted_trades(runner)
+        seen = {_natural_key(t) for t in memory}
+        merged = memory + [t for t in persisted if _natural_key(t) not in seen]
+        merged.sort(key=lambda t: (t.get("exit_ts") or "", t.get("symbol") or ""))
+        for t in merged:
+            t["instrument_class"] = _instrument_class(t)
+        history = {
+            "memory_trades": len(memory),
+            "persisted_trades": len(persisted),
+            "merged_trades": len(merged),
+            "source": "memory+db" if persisted else "memory",
+        }
+        return merged, history
 
     def get_portfolio_overview(
         self, period: str = "30d", mode: Optional[str] = None
@@ -300,7 +518,7 @@ class AnalyticsService:
             if status in ("RUNNING", "ACTIVE"):
                 active_count += 1
 
-            closed = runner.closed_trades
+            closed, history = self._runner_trades_with_history(runner)
             period_trades = _filter_by_period(closed, period)
             metrics = compute_metrics_from_trades(
                 period_trades,
@@ -308,21 +526,29 @@ class AnalyticsService:
                 equity_history=runner.equity_curve,
             )
 
-            # Mini equity curve (last 10-20 points)
+            # Mini equity curve (last 10-20 points) + time labels (fix #9:
+            # index-labelled sparklines were misleading after decimation).
             mini_curve = []
+            mini_curve_ts = []
             if runner.equity_curve:
                 sample_pts = runner.equity_curve[-20:]
                 mini_curve = [round(float(p.get("equity", allocated)), 1) for p in sample_pts]
+                mini_curve_ts = [str(p.get("ts") or "")[:16] for p in sample_pts]
             elif period_trades:
-                cum = np.cumsum([float(t.get("pnl", 0)) for t in period_trades[-20:]])
+                tail = period_trades[-20:]
+                cum = np.cumsum([float(t.get("pnl", 0)) for t in tail])
                 mini_curve = [round(allocated + float(c), 1) for c in cum]
+                mini_curve_ts = [str(t.get("exit_ts") or "")[:16] for t in tail]
             else:
                 mini_curve = [allocated]
+                mini_curve_ts = [""]
 
             health = get_health_rating(
                 metrics["sharpe_ratio"],
                 metrics["max_drawdown_pct"],
                 metrics["win_rate"],
+                profit_factor=metrics["profit_factor"],
+                total_trades=metrics["total_trades"],
             )
 
             for t in period_trades:
@@ -341,7 +567,9 @@ class AnalyticsService:
                 "allocated_capital": allocated,
                 "metrics": metrics,
                 "mini_curve": mini_curve,
+                "mini_curve_ts": mini_curve_ts,
                 "health": health,
+                "history": history,
                 "last_trade_ts": closed[-1].get("exit_ts") if closed else None,
             })
 
@@ -379,7 +607,7 @@ class AnalyticsService:
         state = runner.get_state()
         detail = runner.get_detail()
         allocated = float(state.get("allocated_capital", 100_000.0))
-        closed = runner.closed_trades
+        closed, history = self._runner_trades_with_history(runner)
         period_trades = _filter_by_period(closed, period)
 
         metrics = compute_metrics_from_trades(
@@ -392,6 +620,8 @@ class AnalyticsService:
             metrics["sharpe_ratio"],
             metrics["max_drawdown_pct"],
             metrics["win_rate"],
+            profit_factor=metrics["profit_factor"],
+            total_trades=metrics["total_trades"],
         )
 
         equity_curve_data = self._build_runner_equity_curve(runner, period_trades, allocated)
@@ -422,45 +652,71 @@ class AnalyticsService:
             "rolling_metrics": rolling_metrics,
             "edge_degradation": edge_degradation,
             "recent_trades": period_trades[-50:],
+            "history": history,
         }
 
     def _build_portfolio_equity_curve(
         self, runners_summary: List[Dict[str, Any]], period: str
     ) -> List[Dict[str, Any]]:
-        points_map: Dict[str, float] = {}
+        """Date-joined portfolio equity with CARRY-FORWARD (fix #7).
+
+        The old points-map summed only the dates each runner reported: a
+        runner starting mid-period contributed nothing to earlier dates, so
+        the portfolio curve jumped a whole allocation the day it appeared.
+        Now every runner contributes to EVERY date — its allocated capital
+        before its first observation, its last known equity after — and the
+        P&L baseline is the curve's ACTUAL first value, not the sum of
+        allocations.
+        """
         total_initial = (
-            sum(float(r.get("allocated_capital", 100_000.0)) for r in runners_summary)
-            or 100_000.0
+            sum(float(r.get("allocated_capital", 100_000.0)) for r in runners_summary) or 100_000.0
         )
 
+        # Per-runner: date → last observed equity that date.
+        per_runner: List[tuple] = []  # (allocated, {date: equity})
+        all_dates: set = set()
         for r_meta in runners_summary:
             runner = self.mgr.get_runner(r_meta.get("instance_id"))
             if not runner:
                 continue
+            allocated = float(r_meta.get("allocated_capital", 100_000.0))
+            by_date: Dict[str, float] = {}
             for pt in runner.equity_curve:
                 ts = pt.get("ts")
                 if not ts:
                     continue
-                d_str = ts[:10]  # group by date
-                points_map[d_str] = points_map.get(d_str, 0.0) + float(pt.get("equity", 0.0))
+                by_date[str(ts)[:10]] = float(pt.get("equity", allocated))
+            if by_date:
+                per_runner.append((allocated, by_date))
+                all_dates.update(by_date.keys())
 
-        if not points_map:
+        if not all_dates:
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             return [{"date": today, "equity": total_initial, "pnl": 0.0, "drawdown_pct": 0.0}]
 
-        sorted_dates = sorted(points_map.keys())
+        sorted_dates = sorted(all_dates)
+        # Carry-forward walk: before a runner's first date → its allocation;
+        # after → its last known equity.
+        summed: Dict[str, float] = {d: 0.0 for d in sorted_dates}
+        for allocated, by_date in per_runner:
+            last = allocated
+            for d in sorted_dates:
+                if d in by_date:
+                    last = by_date[d]
+                summed[d] += last
+
+        baseline = summed[sorted_dates[0]]  # actual start equity, not allocations
         curve = []
-        peak = total_initial
+        peak = baseline
         for d in sorted_dates:
-            eq = points_map[d]
+            eq = summed[d]
             if eq > peak:
                 peak = eq
             dd_pct = round((eq - peak) / peak * 100.0, 2) if peak > 0 else 0.0
-            pnl = round(eq - total_initial, 2)
             curve.append({
                 "date": d,
                 "equity": round(eq, 2),
-                "pnl": pnl,
+                "pnl": round(eq - baseline, 2),
                 "drawdown_pct": dd_pct,
             })
         return curve
@@ -522,16 +778,17 @@ class AnalyticsService:
         if not trades:
             return []
 
-        buckets: Dict[str, List[float]] = {}
+        buckets: Dict[str, List[tuple]] = {}
         for t in trades:
             ts = _parse_ts(t.get("exit_ts") or t.get("timestamp") or t.get("entry_ts"))
             month_key = ts.strftime("%Y-%m") if ts else "Current"
             pnl = float(t.get("pnl", 0.0))
-            buckets.setdefault(month_key, []).append(pnl)
+            buckets.setdefault(month_key, []).append((ts.date() if ts else None, pnl))
 
         monthly = []
         for m_key in sorted(buckets.keys(), reverse=True):
-            pnls = buckets[m_key]
+            dated = buckets[m_key]
+            pnls = [p for _, p in dated]
             total_trades = len(pnls)
             wins = [p for p in pnls if p > 0]
             m_pnl = sum(pnls)
@@ -543,16 +800,20 @@ class AnalyticsService:
             dd_amt = cum_pnl - running_max
             m_dd = abs(round(float(np.min(dd_amt)) / capital * 100.0, 2)) if len(dd_amt) else 0.0
 
-            # Approximate monthly Sharpe
-            if len(pnls) >= 2:
-                s = pd.Series(pnls)
-                sh = (
-                    float(s.mean() / s.std(ddof=0)) * math.sqrt(len(pnls))
-                    if s.std(ddof=0) > 0
-                    else 0.0
-                )
-            else:
-                sh = 0.0
+            # Real monthly Sharpe (fix #5): annualized from DAILY-grouped
+            # returns within the month. The old mean/std*sqrt(n_trades) was
+            # not a Sharpe under any convention (its scale grew with trade
+            # count). Needs ≥2 distinct trading days — otherwise None ("—"),
+            # never a fake number.
+            day_pnl: Dict[Any, float] = {}
+            for d, p in dated:
+                if d is not None:
+                    day_pnl[d] = day_pnl.get(d, 0.0) + p
+            sh: Optional[float] = None
+            if len(day_pnl) >= 2:
+                rets = pd.Series(list(day_pnl.values())) / capital
+                std = rets.std(ddof=0)
+                sh = round(float(rets.mean() / std) * math.sqrt(252.0), 2) if std > 0 else None
 
             monthly.append({
                 "month": m_key,
@@ -561,18 +822,16 @@ class AnalyticsService:
                 "pnl": round(m_pnl, 2),
                 "return_pct": ret_pct,
                 "max_drawdown_pct": m_dd,
-                "sharpe_ratio": round(sh, 2),
+                "sharpe_ratio": sh,
             })
         return monthly
 
-    def _build_trade_distribution(self, trades: List[Dict[str, Any]]) -> Dict[str, Any]:
-        if not trades:
-            return {"histogram": [], "insights": []}
-
-        pnls = [float(t.get("pnl", 0.0)) for t in trades]
+    @staticmethod
+    def _histogram(pnls: List[float]) -> List[Dict[str, Any]]:
+        if not pnls:
+            return []
         min_p = min(pnls)
         max_p = max(pnls)
-
         bins = 6
         step = (max_p - min_p) / bins if max_p > min_p else 100.0
         histogram = []
@@ -585,8 +844,39 @@ class AnalyticsService:
                 "count": count,
                 "type": "win" if b_start >= 0 else "loss",
             })
+        return histogram
+
+    def _build_trade_distribution(self, trades: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """P&L histogram + insights, SPLIT by instrument class (fix #10).
+
+        Equity rows (share qty × price) and option rows (lots × net premium)
+        live in different units — one combined histogram mixes them into a
+        meaningless shape. The combined view stays (back-compat + the
+        single-class common case is unaffected) and ``by_class`` carries the
+        honest per-class split whenever the book is mixed.
+        """
+        if not trades:
+            return {"histogram": [], "insights": [], "by_class": {}}
+
+        pnls = [float(t.get("pnl", 0.0)) for t in trades]
+        by_class_pnls: Dict[str, List[float]] = {}
+        for t in trades:
+            by_class_pnls.setdefault(_instrument_class(t), []).append(
+                float(t.get("pnl", 0.0))
+            )
+
+        histogram = self._histogram(pnls)
+        by_class = {
+            cls: {"histogram": self._histogram(cls_pnls), "trades": len(cls_pnls)}
+            for cls, cls_pnls in sorted(by_class_pnls.items())
+        }
 
         insights = []
+        if len(by_class_pnls) > 1:
+            parts = ", ".join(f"{len(v)} {k}" for k, v in sorted(by_class_pnls.items()))
+            insights.append(
+                f"Mixed book ({parts}) — units differ; see the per-class split."
+            )
         wins = [p for p in pnls if p > 0]
         losses = [p for p in pnls if p < 0]
         if wins:
@@ -602,6 +892,7 @@ class AnalyticsService:
         return {
             "histogram": histogram,
             "insights": insights,
+            "by_class": by_class,
         }
 
     def _calculate_rolling_metrics(
@@ -660,6 +951,22 @@ class AnalyticsService:
                     "baseline_sharpe": round(earlier_avg, 2),
                     "drop_pct": drop_pct,
                 }
+
+        # Absolute floor (§2.3): a strategy that was ALWAYS bad has nothing
+        # to "degrade" from, so the relative check above never fires. A
+        # negative recent rolling Sharpe is an alert on its own.
+        if recent_avg < 0.0:
+            return {
+                "alert_type": "sharpe_floor",
+                "severity": "critical",
+                "message": (
+                    f"Rolling Sharpe is negative ({recent_avg:.2f}) — "
+                    "the strategy is losing on a risk-adjusted basis."
+                ),
+                "recent_sharpe": round(recent_avg, 2),
+                "baseline_sharpe": round(earlier_avg, 2),
+                "drop_pct": 0.0,
+            }
         return None
 
     def _generate_overview_alerts(

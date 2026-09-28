@@ -9,7 +9,7 @@ Tests cover:
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
@@ -32,15 +32,43 @@ def _make_broker_with_session() -> MStockBroker:
     return broker
 
 
+def _next_monthly_expiry(today: date | None = None) -> date:
+    """Next NSE monthly expiry (last Thursday of a month) STRICTLY after today.
+
+    Date-rot guard (2026-09-28): the fixture used to hardcode 2026-09-24 —
+    the moment the calendar crossed that expiry, ``OptionContract.validate()``
+    started rejecting every row as "expiry is in the past" and the suite went
+    red on a clock tick, not a code change. Deriving the expiry keeps these
+    tests green on ANY run date.
+    """
+    from calendar import monthrange
+
+    today = today or date.today()
+    year, month = today.year, today.month
+    while True:
+        last_day = date(year, month, monthrange(year, month)[1])
+        last_thursday = last_day - timedelta(days=(last_day.weekday() - 3) % 7)
+        if last_thursday > today:
+            return last_thursday
+        month += 1
+        if month > 12:
+            month, year = 1, year + 1
+
+
+_EXPIRY = _next_monthly_expiry()
+_EXPIRY_ISO = _EXPIRY.isoformat()  # e.g. "2026-10-29" (expiry CSV column)
+_TAG = _EXPIRY.strftime("%y%b").upper()  # e.g. "26OCT" (trading-symbol tag)
+
+
 # Sample instrument master CSV — matches mStock's REAL schema
 # (verified live 2026-09-18: segment=OPTIDX, instrument_token, tradingsymbol,
 #  explicit expiry date column, lot 65 for NIFTY).
 _SAMPLE_CSV = (
     "tradingsymbol,instrument_token,segment,instrument_type,lot_size,tick_size,expiry,strike\n"
-    "NIFTY26SEP24500CE,51201,OPTIDX,CE,65,0.05,2026-09-24,24500.00\n"
-    "NIFTY26SEP24500PE,51202,OPTIDX,PE,65,0.05,2026-09-24,24500.00\n"
-    "NIFTY26SEP25000CE,51203,OPTIDX,CE,65,0.05,2026-09-24,25000.00\n"
-    "BANKNIFTY26SEP51000CE,51204,OPTIDX,CE,35,0.05,2026-09-24,51000.00\n"
+    f"NIFTY{_TAG}24500CE,51201,OPTIDX,CE,65,0.05,{_EXPIRY_ISO},24500.00\n"
+    f"NIFTY{_TAG}24500PE,51202,OPTIDX,PE,65,0.05,{_EXPIRY_ISO},24500.00\n"
+    f"NIFTY{_TAG}25000CE,51203,OPTIDX,CE,65,0.05,{_EXPIRY_ISO},25000.00\n"
+    f"BANKNIFTY{_TAG}51000CE,51204,OPTIDX,CE,35,0.05,{_EXPIRY_ISO},51000.00\n"
     "NIFTY 50,26000,IDX,IN,1,0.05,,0.00\n"
 )
 
@@ -59,30 +87,30 @@ class TestParseOptionContract:
             "instrument_type": itype,
             "lot_size": lot,
             "tick_size": "0.05",
-            "expiry": "2026-09-24T00:00:00",
+            "expiry": f"{_EXPIRY_ISO}T00:00:00",
             "strike": strike,
         }
 
     def test_parse_nifty_call(self):
-        row = self._row("NIFTY26SEP24500CE", "51201", "CE")
+        row = self._row(f"NIFTY{_TAG}24500CE", "51201", "CE")
         contract = MStockBroker._parse_option_contract(row)
         assert contract is not None
         assert contract.underlying == "NIFTY"
         assert contract.strike == Decimal("24500")
         assert contract.option_type == "CE"
-        assert contract.expiry.year == 2026
-        assert contract.expiry.month == 9
-        assert contract.expiry.day == 24
+        assert contract.expiry.year == _EXPIRY.year
+        assert contract.expiry.month == _EXPIRY.month
+        assert contract.expiry.day == _EXPIRY.day
         assert contract.lot_size == 65
 
     def test_parse_nifty_put(self):
-        row = self._row("NIFTY26SEP24500PE", "51202", "PE")
+        row = self._row(f"NIFTY{_TAG}24500PE", "51202", "PE")
         contract = MStockBroker._parse_option_contract(row)
         assert contract is not None
         assert contract.option_type == "PE"
 
     def test_parse_banknifty(self):
-        row = self._row("BANKNIFTY26SEP51000CE", "51204", "CE", lot="35",
+        row = self._row(f"BANKNIFTY{_TAG}51000CE", "51204", "CE", lot="35",
                         strike="51000.00")
         contract = MStockBroker._parse_option_contract(row)
         assert contract is not None
@@ -106,7 +134,7 @@ class TestParseOptionContract:
         assert MStockBroker._parse_option_contract(row) is None
 
     def test_parse_contract_is_valid(self):
-        row = self._row("NIFTY26SEP24500CE", "51201", "CE")
+        row = self._row(f"NIFTY{_TAG}24500CE", "51201", "CE")
         contract = MStockBroker._parse_option_contract(row)
         assert contract is not None
         assert contract.is_valid()

@@ -97,7 +97,11 @@ def portfolio_greeks():
 @intelligence_bp.get("/api/portfolio/concentration")
 @_guard
 def portfolio_concentration():
-    return jsonify({"success": True, **_intel().concentration(_mode())})
+    intel = _intel()
+    payload = dict(intel.concentration(_mode()))
+    # Multi-broker Phase D (additive): concentration by broker/segment too.
+    payload.update(intel.broker_segment_rollup(_mode()))
+    return jsonify({"success": True, **payload})
 
 
 @intelligence_bp.get("/api/portfolio/correlation")

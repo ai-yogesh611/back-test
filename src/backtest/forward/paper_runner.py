@@ -876,6 +876,16 @@ class RunnerConfig:
     playbook_snapshot: Optional[Dict[str, Any]] = None
     # Phase 3: bounded auto-retry for a refused order (None/0 attempts = off).
     retry_policy: Optional[OrderRetryPolicy] = None
+    # Multi-broker PRD Phase B: the segment this runner trades in (a capital
+    # partition mapped to a broker — config/segments.yaml), and/or an
+    # explicit execution-broker override. Derivation at construction:
+    #   mode=paper → execution_broker ignored (paper broker everywhere)
+    #   mode=live + segment → execution_broker = segments[segment].broker
+    #   mode=live + execution_broker → that broker directly
+    # Unknown segment/broker names are REFUSED (fail-closed, never silently
+    # rerouted).
+    segment: Optional[str] = None
+    execution_broker: Optional[str] = None
 
     def __post_init__(self) -> None:
         self.name = str(self.name).strip()
@@ -919,6 +929,30 @@ class RunnerConfig:
 
         if self.max_pool_positions < 1:
             raise ValueError("max_pool_positions must be >= 1")
+
+        # Multi-broker PRD Phase B: validate segment/execution_broker and
+        # derive the execution broker for live runners. Fail-closed: an
+        # unknown segment or broker raises here — a runner must never spawn
+        # with an ambiguous order route.
+        self.segment = (str(self.segment).strip().lower() or None) if self.segment else None
+        self.execution_broker = (
+            (str(self.execution_broker).strip().lower() or None)
+            if self.execution_broker
+            else None
+        )
+        if self.segment or self.execution_broker:
+            from backtest.brokers.segments import SegmentError, resolve_execution_broker
+
+            try:
+                resolved = resolve_execution_broker(
+                    mode=self.mode,
+                    segment=self.segment,
+                    execution_broker=self.execution_broker,
+                )
+            except SegmentError as exc:
+                raise ValueError(str(exc)) from exc
+            if self.mode == "live":
+                self.execution_broker = resolved
 
         # Instrument config (Gap G3.2)
         if self.instrument is None:
@@ -2744,6 +2778,17 @@ class StrategyRunner:
                 "status": self.status,
                 "mode": self.config.mode,
                 "source": self.config.source,
+                # Multi-broker PRD Phase B: which capital segment this runner
+                # trades in and which broker its orders route to. ``broker``
+                # is the display label: the execution broker for live
+                # runners, 'paper' otherwise.
+                "segment": self.config.segment,
+                "execution_broker": self.config.execution_broker,
+                "broker": (
+                    (self.config.execution_broker or "live")
+                    if self.config.mode == "live"
+                    else "paper"
+                ),
                 "error": self.error,
                 "bars_processed": self.bars_processed,
                 "last_bar_ts": max(self._last_bar_ts.values()) if self._last_bar_ts else None,

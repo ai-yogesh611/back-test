@@ -170,6 +170,9 @@ const OrdersTab = (function () {
       '<tr class="order-row ' + meta.cls + (order.aging ? " order-row-" + order.aging : "") + '">' +
       "<td>" + clock(order.updated_ts || order.created_ts) + "</td>" +
       "<td>" + esc(order.runner || String(order.instance_id || "").slice(0, 8)) + "</td>" +
+      // Multi-broker Phase B: WHICH venue this order went to (audit trail).
+      "<td>" + esc(order.broker || (order.mode === "live" ? "live" : "paper")) +
+        (order.segment ? '<div class="cell-sub">' + esc(order.segment) + "</div>" : "") + "</td>" +
       '<td class="cell-name">' + esc(order.symbol) + "</td>" +
       "<td>" + esc(order.side) + "</td>" +
       '<td class="num">' + num(order.quantity, 0) + "</td>" +
@@ -246,7 +249,7 @@ const OrdersTab = (function () {
             ? "Nothing is aging — every working order is inside the normal window."
             : "No orders match the current filter.")
         : "No orders in this scope yet — nothing has been routed through the ledger.";
-      body.innerHTML = '<tr><td colspan="11" class="muted" style="padding:16px">' + why + "</td></tr>";
+      body.innerHTML = '<tr><td colspan="12" class="muted" style="padding:16px">' + why + "</td></tr>";
       return;
     }
     body.innerHTML = rows.map(rowHtml).join("");

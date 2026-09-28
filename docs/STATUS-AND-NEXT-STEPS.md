@@ -159,13 +159,14 @@ doc is stale, this file follows the code.
    clean; schema mismatch is ignored; a failed write never corrupts the last
    good state. No path → byte-identical V1 behaviour. 16 tests:
    `tests/forward/test_state_persistence.py`.
-5. **Portfolio-page option trade rows.** API exposes them; render
-   per-structure rows in the instance/bucket trade table UI (U3.1 backend
-   landed, UI polish remains).
-6. **Options-tab hard delete (U5.2 checklist).** Criteria: zero new
-   manual-book structures in trailing 14 days **and** ≥10 playbook-spawned
-   runners; review by **2026-09-30** regardless. Delete
-   `options.html` + `options.js` shell; keep chain/Greeks/expiry services.
+5. ~~**Portfolio-page option trade rows.**~~ **DONE** — per-structure rows
+   render in the matrix + deep-dive (`portfolio.js` `OptionView.openStructures`);
+   `tests/engine/test_portfolio_options_rows.py` + `tests/js/test_option_view.mjs`.
+6. ~~**Options-tab hard delete (U5.2 checklist).**~~ **DONE 2026-09-22**
+   (GAP-3 resolved as REMOVE, owner decision): `/options` page, nav link,
+   `options.html` + `options.js` deleted; JSON endpoints + book singleton
+   kept (portfolio merge + emergency flatten). See
+   `docs/RUNNER-FAQ-AND-UI-GAPS.md` GAP-3.
 7. **Consultant sign-off on 6 open questions** (root **`CONSULTANT_RESPONSE.md`**, "Open Questions" §0.4 — *path corrected; no `docs/consultant quest review.md` exists*):
    playbook scope (option-only vs equity), risk-envelope V2 (BS+IV+SPAN
    inputs), exit precedence confirmation, re-enter policy, playbook
@@ -177,7 +178,10 @@ doc is stale, this file follows the code.
    slippage), trade log export (CSV/JSON). *Scope correction: sizers already
    exist on the forward side (`strategy_adapter.py`, `simulator/position_sizing.py`,
    `backtest_driver.size_fn`) — the gap is presets/exposure on the vectorized path.*
-9. Richer metrics: Sortino, expectancy, profit factor, monthly heatmap.
+9. Richer metrics: ~~Sortino, expectancy, profit factor~~ **DONE 2026-09-21**
+   (`engine/metrics.py`: Sortino, profit factor, expectancy, VaR/ES, max
+   consecutive losses, exposure); monthly heatmap remains (the Analytics tab
+   has a monthly breakdown, the vectorized report does not).
 10. Parameter optimization + walk-forward analysis (grid/random search,
     rolling in-sample/out-of-sample), Monte-Carlo / deflated Sharpe.
 11. Chain-shape refactor for multi-leg V2 structures (straddles/condors) —

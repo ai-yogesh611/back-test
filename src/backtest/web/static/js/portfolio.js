@@ -362,7 +362,13 @@
       '<tr class="pos-row' + (row.stale ? " pos-row-stale" : "") +
         (row.kind === "option" ? " matrix-row-option" : "") + '">' +
       '<td>' + stale + (row.runner || String(row.instance_id || "").slice(0, 8)) +
-        '<div class="cell-sub">' + (row.status || "") + "</div></td>" +
+        '<div class="cell-sub">' + (row.status || "") +
+        // Multi-broker Phase B: which broker holds this position (manual
+        // close routes there) + its segment when set.
+        (row.broker ? " · <span class=\"pos-broker\" title=\"Execution broker\">" +
+          row.broker + "</span>" : "") +
+        (row.segment ? " · " + row.segment : "") +
+        "</div></td>" +
       '<td class="cell-name">' + label + sub + "</td>" +
       "<td>" + (row.side || "") + "</td>" +
       '<td class="num">' + Number(row.qty || 0).toLocaleString("en-IN") + "</td>" +
@@ -426,13 +432,29 @@
     const stale = rows.filter((r) => r.stale).length;
     const summaryEl = $("pos-summary");
     if (summaryEl) {
+      // Multi-broker Phase B: per-broker totals when positions span more
+      // than one broker (deployed view honesty — PRD §8.4).
+      const byBroker = {};
+      for (const r of rows) {
+        const b = r.broker || "paper";
+        if (!byBroker[b]) byBroker[b] = { n: 0, pnl: 0 };
+        byBroker[b].n += 1;
+        byBroker[b].pnl += Number(r.unrealized_pnl || 0);
+      }
+      const brokerNames = Object.keys(byBroker);
+      const brokerStrip = brokerNames.length > 1
+        ? "<div class=\"cell-sub\">" + brokerNames.map((b) =>
+            b + ": " + byBroker[b].n + " pos · P&L " +
+            (byBroker[b].pnl >= 0 ? "+" : "-") + fmtMoney(Math.abs(byBroker[b].pnl))
+          ).join(" · ") + "</div>"
+        : "";
       summaryEl.innerHTML = rows.length
         ? "<strong>" + rows.length + "</strong> open · " +
           rows.filter((r) => r.kind === "option").length + " option · " +
           rows.filter((r) => r.kind === "equity").length + " equity · " +
           withRules + " with a manual level · open P&L " +
           (pnls.reduce((a, b) => a + b, 0) >= 0 ? "" : "-") +
-          fmtMoney(Math.abs(pnls.reduce((a, b) => a + b, 0)))
+          fmtMoney(Math.abs(pnls.reduce((a, b) => a + b, 0))) + brokerStrip
         : "nothing held";
     }
     const footEl = $("pos-footnote");
@@ -772,7 +794,49 @@
 
       renderSpawnParams();
       syncSpawnForm();
+      loadSegmentSelector();
     } catch (e) { toast("Failed to load spawn form: " + e.message, "error"); }
+  }
+
+  // Multi-broker Phase B: segment selector — runners are created INTO a
+  // segment (capital partition mapped to a broker). Hidden when no segments
+  // are configured (legacy single-broker behaviour unchanged).
+  async function loadSegmentSelector() {
+    const row = $("spawn-segment-row");
+    const sel = $("spawn-segment");
+    if (!row || !sel) return;
+    let segments = [];
+    try {
+      const data = await fetch("/api/segments").then((r) => r.json());
+      segments = (data && data.segments) || [];
+    } catch (e) { /* no segments API — keep hidden */ }
+    if (!segments.length) { row.hidden = true; return; }
+    row.hidden = false;
+    sel.innerHTML = '<option value="">— none (legacy default) —</option>' +
+      segments.map((s) =>
+        '<option value="' + s.name + '" data-mode="' + s.mode + '" data-broker="' + s.broker + '"' +
+        ' data-capital="' + (s.allocated_capital || 0) + '">' +
+        (s.display_name || s.name) + "</option>").join("");
+    sel._segments = segments;
+    if (!sel._wired) {
+      sel._wired = true;
+      sel.addEventListener("change", () => {
+        const seg = (sel._segments || []).find((s) => s.name === sel.value);
+        const hint = $("spawn-segment-hint");
+        if (!seg) { if (hint) hint.textContent = ""; return; }
+        const cap = Number(seg.allocated_capital || 0);
+        const capLabel = cap >= 100000 ? "₹" + (cap / 100000).toFixed(cap % 100000 ? 1 : 0) + "L"
+          : "₹" + cap.toLocaleString("en-IN");
+        if (hint) {
+          hint.textContent = seg.broker + " • " + (seg.mode === "live" ? "Live" : "Paper") +
+            " • " + capLabel;
+        }
+        // The segment defines the bucket mode — sync the mode select so the
+        // form never submits a conflicting pair (the API refuses those).
+        const modeSel = $("spawn-mode");
+        if (modeSel && seg.mode) modeSel.value = seg.mode;
+      });
+    }
   }
 
   function renderSpawnParams() {
@@ -943,6 +1007,9 @@
       // too (never an implicit backend default the user didn't see).
       mode: $("spawn-mode") ? $("spawn-mode").value : (PAGE_MODE || "paper"),
       source: $("spawn-source") ? $("spawn-source").value : "synthetic",
+      // Multi-broker Phase B: the segment routes this runner's orders to
+      // its broker; empty string → no segment (legacy default path).
+      segment: $("spawn-segment") ? ($("spawn-segment").value || null) : null,
     };
 
     // U6.1: option routing comes from signal_kind + the selected playbook.

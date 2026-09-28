@@ -259,17 +259,22 @@ def option_quote_provider(
     return SyntheticQuoteProvider(chain_generator=generator)
 
 
-def _default_quote_broker() -> Any | None:
-    """The authenticated order broker, or ``None`` (never raises).
+def _default_quote_broker(source: str | None = None) -> Any | None:
+    """The authenticated broker FOR ``source``, or ``None`` (never raises).
 
     Resolved through the broker session manager — the same place the web UI's
-    broker-auth flow lands its session. ``None`` means "not authenticated":
-    callers decide the fallback (and label it) themselves.
+    broker-auth flow lands its sessions. Multi-broker (Phase A): with concurrent
+    sessions this asks for the *named* broker's session (``source="dhan"`` →
+    the Dhan session even while mStock is the UI-active broker); with no name
+    it falls back to the legacy active-broker resolution. ``None`` means "not
+    authenticated": callers decide the fallback (and label it) themselves.
     """
     try:
         from backtest.brokers.session_manager import get_session_manager
 
         mgr = get_session_manager()
+        if source:
+            return mgr.get_authenticated_broker(str(source).lower())
         if mgr.is_authenticated():
             return mgr.get_active_broker()
     except Exception:  # noqa: BLE001 — session resolution must never break a spawn
@@ -296,7 +301,7 @@ def option_quote_provider_for(
     underlying = str(underlying).upper()
     source_key = str(source).lower()
     if source_key in ("mstock", "dhan"):
-        broker = quote_broker if quote_broker is not None else _default_quote_broker()
+        broker = quote_broker if quote_broker is not None else _default_quote_broker(source_key)
         # A session-manager-resolved broker always carries broker_name; a
         # duck-typed injected broker may not — accept it for the matching
         # source only (an explicit quote_broker is a deliberate override).

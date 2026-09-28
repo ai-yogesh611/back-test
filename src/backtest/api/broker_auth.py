@@ -58,26 +58,51 @@ def _string_field(data: dict, key: str) -> str | None:
 
 @broker_auth_bp.get("/api/broker/list")
 def list_brokers() -> tuple:
-    """Brokers the login UI can offer (broker selector in the auth modal)."""
-    return jsonify({"success": True, "brokers": available_brokers()}), 200
+    """Brokers the login UI can offer, with per-broker live session status.
+
+    Multi-broker PRD Phase A: each row now carries the broker's current
+    session state (``status``/``authenticated``/``expires_at``) so the
+    Broker Board can render every card from one call.
+    """
+    brokers = available_brokers()
+    try:
+        status_map = get_session_manager().get_all_status()
+        for row in brokers:
+            row.update(
+                {
+                    k: v
+                    for k, v in (status_map.get(row["name"]) or {}).items()
+                    if k in ("status", "authenticated", "expires_at", "ui_active")
+                }
+            )
+    except Exception:  # noqa: BLE001 — the static list must never fail
+        logger.exception("broker list status enrichment failed")
+    return jsonify({"success": True, "brokers": brokers}), 200
 
 
 @broker_auth_bp.post("/api/broker/select")
 def select_broker() -> tuple:
-    """Switch the active broker (one live session at a time).
+    """DEPRECATED: sets the UI-active broker (display only).
 
-    Body: ``{"broker": "mstock" | "dhan" | ...}``. Switching away from a
-    broker with a live session drops that session (the Forward Engine
-    consumes a single token).
+    Body: ``{"broker": "mstock" | "dhan" | ...}``. Multi-broker PRD Phase A
+    repurposed this endpoint — it NO LONGER drops any session. Kept one
+    release for migration; clients should stop calling it.
     """
     data = request.get_json(silent=True) or {}
     broker_name = _string_field(data, "broker")
     if broker_name is None:
         return jsonify({"success": False, "message": "broker is required"}), 400
     try:
-        result = get_session_manager().switch_broker(broker_name)
+        result = get_session_manager().set_ui_active(broker_name)
+        result["deprecated"] = True
+        result["warning"] = (
+            "POST /api/broker/select is deprecated — it only sets the UI-active "
+            "broker now and never drops sessions"
+        )
         status_code = 200 if result.get("success") else 400
-        logger.info("broker select → %s", result.get("broker") or result.get("message"))
+        logger.info(
+            "broker select (deprecated) → %s", result.get("broker") or result.get("message")
+        )
         return jsonify(result), status_code
     except Exception:  # noqa: BLE001 — generic message to browser, detail to log
         logger.exception("broker select endpoint failed")
@@ -116,19 +141,18 @@ def login() -> tuple:
         )
 
     try:
-        if broker_name is not None:
-            switch = get_session_manager().switch_broker(broker_name)
-            if not switch.get("success"):
-                return (
-                    jsonify(
-                        {"success": False, "message": switch.get("message", "Unknown broker"),
-                         "requires_totp": False}
-                    ),
-                    400,
-                )
-        # Credentials are passed as call arguments only — never stored or
-        # logged anywhere past this line.
-        result = get_session_manager().login(username, password)
+        # Multi-broker PRD Phase A: a broker-specific login NEVER touches any
+        # other broker's session. Credentials are passed as call arguments
+        # only — never stored or logged anywhere past this line.
+        from backtest.brokers.session_manager import UnknownBrokerError
+
+        try:
+            result = get_session_manager().login(username, password, broker_name=broker_name)
+        except UnknownBrokerError as exc:
+            return (
+                jsonify({"success": False, "message": str(exc), "requires_totp": False}),
+                400,
+            )
         outcome = "accepted" if result.get("success") else "rejected"
         reason = result.get("message") or ("TOTP required" if result.get("requires_totp") else "ok")
         logger.info("login %s for user=%s → %s", outcome, _mask(username), reason)
@@ -143,9 +167,14 @@ def login() -> tuple:
 
 @broker_auth_bp.post("/api/broker/verify-totp")
 def verify_totp() -> tuple:
-    """Step 2 — TOTP finalization (only valid after a successful login)."""
+    """Step 2 — TOTP finalization (only valid after a successful login).
+
+    Body: ``{totp_code, broker?}`` — ``broker`` targets a specific broker's
+    pending flow (multi-broker); omitted keeps the single-broker behaviour.
+    """
     data = request.get_json(silent=True) or {}
     code = _string_field(data, "totp_code")
+    broker_name = _string_field(data, "broker")
     if code is None:
         return (
             jsonify({"success": False, "message": "totp_code is required", "expires_at": ""}),
@@ -153,7 +182,12 @@ def verify_totp() -> tuple:
         )
 
     try:
-        result = get_session_manager().verify_totp(code)
+        from backtest.brokers.session_manager import UnknownBrokerError
+
+        try:
+            result = get_session_manager().verify_totp(code, broker_name=broker_name)
+        except UnknownBrokerError as exc:
+            return jsonify({"success": False, "message": str(exc), "expires_at": ""}), 400
         verified = bool(result.get("success"))
         detail = "" if verified or not result.get("message") else f" ({result['message']})"
         logger.info(
@@ -173,18 +207,34 @@ def verify_totp() -> tuple:
 
 @broker_auth_bp.get("/api/broker/status")
 def status() -> tuple:
-    """Session status for nav-icon polling. Never includes the token."""
+    """Session status for nav polling. Never includes any token.
+
+    Multi-broker PRD Phase A: keeps the V1 single-broker shape at the top
+    level (UI-active broker — backwards compatibility) and adds:
+
+    * ``sessions`` — the per-broker status map ``{mstock: {...}, dhan: {...}}``
+    * ``expiry_events`` — per-broker ``(broker, kind)`` transitions since the
+      last poll (consumed once; the UI toasts name the broker)
+    """
     try:
-        payload = get_session_manager().get_status()
+        manager = get_session_manager()
+        payload = manager.get_status()
+        payload["sessions"] = manager.get_all_status()
+        payload["expiry_events"] = manager.consume_expiry_events()
         # Remember-session-today (2026-09-24): expose the toggle state so the
         # auth modal's checkbox reflects the server's actual behaviour.
         try:
-            from backtest.brokers.remember_session import get_toggle, has_saved_session
+            from backtest.brokers.remember_session import (
+                get_toggle,
+                has_saved_session,
+            )
 
             payload["remember_session"] = {
                 "enabled": get_toggle(),
                 "has_saved": has_saved_session(),
             }
+            for name, row in payload["sessions"].items():
+                row["remembered"] = has_saved_session(name)
         except Exception:  # noqa: BLE001 — status must never fail on the extra key
             payload["remember_session"] = {"enabled": False, "has_saved": False}
         return jsonify(payload), 200
@@ -197,6 +247,8 @@ def status() -> tuple:
                     "broker": "unknown",
                     "broker_display_name": "Unknown Broker",
                     "expires_at": None,
+                    "sessions": {},
+                    "expiry_events": [],
                     "remember_session": {"enabled": False, "has_saved": False},
                 }
             ),
@@ -374,14 +426,48 @@ def probe_quote() -> tuple:
 
 @broker_auth_bp.post("/api/broker/logout")
 def logout() -> tuple:
-    """Clear the active session and all notification state."""
+    """Clear ONE broker's session; every other broker stays live.
+
+    Body (optional): ``{"broker": "mstock" | "dhan" | ...}``. Omitted keeps
+    the single-broker behaviour (logs out the UI-active broker).
+    """
+    data = request.get_json(silent=True) or {}
+    broker_name = _string_field(data, "broker")
     try:
-        get_session_manager().logout()
-        logger.info("broker session logged out")
+        from backtest.brokers.session_manager import UnknownBrokerError
+
+        try:
+            get_session_manager().logout(broker_name)
+        except UnknownBrokerError as exc:
+            return jsonify({"success": False, "message": str(exc)}), 400
+        logger.info("broker session logged out (%s)", broker_name or "ui-active")
     except Exception:  # noqa: BLE001
         logger.exception("broker logout endpoint failed")
         return jsonify({"success": False, "message": _GENERIC_ERROR_MESSAGE}), 500
-    return jsonify({"success": True}), 200
+    payload: dict = {"success": True}
+    if broker_name is not None:
+        payload["broker"] = broker_name
+    return jsonify(payload), 200
+
+
+@broker_auth_bp.post("/api/broker/<broker_name>/reconcile")
+def reconcile_broker(broker_name: str) -> tuple:
+    """Reconcile working orders against ONE broker's venue book (10.5).
+
+    Fetches open orders from that broker's API via its live gateway and
+    warns when platform state differs. 404 when no gateway is armed for
+    that broker (nothing live to reconcile).
+    """
+    try:
+        from backtest.forward.portfolio_manager import get_portfolio_manager
+
+        result = get_portfolio_manager().reconcile_broker(broker_name)
+        return jsonify({"success": True, "broker": broker_name, "result": result}), 200
+    except KeyError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 404
+    except Exception:  # noqa: BLE001
+        logger.exception("broker reconcile failed for %s", broker_name)
+        return jsonify({"success": False, "message": _GENERIC_ERROR_MESSAGE}), 500
 
 
 @broker_auth_bp.get("/api/broker/feed-quality")

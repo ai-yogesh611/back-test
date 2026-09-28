@@ -281,7 +281,7 @@ def authenticated(monkeypatch):
     broker = FakeBroker(CHAIN, QUOTES)
     import backtest.forward.feed_registry as fr
 
-    monkeypatch.setattr(fr, "_default_quote_broker", lambda: broker)
+    monkeypatch.setattr(fr, "_default_quote_broker", lambda source=None: broker)
     return broker
 
 
@@ -323,7 +323,7 @@ class TestRunnerWiring:
     def test_no_session_falls_back_to_labelled_synthetic(self, bus, monkeypatch):
         import backtest.forward.feed_registry as fr
 
-        monkeypatch.setattr(fr, "_default_quote_broker", lambda: None)
+        monkeypatch.setattr(fr, "_default_quote_broker", lambda source=None: None)
         runner = _runner(_option_runner("mstock"))
         try:
             assert runner.options_bridge.quote_provider.source_name == "synthetic:bs"
@@ -362,7 +362,7 @@ class TestProviderFor:
     def test_live_without_session_falls_back_labelled(self, bus, monkeypatch):
         import backtest.forward.feed_registry as fr
 
-        monkeypatch.setattr(fr, "_default_quote_broker", lambda: None)
+        monkeypatch.setattr(fr, "_default_quote_broker", lambda source=None: None)
         provider, label = option_quote_provider_for("mstock", "NIFTY")
         assert label == "synthetic:bs", "fallback must be labelled, never silent"
 
