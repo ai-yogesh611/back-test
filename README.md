@@ -65,7 +65,8 @@ Market Data (OHLCV candles)
 | **Multi-Broker** | Switchable broker sessions — mStock and Dhan behind one auth contract; feed-quality monitoring on every live bar (see Data Sources). Concurrent per-broker sessions + segment-based capital allocation: PRD drafted, see [docs/MULTI-BROKER-PRD.md](docs/MULTI-BROKER-PRD.md) |
 | **Portfolio Intelligence** | Risk layer above individual strategies: portfolio Greeks in ₹ with scenario revaluation, concentration (underlying / group / strike clusters), strategy P&L correlation, volatility-regime fit, and a pub/sub alert system strategies can subscribe to — see [docs/PORTFOLIO-INTELLIGENCE.md](docs/PORTFOLIO-INTELLIGENCE.md), [docs/ALERTS-GUIDE.md](docs/ALERTS-GUIDE.md) |
 | **Risk** | 3-tiered risk management & monitoring — global circuit breakers (daily loss, drawdown, leverage), per-bucket breakers with independent halts, and a live `/risk` page + dashboard risk strip |
-| **Analytics** | `/analytics` — per-strategy performance suite (P&L attribution, trade stats, equity behaviour) plus an extended `/compare` |
+| **Analytics** | `/analytics` — per-strategy performance suite (P&L attribution, trade stats, equity behaviour, risk ratios, edge degradation detection) plus an extended `/compare` — see [docs/STRATEGY-PERFORMANCE-ANALYTICS.md](docs/STRATEGY-PERFORMANCE-ANALYTICS.md) |
+| **Optimization** | Systematic parameter search (grid/random/Bayesian/genetic) with walk-forward validation, sensitivity analysis, robustness scoring, and one-click apply to runners — see [docs/STRATEGY-PERFORMANCE-ANALYTICS.md](docs/STRATEGY-PERFORMANCE-ANALYTICS.md), [docs/OPTIMIZATION-ENGINE.md](docs/OPTIMIZATION-ENGINE.md) |
 
 ## Built-In Strategies
 
@@ -297,6 +298,9 @@ Open `http://localhost:5000` → Backtest tab → Pick a strategy → Hit **Run 
 | [docs/FORWARD-TESTING.md](docs/FORWARD-TESTING.md) / [docs/OPTIONS-FORWARD-TESTING.md](docs/OPTIONS-FORWARD-TESTING.md) | Forward test engine |
 | [docs/DATA-SOURCES.md](docs/DATA-SOURCES.md) / [docs/DATABASE.md](docs/DATABASE.md) | Data sources (incl. how to add one), PostgreSQL/TimescaleDB (incl. how to add a table) |
 | [docs/STRATEGY-AUTHORING.md](docs/STRATEGY-AUTHORING.md) | Writing strategies/plugins — flow, hooks, hard rules, conformance battery, catalog, lifecycle |
+| [docs/STRATEGY-PERFORMANCE-ANALYTICS.md](docs/STRATEGY-PERFORMANCE-ANALYTICS.md) | **Live/paper performance analytics + parameter optimization** (new) |
+| [docs/OPTIMIZATION-ENGINE.md](docs/OPTIMIZATION-ENGINE.md) | Optimization engine technical details |
+| [docs/STRATEGY-TEMPLATE-GUIDE.md](docs/STRATEGY-TEMPLATE-GUIDE.md) | Strategy template + Pine Script converter (new) |
 | [docs/STRATEGY-GUIDELINES.md](docs/STRATEGY-GUIDELINES.md) | Rules & review checklist for new strategies (+ `templates/strategy_test_template.py`) |
 | [docs/LOGGING.md](docs/LOGGING.md) | Logging levels, request ids, debugging table |
 | [docs/PORTFOLIO-INTELLIGENCE.md](docs/PORTFOLIO-INTELLIGENCE.md) / [docs/ALERTS-GUIDE.md](docs/ALERTS-GUIDE.md) / [docs/STRATEGY-ALERTS.md](docs/STRATEGY-ALERTS.md) | Portfolio Intelligence: Greeks, concentration, regime; alert system + strategy subscription hooks |

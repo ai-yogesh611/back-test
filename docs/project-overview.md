@@ -307,6 +307,69 @@ custom registration. Correlation groups drive the concentration warning.
 
 ---
 
+## 7b. Strategy Performance Analytics & Parameter Optimization
+
+Two complementary systems for evaluating and improving strategies:
+
+### Performance Analytics (Live/Paper)
+
+The analytics engine (`src/backtest/api/analytics_service.py`) computes quantitative performance metrics on-demand from running strategies:
+
+| Category | Metrics |
+|----------|---------|
+| **Risk-adjusted returns** | Sharpe, Sortino, Calmar ratios |
+| **Drawdown analysis** | Max drawdown, duration, underwater curve |
+| **Trade statistics** | Win rate, expectancy, streaks, holding time |
+| **Equity curve** | Total return, CAGR, volatility, downside deviation |
+| **Edge degradation** | Detects when live performance diverges from backtest |
+
+Analytics support multiple periods (`7d`, `30d`, `90d`, `1y`, `all_time`) and handle both equity and option strategies with appropriate adjustments. The system merges in-memory trades with persisted database history for long-running portfolios (>200 trades).
+
+**Access:** `/analytics` UI tab, or `GET /api/analytics/strategies/<name>` API.
+
+### Parameter Optimization
+
+The optimization engine (`src/backtest/optimization/`) systematically searches strategy parameter spaces to find robust combinations:
+
+**Search Methods:**
+- **Grid:** Exhaustive search (best for ≤3 params)
+- **Random:** Uniform coverage (quick exploration)
+- **Bayesian:** Gaussian process + expected improvement (efficient for expensive backtests)
+- **Genetic:** Population-based evolution (escapes local optima)
+
+**Validation Pipeline:**
+```
+Config → Baseline → Search → Sensitivity → Walk-Forward → Robustness Score → Results
+```
+
+Key features:
+- **Walk-forward validation:** Out-of-sample testing with rolling train/test splits
+- **Sensitivity analysis:** 1-D sweeps around best point, re-centering up to 3 rounds
+- **Robustness scoring:** 0-10 score based on WF degradation, plateau width, trade stability
+- **Constraint filtering:** Min/max Sharpe, drawdown, trades, profit factor
+- **One-click apply:** Apply winning params to paper/live runners with full audit trail
+
+**Safety guards:**
+- Live application requires explicit confirmation AND walk-forward pass AND robustness ≥6
+- Fails closed if flagged as overfitted
+- One-click rollback to previous parameters via audit log
+
+**Access:** `/optimize` UI tab, or `POST /api/optimize/runs` API.
+
+### How They Work Together
+
+Typical workflow:
+1. Run strategy with current params → review analytics (identify weaknesses)
+2. Optimize parameters targeting those weaknesses (e.g., high drawdown → optimize for Calmar)
+3. Validate with walk-forward (ensure not overfit)
+4. Check robustness score (<6 = caution)
+5. Apply to paper runner → monitor 30 days
+6. If successful, apply to live (with confirmation)
+
+See [docs/STRATEGY-PERFORMANCE-ANALYTICS.md](STRATEGY-PERFORMANCE-ANALYTICS.md) for complete documentation.
+
+---
+
 ## 8. What is simulated vs. what is real — read this before trusting anything
 
 This is the sharpest edge in the project, and the docs blur it. The precise
