@@ -43,6 +43,7 @@ from backtest.data.base import periods_per_year as annualisation_factor
 from backtest.engine.backtester import BacktestConfig, BacktestResult
 from backtest.engine.metrics import compute_metrics
 from backtest.engine.trades import walk_trades
+from backtest.optimization.regimes import regime_breakdown
 
 log = logging.getLogger("backtest.optimization.evaluator")
 
@@ -217,6 +218,25 @@ def standardize_metrics(
     }
 
 
+def _trades_by_date(trades: list) -> dict[str, int]:
+    """Closed trades counted by the day they closed.
+
+    The PRD asks for a trade count per period. Inferring a trade from a kink in
+    the equity curve would be a guess with a number attached; the trade list
+    says when each one actually happened.
+    """
+    out: dict[str, int] = {}
+    for t in trades or ():
+        if getattr(t, "is_open", False):
+            continue
+        exit_at = getattr(t, "exit_date", None)
+        if not exit_at:
+            continue
+        day = pd.Timestamp(exit_at).strftime("%Y-%m-%d")
+        out[day] = out.get(day, 0) + 1
+    return out
+
+
 def downsample_curve(equity: pd.Series, max_points: int = 400) -> list[list[Any]]:
     """``[[YYYY-MM-DD, equity], ...]`` with at most ``max_points`` points."""
     if equity is None or equity.empty:
@@ -358,6 +378,7 @@ def evaluate(
     window: EvalWindow | None = None,
     keep_curve: bool = False,
     keep_pnls: bool = False,
+    keep_regimes: bool = False,
 ) -> dict[str, Any]:
     """Run ONE backtest; never raises (errors come back in the payload)."""
     t0 = time.perf_counter()
@@ -401,6 +422,16 @@ def evaluate(
             # them for every candidate would mean a trade list per combination
             # across the whole search.
             payload["trade_pnls"] = [float(p) for p in pnls]
+        if keep_regimes and equity is not None and len(equity):
+            # PRD Part 2 §6.1. At full resolution, never from the downsampled
+            # curve: sampling every third bar moves a Sharpe enough to reorder
+            # two candidates, and a regime table built on that would be a
+            # table of sampling artefacts.
+            payload["regimes"] = regime_breakdown(
+                [pd.Timestamp(ts).strftime("%Y-%m-%d") for ts in equity.index],
+                [float(v) for v in equity.values],
+                _trades_by_date(trades),
+            )
     except Exception as exc:  # noqa: BLE001 - one bad combination must not kill the run
         payload = {
             "params": params,

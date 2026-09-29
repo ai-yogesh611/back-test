@@ -598,6 +598,32 @@ class OptimizationService:
             "elapsed_ms": payload.get("elapsed_ms"),
         }
 
+    def _regime_breakdown_for(
+        self, cfg: OptimizationConfig, best: dict[str, Any], candles: Any
+    ) -> dict[str, Any] | None:
+        """PRD Part 2 §6.1 — how the winner behaved in each named period.
+
+        Returns None rather than raising: a run that cannot be split by
+        calendar band still completed, and failing it at the last step would
+        throw away the search that produced a real result.
+        """
+        from backtest.optimization.evaluator import evaluate  # local: avoids a cycle
+
+        settings = {
+            "capital": cfg.backtest.initial_capital,
+            "symbol": cfg.backtest.symbol,
+            "engine": cfg.backtest.engine,
+            "timeframe": cfg.backtest.timeframe,
+            "selector_type": cfg.backtest.selector_type,
+        }
+        try:
+            result = evaluate(candles, settings, cfg.strategy_id, dict(best["params"]),
+                              keep_regimes=True)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[regimes] could not split the winner: %s", exc)
+            return None
+        return result.get("regimes")
+
     def _execute(self, job: _Job) -> None:
         cfg = job.cfg
         run_id = job.run_id
@@ -884,6 +910,12 @@ class OptimizationService:
             observations=len(candles),
             periods_per_year=annualisation_factor(cfg.backtest.timeframe),
         )
+        # PRD Part 2 §6.1 — one extra evaluation of the winner, because the
+        # regime table needs the FULL-resolution equity series. The curve
+        # already in hand is downsampled to 400 points for drawing, and a
+        # per-period Sharpe taken from a sampled curve is a sampling artefact
+        # wearing a number. One backtest against a search of thousands.
+        regimes = self._regime_breakdown_for(cfg, best, candles) if best else None
         warnings = an.warning_signs(cfg, best, sensitivity, wf_report, baseline)
         gap = deflation_warning(deflated, (best or {}).get("metrics", {}).get("sharpe")
                                 if best else None)
@@ -915,6 +947,7 @@ class OptimizationService:
             "cluster": cluster,
             "robustness": robust,
             "deflated_sharpe": deflated,
+            "regimes": regimes,
             "warnings": warnings,
             "comparison": comparison,
             "compliance": compliance_report(best["metrics"], cfg.constraints) if best else [],

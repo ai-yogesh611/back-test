@@ -246,6 +246,8 @@
             || '<li class="muted">No constraints.</li>';
 
         const levelIcon = { danger: '⛔', warning: '⚠️', info: 'ℹ️' };
+        renderWarningPanel(a.warnings);
+        renderRegimes(a.regimes);
         $('warningsList').innerHTML = (a.warnings || []).map((w) =>
             `<li class="opt-warn-${w.level}">${levelIcon[w.level] || '•'} ${C.escapeHtml(w.message)}</li>`).join('')
             || '<li class="pos">No overfitting warning signs detected.</li>';
@@ -258,6 +260,69 @@
             { label: 'Current params', points: (a.curves || {}).baseline || [], color: '#94a3b8' },
             { label: 'Optimized', points: (a.curves || {}).optimized || [], color: '#3b82f6' },
         ]);
+    }
+
+    /**
+     * PRD Part 2 §6.2 — warning signs, made impossible to miss.
+     *
+     * Sticky at the top of the results, not dismissable. The warnings were
+     * already generated; the PRD's complaint is that they were easy to miss in
+     * the layout, and a dismissable banner is the layout's answer to that. So:
+     * no close button, and it stays put while the page scrolls.
+     */
+    function renderWarningPanel(warnings) {
+        const el = $('warningPanel');
+        if (!el) return;
+        const list = (warnings || []).filter((w) => w.level !== 'info' || true);
+        if (!list.length) { el.hidden = true; el.innerHTML = ''; return; }
+        const danger = list.filter((w) => w.level === 'danger').length;
+        const level = danger ? 'opt-warning-panel--danger' : 'opt-warning-panel--warning';
+        const title = danger
+            ? `⛔ ${danger} of ${list.length} warning sign${list.length === 1 ? '' : 's'} need attention`
+            : `⚠️ ${list.length} warning sign${list.length === 1 ? '' : 's'}`;
+        el.hidden = false;
+        el.className = `opt-warning-panel ${level}`;
+        el.innerHTML = `<div class="opt-warning-title">${C.escapeHtml(title)}</div>
+            <ul class="opt-warning-list">${list.map((w) => `<li class="opt-warning-${w.level}">
+                ${C.escapeHtml(w.message)}</li>`).join('')}</ul>`;
+    }
+
+    /**
+     * PRD Part 2 §6.1 — how the winner behaved in each named period.
+     *
+     * A period with too few bars prints no Sharpe. The number would be there
+     * and it would be larger than the number next to it, which reads as "this
+     * period was better" when the truth is "this period is too short to say".
+     */
+    function renderRegimes(regimes) {
+        const box = $('regimeBox');
+        if (!box) return;
+        if (!regimes || !regimes.available || !(regimes.periods || []).length) {
+            box.hidden = true;
+            box.innerHTML = '';
+            return;
+        }
+        const uncovered = regimes.named_coverage_pct < 99.9;
+        const rows = regimes.periods.map((p) => `<tr class="${p.named ? '' : 'opt-regime-unnamed'}">
+            <td>${C.escapeHtml(p.label)}<small class="muted"> ${C.escapeHtml(p.from ? `${p.from} → ${p.to}` : 'outside the named bands')}</small></td>
+            <td class="${p.return_pct >= 0 ? 'pos' : 'neg'}">${C.fmtNum(p.return_pct, 2)}%</td>
+            <td>${p.sufficient ? C.fmtNum(p.sharpe, 2) : '<span class="muted" title="too few bars for a meaningful Sharpe">—</span>'}</td>
+            <td>${C.fmtNum(p.max_drawdown_pct, 2)}%</td>
+            <td>${p.trades === null ? '—' : p.trades}</td>
+        </tr>`).join('');
+
+        box.hidden = false;
+        box.innerHTML = `<h2 class="card-title">Regime breakdown</h2>
+            <p class="muted small">How the winning parameters behaved in each named period.
+                ${uncovered ? `<strong class="neg">These bands cover only
+                    ${C.fmtNum(regimes.named_coverage_pct, 1)}% of this run's bars</strong> — the
+                    rest is shown as other.` : ''}</p>
+            <div class="table-scroll"><table class="data-table opt-compact">
+                <thead><tr><th>Period</th><th>Return</th><th>Sharpe</th><th>Max DD</th><th>Trades</th></tr></thead>
+                <tbody>${rows}</tbody></table></div>
+            <p class="muted small opt-regime-note">A period marked — has too few bars for a
+                meaningful Sharpe (${regimes.min_bars} is the floor). The name describes what
+                happened; nothing here predicts the next one.</p>`;
     }
 
     /**

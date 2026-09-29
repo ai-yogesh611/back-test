@@ -948,3 +948,62 @@ check on a result the user can already see.
 22 on the service, endpoint and gate; 7 new on the fan's shape (band ordering
 at every point, opening balance, downsample bounds, ending on the real
 equity). Suite 4206 passed.
+
+## PRD Part 2 §6.1 — Regime breakdown, and §6.2 warning panel (shipped)
+
+### §6.1 What it is
+`src/backtest/optimization/regimes.py` splits the **winner's** equity curve
+across the PRD's five fixed calendar bands — COVID crash (2020-01-01 →
+2020-03-31), Recovery bull (2020-04-01 → 2021-12-31), Rate-hike correction
+(2022-01-01 → 2022-06-30), Volatile recovery (2022-07-01 → 2023-12-31),
+Low-volatility grind (2024-01-01 → present) — and reports return, Sharpe, max
+drawdown and trade count for each.
+
+Deliberately **not** `src/backtest/intelligence/regime.py`. That file is a live
+VIX volatility detector reading current conditions; this one is a fixed
+calendar breakdown of a completed backtest. Same word, different question.
+
+### The decision that mattered: full resolution, at the cost of one backtest
+`best_curve` is downsampled to ≤400 points for drawing. Computing a per-period
+Sharpe from that curve would have been wrong in a way that is invisible in the
+output: sampling every third bar moves the standard deviation enough to reorder
+two candidates, and a 400-point curve with a 0.0004 daily drift returns a
+Sharpe in the tens of thousands. A regime table built on it would be a table of
+sampling artefacts, wearing plausible numbers.
+
+So the winner is evaluated **once more** at full resolution
+(`evaluator.evaluate(..., keep_regimes=True)`), which costs one backtest
+against a search that already ran thousands. That is the cheap way to be
+correct. The result lands in `analysis.regimes`.
+
+### Other calls
+- **Trade counts from closed trades, by exit date** — `_trades_by_date` in
+  `evaluator.py`. Inferring a trade from a kink in the equity curve is a guess
+  with a number attached. `trades=None` means "not counted" and is
+  deliberately distinct from `0`.
+- **Bars outside every band are kept.** A 2015–2019 run lands in an
+  "Other / uncovered" row with `named_coverage_pct = 0.0`. Dropping those bars
+  would make the table look complete while describing nothing.
+- **Return base is the period's first bar**, not the run's opening balance —
+  and the first bar counts as a drawdown peak, so a period that only falls has
+  a drawdown.
+- **Below `MIN_BARS` (20) the Sharpe is `None` and the UI prints `—`.** The
+  number would be present and large, which reads as "this period was better"
+  when the truth is "this period is too short to say".
+- **A failure to split returns `None`; it never fails the run.** The breakdown
+  is computed in the last step, after thousands of backtests. Losing a real
+  result over a cosmetic table is a bad trade.
+
+### §6.2 Warning panel
+`renderWarningPanel` in `optimize_run.js`: `position: sticky`, top of the
+results, **no close button**. The warnings already existed and were already
+correct — the PRD's complaint was that they were easy to miss, and a dismissable
+banner would be the layout's answer to that complaint rather than a fix for it.
+Any `danger` escalates the panel to red and counts itself out in the title.
+
+### Verification
+26 new tests (17 engine, 9 wiring, 13 JS). Real run: winner `{fast: 5, slow: 40}`,
+15 trades, per-period counts 1 + 3 + 11 = 15 — reconciled against the run's own
+`closed_trades`. Full suite 4242 passed; the `test_catalogue_entries_carry_params_and_kind`
+order-dependent failure and the `benchmarks/` collection errors are both
+pre-existing and reproduce on a clean tree.

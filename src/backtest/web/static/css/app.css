@@ -1994,3 +1994,25 @@ select.input option.sym-no-data:disabled { cursor: not-allowed; }
     margin-bottom: 12px; padding: 9px 11px; border-radius: 6px;
     border: 1px solid rgba(245, 158, 11, .5); background: rgba(245, 158, 11, .09);
 }
+
+/* ---- Warning panel + regime table (PRD Part 2 §6.2, §6.1) --------------
+   Sticky and undismissable on purpose. A warning you can scroll past, or
+   close with one click, is a warning that will be. */
+.opt-warning-panel {
+    position: sticky; top: 0; z-index: 5;
+    margin-bottom: 16px; padding: 12px 14px;
+    border-radius: 8px; border: 1px solid rgba(245, 158, 11, .55);
+    background: rgba(30, 20, 8, .96);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, .45);
+}
+.opt-warning-panel--danger { border-color: rgba(239, 68, 68, .6); background: rgba(35, 12, 12, .96); }
+.opt-warning-title { font-weight: 600; margin-bottom: 6px; color: #fbbf24; }
+.opt-warning-panel--danger .opt-warning-title { color: #f87171; }
+.opt-warning-list { margin: 0; padding-left: 18px; }
+.opt-warning-list li { font-size: .82rem; line-height: 1.55; margin-bottom: 3px; }
+.opt-warning-list li:last-child { margin-bottom: 0; }
+.opt-warning-info { color: #94a3b8; }
+
+.opt-regime-box { margin-bottom: 16px; }
+.opt-regime-unnamed td { color: #94a3b8; font-style: italic; }
+.opt-regime-note { margin: 8px 0 0; }

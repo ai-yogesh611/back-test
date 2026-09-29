@@ -225,6 +225,14 @@ class TestTuneThisWiring:
         assert 'id="monteCarloBox"' in html
         assert 'id="applyMcGate"' in html
 
+    def test_the_run_page_ships_the_warning_panel_and_regime_table(self, client):
+        """PRD Part 2 §6.1/§6.2."""
+        html = client.get("/optimize/runs/00000000-0000-0000-0000-000000000000").get_data(
+            as_text=True
+        )
+        assert 'id="warningPanel"' in html
+        assert 'id="regimeBox"' in html
+
     def test_the_run_page_ships_the_audit_chain(self, client):
         html = client.get("/optimize/runs/00000000-0000-0000-0000-000000000000").get_data(
             as_text=True
