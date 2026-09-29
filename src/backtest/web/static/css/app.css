@@ -1453,3 +1453,83 @@ body.has-alert-widget .toast-stack { bottom: 76px; }
 .risk-halt-flag { color: #e05d5a; font-weight: 700; }
 .risk-broker-card .pos { color: var(--green, #3fa46a); }
 .risk-broker-card .neg { color: var(--red, #d05b56); }
+
+/* ============================================================
+   Cross-broker analytics (PRD-003) — collapsible sections,
+   comparison/migration/recommend modals, execution panels.
+   Same token vocabulary as the rest of the app; no new colors.
+   ============================================================ */
+.xb-section { padding: 0; }
+.xb-section > summary { list-style: none; }
+.xb-section > summary::-webkit-details-marker { display: none; }
+.xb-section-head {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 14px 16px; cursor: pointer; font-weight: 600;
+    border-radius: var(--radius);
+}
+.xb-section-head:hover { color: var(--text-strong); }
+.xb-chevron { color: var(--muted); transition: transform .12s ease; }
+.xb-section[open] > .xb-section-head .xb-chevron { transform: rotate(180deg); }
+.xb-section-body { padding: 0 16px 16px; }
+
+.xb-headline {
+    display: flex; flex-wrap: wrap; gap: 10px;
+    margin-bottom: 12px;
+}
+.xb-headline:empty { display: none; }
+.xb-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 11px; border-radius: 999px; font-size: .8rem;
+    background: var(--surface-2); border: 1px solid var(--border);
+    color: var(--text);
+}
+.xb-chip-good { background: var(--success-tint); border-color: var(--success-shade); color: var(--success-text); }
+.xb-chip-warn { background: var(--warning-tint); border-color: var(--warning-shade); color: var(--warning-text); }
+.xb-chip-bad  { background: var(--danger-tint);  border-color: var(--danger-shade);  color: var(--danger-text); }
+
+.xb-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.xb-panel {
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 14px;
+}
+.xb-panel-title { margin: 0 0 10px; font-size: .9rem; font-weight: 600; }
+
+.xb-alerts, .xb-insights, .xb-notes { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.xb-note { font-size: .8rem; color: var(--muted); }
+.xb-insight {
+    font-size: .85rem; padding: 8px 12px; border-radius: 8px;
+    background: var(--info-tint); border: 1px solid var(--info-shade);
+}
+.xb-alert {
+    font-size: .85rem; padding: 8px 12px; border-radius: 8px;
+    background: var(--warning-tint); border: 1px solid var(--warning-shade);
+}
+.xb-alert.is-critical { background: var(--danger-tint); border-color: var(--danger-shade); }
+.xb-alert.is-info { background: var(--info-tint); border-color: var(--info-shade); }
+
+.xb-modal { width: 640px; max-height: 88vh; display: flex; flex-direction: column; }
+.xb-modal .broker-auth-form { overflow-y: auto; }
+.xb-field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; }
+.xb-field label { font-size: .8rem; color: var(--muted); }
+.xb-field-row { flex-direction: row; gap: 12px; }
+.xb-field-row > div { flex: 1; display: flex; flex-direction: column; gap: 5px; }
+.xb-checks { display: flex; flex-wrap: wrap; gap: 12px; }
+.xb-checks label { display: inline-flex; align-items: center; gap: 6px; color: var(--text); font-size: .85rem; }
+.xb-result:not(:empty) { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 14px; }
+.xb-metric-row {
+    display: grid; grid-template-columns: 1.4fr 1fr 1fr 1.2fr;
+    gap: 8px; align-items: center;
+    padding: 8px 0; border-bottom: 1px solid var(--border);
+    font-size: .85rem;
+}
+.xb-metric-row:last-child { border-bottom: none; }
+.xb-metric-row.is-header { color: var(--muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; }
+.xb-metric-winner { font-weight: 600; color: var(--success-text); }
+.xb-metric-loser { color: var(--danger-text); }
+.xb-sig { font-size: .72rem; color: var(--muted); }
+.xb-sig.is-significant { color: var(--success-text); }
+.xb-bar { height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; margin-top: 3px; }
+.xb-bar > span { display: block; height: 100%; background: var(--primary); }
+.xb-bar.is-good > span { background: var(--success); }
+.xb-bar.is-bad  > span { background: var(--danger); }
+.xb-empty { color: var(--muted); font-size: .85rem; padding: 12px 0; }

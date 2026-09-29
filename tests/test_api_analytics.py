@@ -2,7 +2,11 @@
 
 import pytest
 
-from backtest.api.analytics_service import AnalyticsService, compute_metrics_from_trades, get_health_rating
+from backtest.analytics.portfolio import (
+    AnalyticsService,
+    compute_metrics_from_trades,
+    get_health_rating,
+)
 from backtest.forward.paper_runner import RunnerConfig
 from backtest.forward.portfolio_manager import get_portfolio_manager, reset_portfolio_manager
 from backtest.web.app import create_app
