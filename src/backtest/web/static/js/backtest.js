@@ -99,7 +99,10 @@ async function runBacktest() {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify(config),
         });
-        lastRun = { config, result };
+        // §6: a handle for this rendered result, so the Optimize hand-off and
+        // its audit chain have something to name. Backtests are stateless —
+        // nothing about this run is persisted server-side.
+        lastRun = { config, result, resultId: TuneThis.mintResultId() };
         renderResults(result);
         showToast("Backtest complete", "success");
     } catch (err) {
@@ -123,6 +126,10 @@ function renderResults(result) {
     if (typeof RunChecks !== "undefined") RunChecks.renderInto("runChecks", result);
     // PRD §5: the readiness summary, from the same payload as everything above.
     if (typeof Certification !== "undefined") Certification.renderInto("certification", result.readiness);
+    // PRD §6: carry this result into Optimize. Never hidden — see the note in
+    // tune_this.js about why a not-yet-certifiable result is precisely when
+    // someone wants to tune.
+    if (typeof TuneThis !== "undefined") TuneThis.renderInto("tuneThis", lastRun);
     TradeTable.render("tradeTable-wrap", result.trades);
     // default tab = equity; render lazily on tab switch
     renderChartForPane("equity");

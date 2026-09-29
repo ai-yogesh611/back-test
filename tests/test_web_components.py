@@ -289,3 +289,24 @@ def test_certification_readiness_panel_behaviour():
         result.returncode == 0
     ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     assert "14 tests passed" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_tune_this_prefill_behaviour():
+    """PRD backTest-enhance §6: what the hand-off actually carries.
+
+    The one that matters most is the engine. Dropping it means a result screened
+    on Quick-Screen gets tuned on the canonical driver — §1.1's bug, one hop
+    downstream, with an audit trail showing one continuous lineage.
+    """
+    result = subprocess.run(
+        ["node", str(_REPO_ROOT / "tests" / "js" / "test_tune_this.mjs")],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert (
+        result.returncode == 0
+    ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "25 tests passed" in result.stdout

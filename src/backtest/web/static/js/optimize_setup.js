@@ -25,6 +25,13 @@
     };
 
     let symbolPicker = null;   // components/symbol_picker.js handle
+    // §6: the engine the search will run on. The Optimize form has no engine
+    // control, so the value has to travel with the request; carrying it from
+    // the backtest is the only way a quick-screen result cannot silently be
+    // tuned on the canonical engine (§1.1 was entirely about that mismatch).
+    let engine = 'driver';
+    let sourceBacktestId = null;   // §6 reverse-flow audit chain, first link
+    let prefill = null;            // the §6 hand-off, consumed once
 
     const CONSTRAINT_LABELS = {
         max_drawdown: 'Max drawdown (%)', min_trades: 'Trades', win_rate: 'Win rate (%)',
@@ -69,8 +76,80 @@
         else if (state.strategies.some((s) => s.name === 'sma_crossover')) sel.value = 'sma_crossover';
         bind();
         renderConstraints();
+        // §6: applied AFTER loadStrategy, because loadStrategy fetches the
+        // parameter space and renders the rows the prefill has to write into.
+        prefill = typeof SessionState !== 'undefined' ? SessionState.takeOptimizePrefill() : null;
+        if (prefill && prefill.strategyId && state.strategies.some((x) => x.name === prefill.strategyId)) {
+            sel.value = prefill.strategyId;
+        }
         await loadStrategy(sel.value);
+        if (prefill) applyPrefill(prefill);
         loadHistory();
+    }
+
+    // ------------------------------------------------------------ §6 prefill
+
+    /** Write the §6 hand-off into the form, leaving Start to the user. */
+    function applyPrefill(pf) {
+        if (symbolPicker) symbolPicker.setValue(pf.symbol);
+        $('optFrom').value = pf.startDate;
+        $('optTo').value = pf.endDate;
+        $('optCapital').value = pf.initialCapital;
+        if (pf.timeframe) {
+            Timeframes.applyTo($('optTimeframe'), symbolPicker ? symbolPicker.timeframesFor(pf.symbol) : null);
+            const want = Timeframes.toCanonical(pf.timeframe);
+            const sel = $('optTimeframe');
+            if (want && [...sel.options].some((o) => o.value === want)) sel.value = want;
+        }
+        if (pf.objectiveFunction) $('optObjective').value = pf.objectiveFunction;
+        if (pf.method) {
+            const radio = document.querySelector(`input[name="optMethod"][value="${pf.method}"]`);
+            if (radio) radio.checked = true;
+            syncMethod();
+        }
+        const wf = pf.walkForward || {};
+        $('optWfEnabled').checked = !!wf.enabled;
+        if (wf.enabled) {
+            $('optWfTrain').value = wf.trainPeriodDays;
+            $('optWfTest').value = wf.testPeriodDays;
+            $('optWfStep').value = wf.stepDays;
+        }
+        syncWf();
+        // §6 "parameters pre-filled with the current values" — the baseline
+        // every optimised value is then shown as a delta against.
+        applyParamOverrides(pf.params || {});
+        engine = pf.engine || 'driver';
+        sourceBacktestId = pf.resultId || null;
+        renderPrefillNotice(pf);
+        onChange();
+    }
+
+    /** Copy a backtest's parameter values into the rendered `current` column. */
+    function applyParamOverrides(params) {
+        const names = Object.keys(params || {});
+        if (!names.length) return;
+        state.params.forEach((p) => {
+            if (names.includes(p.name) && params[p.name] !== null && params[p.name] !== undefined) {
+                p.current = params[p.name];
+            }
+        });
+        renderParams();
+    }
+
+    function renderPrefillNotice(pf) {
+        const el = $('optPrefillNotice');
+        if (!el) return;
+        const same = !pf.source || pf.source === root.dataset.source;
+        el.hidden = false;
+        el.className = 'opt-prefill-notice' + (same ? '' : ' opt-prefill-warn');
+        el.innerHTML = `⚙ Carried over from backtest result <code>${C.escapeHtml(pf.resultId || '—')}</code>`
+            + ` · engine <strong>${C.escapeHtml(pf.engineLabel || pf.engine)}</strong>`
+            + ` · data source <strong>${C.escapeHtml(pf.source || root.dataset.source || 'default')}</strong>`
+            + (same ? ''
+                : ` — <span class="neg">this is a different source from the one this page uses, `
+                  + `so the search will not be comparable.</span>`)
+            + `<br><span class="muted small">Nothing has been run. Review the form, then press Start. `
+            + `Walk-forward is ${$('optWfEnabled').checked ? 'on' : 'off'}.</span>`;
     }
 
     function bind() {
@@ -261,8 +340,14 @@
                 endDate: $('optTo').value,
                 initialCapital: Number($('optCapital').value),
                 timeframe: $('optTimeframe').value,
+                // §6: the engine the backtest used. Emitted so a quick-screen
+                // result cannot be tuned on the canonical driver without
+                // saying so.
+                engine,
                 selectorType: $('optSelector').value,
                 source: root.dataset.source || undefined,
+                // §6 reverse flow: link 1 of backtest -> optimize -> runner.
+                sourceBacktestId: sourceBacktestId || undefined,
             },
             walkForward: {
                 enabled: $('optWfEnabled').checked,

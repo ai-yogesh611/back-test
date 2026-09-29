@@ -624,3 +624,102 @@ run is not given a green drawdown. `tests/test_api_readiness.py` (10) pins the
 wiring — the block in a real response, one per slot in Compare, and none at all
 for a failed slot. `tests/js/test_certification.mjs` (14) pins the rendering,
 including escaping, via `tests/test_web_components.py`.
+
+---
+
+## "Tune This" — Backtest → Optimize (PRD §6, 2026-09-29)
+
+Implements **Part 1 §6**. Part 1 is now complete; all of Part 2 remains open.
+
+The button carries a finished backtest into the Optimize setup form with every
+common field already filled. It does **not** start a search — a run that begins
+the moment you look at it is a run you never chose, so the user reviews the
+form and presses Start.
+
+`components/tune_this.js` builds the prefill; `optimize_setup.js` applies it
+*after* `loadStrategy()`, because that is what fetches the parameter space and
+renders the rows the prefill has to write into. `SessionState.optimizePrefill`
+is read-and-clear, so a stale hand-off cannot re-fill a form the user has since
+edited.
+
+### The engine now travels — the §1.1 bug, one hop downstream
+
+§6 asks for "engine from current result (whichever was used)". It was not
+merely missing from the button: **`optimize_setup.js`'s `buildConfig()` never
+emitted `engine` at all**, so the parser's default (`driver`) applied to every
+run. Dropping it means a result screened on Quick-Screen gets tuned on the
+canonical driver — two engines under one apparent lineage, which is exactly
+what §1.1 was written to kill.
+
+`buildConfig()` now emits `engine`, and the Optimize page shows it in a
+"carried over from" notice so the value is visible rather than applied in
+silence. The canonical engine's backtest spelling is `""`, which maps to
+Optimize's `driver`.
+
+### The result ID is a session handle, and is labelled one
+
+Backtests are stateless — nothing about a completed run is persisted — so there
+is no server-side id to quote for the §6 reverse flow. `mintResultId()` creates
+one per rendered result (`bt_<base36 time><random>`) and the UI says **"Result
+ID (this session)"**.
+
+This is enough for what the audit chain actually answers — *which result was
+this tuned from?* — and not enough for what a stored id implies. A convincing
+identifier in an audit log that resolves to nothing is worse than one that
+admits it was a handle.
+
+It travels as `backtestConfig.sourceBacktestId`, is stored on the run, and is
+validated at parse time against `_ID_RE = ^[A-Za-z0-9_.:-]{1,64}$`. Anything
+else is dropped with a warning: the value is later rendered into the audit
+trail, and a free-form string in an audit field is a stored-XSS surface.
+
+### The chain
+
+`service.apply()` assembles all three links once the runner id is known:
+
+```
+backtest (session handle)  →  optimize (run_id)  →  runner (instance_id)
+```
+
+It is stored in `action_details["chain"]` and shown in the apply modal *before*
+applying, updating live as the target and runner selection change. A run not
+started from a backtest still produces a chain, with the first link explicitly
+absent — silently omitting the link would make an un-traced apply look
+identical to a traced one.
+
+### The button is never hidden
+
+§5 lists the button under "if all green", which reads like a gate. **It is not
+used as one.** The ordinary reason to open Optimize is that the backtest above
+is mediocre — a weak result is precisely what you tune — so hiding the button
+unless the result is already certifiable would block the workflow the feature
+exists for.
+
+Instead the button is always present. When readiness is not all-green the hint
+says so plainly, and names what Optimize will *not* fix: *"Optimize looks for
+better parameters for this strategy — it does not fix Data source, Trade
+count, Cost shock (2x)."* `tune_this_available` is still exposed on the §5
+payload so a future gate can consume it.
+
+### Walk-forward defaults
+
+Train on two thirds of the backtest window, test on the rest, **step by the
+test period** (the standard convention — a longer step skips bars, a shorter
+one re-tests the same ones). A window too short to clear the form's own
+minimums (5-day train, 2-day test) gets walk-forward switched **off with a
+reason** rather than a split the server would reject at submit time, after the
+user has already filled the form in.
+
+### Not in scope
+`optimize.html` still has no visible engine *control*; the value travels with
+the request and is displayed. Adding a selector would let the Optimize page
+diverge from the backtest that started it, which is the mismatch §6 exists to
+prevent.
+
+### Tests
+`tests/js/test_tune_this.mjs` (25) pins every field §6 lists, the walk-forward
+arithmetic, and the three judgement calls above — via
+`tests/test_web_components.py`. `tests/test_tune_this_flow.py` (16) pins the
+config parser, including that a hostile handle is refused.
+`tests/optimization/test_tune_this_chain.py` (5) pins the chain against the
+real service and audit store.

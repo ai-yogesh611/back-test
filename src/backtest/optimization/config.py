@@ -20,6 +20,7 @@ Units (single source of truth for the whole engine)
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -30,6 +31,12 @@ from backtest.strategy.registry import get_strategy
 OBJECTIVES = ("sharpe", "sortino", "calmar", "total_return", "profit_factor", "expectancy")
 METHODS = ("grid", "random", "bayesian", "genetic")
 ENGINES = ("driver", "quick_screen", "options")
+
+#: PRD §6's ``sourceBacktestId`` is a session handle minted by the Backtest
+#: page, not server state. Constrain it to a shape that can only be an id —
+#: it is later rendered into the audit trail, and a free-form string in an
+#: audit field is a stored-XSS surface.
+_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 CONSTRAINT_METRICS = (
     "max_drawdown",
     "min_trades",
@@ -53,18 +60,30 @@ MIN_RECOMMENDED_DAYS = 182
 #: (``engine.<name>``). ``delta_target`` is the Greeks-based strike selector.
 OPTION_ENGINE_PARAMS: dict[str, dict[str, Any]] = {
     "engine.delta_target": {
-        "type": "float", "min": 0.05, "max": 0.95, "default": 0.35,
-        "label": "Strike delta target", "suggested_step": 0.05,
+        "type": "float",
+        "min": 0.05,
+        "max": 0.95,
+        "default": 0.35,
+        "label": "Strike delta target",
+        "suggested_step": 0.05,
         "tooltip": "Delta selector: target |delta| of the bought leg (forces selector=delta).",
     },
     "engine.spread_threshold": {
-        "type": "float", "min": 0.0, "max": 1.0, "default": 0.7,
-        "label": "Outright-vs-spread conviction", "suggested_step": 0.05,
+        "type": "float",
+        "min": 0.0,
+        "max": 1.0,
+        "default": 0.7,
+        "label": "Outright-vs-spread conviction",
+        "suggested_step": 0.05,
         "tooltip": "Conviction at/above which an outright option is bought instead of a spread.",
     },
     "engine.max_open_structures": {
-        "type": "int", "min": 1, "max": 10, "default": 1,
-        "label": "Max open structures", "suggested_step": 1,
+        "type": "int",
+        "min": 1,
+        "max": 10,
+        "default": 1,
+        "label": "Max open structures",
+        "suggested_step": 1,
         "tooltip": "Concurrent open option structures (PRD risk.max_positions).",
     },
 }
@@ -174,6 +193,12 @@ class BacktestSettings:
     mode: str = "paper"  # provenance tag: which execution data the run models
     source: str | None = None  # data source override (defaults to the app's)
     selector_type: str = "atm"  # options engine only
+    #: PRD §6 reverse flow. The backtest result this search was started from,
+    #: carried so "apply to paper" can name the whole chain:
+    #: backtest -> optimize run -> runner. It is a SESSION handle minted by the
+    #: Backtest page, not a stored backtest record — nothing about a completed
+    #: backtest is persisted, and this field must not imply otherwise.
+    source_backtest_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -274,6 +299,7 @@ class OptimizationConfig:
                 "mode": self.backtest.mode,
                 "source": self.backtest.source,
                 "selectorType": self.backtest.selector_type,
+                "sourceBacktestId": self.backtest.source_backtest_id,
             },
             "walkForward": {
                 "enabled": self.walk_forward.enabled,
@@ -373,8 +399,9 @@ def _nice_step(raw: float) -> float:
     return float(10 * magnitude)  # pragma: no cover
 
 
-def default_space(strategy_id: str, engine: str | None = None,
-                  target_points: int = 10) -> list[dict[str, Any]]:
+def default_space(
+    strategy_id: str, engine: str | None = None, target_points: int = 10
+) -> list[dict[str, Any]]:
     """Setup-page defaults: every numeric param, a range around its default.
 
     The suggested range is the default ±50 % (at least ±3 steps' worth for
@@ -466,8 +493,11 @@ def parse_config(doc: dict[str, Any], *, default_source: str | None = None) -> O
             errors["strategyId"] = f"unknown strategy: {strategy_id}"
 
     # -- objective / method ---------------------------------------------------
-    objective = str(_pick(doc, "objectiveFunction", "objective_function", "objective",
-                          default="sharpe")).strip().lower()
+    objective = (
+        str(_pick(doc, "objectiveFunction", "objective_function", "objective", default="sharpe"))
+        .strip()
+        .lower()
+    )
     if objective not in OBJECTIVES:
         errors["objectiveFunction"] = f"must be one of {', '.join(OBJECTIVES)}"
     method = str(_pick(doc, "method", default="grid")).strip().lower()
@@ -503,6 +533,14 @@ def parse_config(doc: dict[str, Any], *, default_source: str | None = None) -> O
     if mode not in ("paper", "live"):
         errors["backtestConfig.mode"] = "mode must be paper or live"
     source = _pick(bt, "source", default=None) or default_source
+    # Free-form: an opaque handle, never validated as data. Stripped of
+    # anything that is not a plausible id so it cannot be used to smuggle
+    # markup into the audit log it is later rendered into.
+    source_backtest_id = _pick(bt, "sourceBacktestId", "source_backtest_id", default=None)
+    source_backtest_id = str(source_backtest_id or "").strip() or None
+    if source_backtest_id and not _ID_RE.match(source_backtest_id):
+        warnings.append("sourceBacktestId is not a recognisable id; it will be dropped.")
+        source_backtest_id = None
     selector_type = str(_pick(bt, "selectorType", "selector_type", default="atm")).strip().lower()
     if selector_type not in ("atm", "delta", "fixed_distance"):
         errors["backtestConfig.selectorType"] = "selector must be atm, delta or fixed_distance"
@@ -581,8 +619,13 @@ def parse_config(doc: dict[str, Any], *, default_source: str | None = None) -> O
             current = lo if lo is not None else 0.0
         params.append(
             ParameterSpec(
-                name=name, type=ptype, min=float(lo), max=float(hi), step=float(step),
-                current=float(current), optimize=optimize,
+                name=name,
+                type=ptype,
+                min=float(lo),
+                max=float(hi),
+                step=float(step),
+                current=float(current),
+                optimize=optimize,
             )
         )
     optimized = [p for p in params if p.optimize]
@@ -637,8 +680,9 @@ def parse_config(doc: dict[str, Any], *, default_source: str | None = None) -> O
     # -- method settings ---------------------------------------------------------
     ms_doc = _pick(doc, "methodSettings", "method_settings", default={}) or {}
 
-    def _int_setting(key_camel: str, key_snake: str, default: int | None,
-                     lo: int, hi: int) -> int | None:
+    def _int_setting(
+        key_camel: str, key_snake: str, default: int | None, lo: int, hi: int
+    ) -> int | None:
         raw = _pick(ms_doc, key_camel, key_snake, default=None)
         if raw is None:
             raw = _pick(doc, key_camel, key_snake, default=None)
@@ -701,9 +745,16 @@ def parse_config(doc: dict[str, Any], *, default_source: str | None = None) -> O
         constraints=tuple(constraints),
         method=method,
         backtest=BacktestSettings(
-            symbol=symbol, start_date=str(start), end_date=str(end),
-            initial_capital=float(capital or 0), timeframe=timeframe, engine=engine,
-            mode=mode, source=source, selector_type=selector_type,
+            symbol=symbol,
+            start_date=str(start),
+            end_date=str(end),
+            initial_capital=float(capital or 0),
+            timeframe=timeframe,
+            engine=engine,
+            mode=mode,
+            source=source,
+            selector_type=selector_type,
+            source_backtest_id=source_backtest_id,
         ),
         walk_forward=walk_forward,
         method_settings=method_settings,

@@ -193,3 +193,23 @@ class TestPageWiring:
 
     def test_the_component_is_served(self, client):
         assert client.get("/static/js/components/certification.js").status_code == 200
+
+
+class TestTuneThisWiring:
+    """PRD §6: the Backtest → Optimize hand-off has to be reachable."""
+
+    def test_the_backtest_page_ships_the_button_and_its_script(self, client):
+        html = client.get("/backtest").get_data(as_text=True)
+        assert 'id="tuneThis"' in html
+        assert "js/components/tune_this.js" in html
+        assert client.get("/static/js/components/tune_this.js").status_code == 200
+
+    def test_the_optimize_page_ships_the_carried_over_notice(self, client):
+        html = client.get("/optimize").get_data(as_text=True)
+        assert 'id="optPrefillNotice"' in html
+
+    def test_the_run_page_ships_the_audit_chain(self, client):
+        html = client.get("/optimize/runs/00000000-0000-0000-0000-000000000000").get_data(
+            as_text=True
+        )
+        assert 'id="applyChain"' in html

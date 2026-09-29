@@ -468,8 +468,57 @@
         }</tbody></table>`;
     }
 
+    /**
+     * PRD §6 reverse flow: the three-step chain, shown BEFORE applying so the
+     * user sees where the parameters came from and where they are going.
+     *
+     * The first link is a SESSION handle minted by the Backtest page, not a
+     * stored backtest record — nothing about a completed backtest is
+     * persisted. It is labelled as such rather than dressed up as an id that
+     * resolves to something.
+     */
+    function renderChain() {
+        const el = $('applyChain');
+        if (!el) return;
+        const origin = (state.run && state.run.backtest_config || {}).sourceBacktestId;
+        const t = applyTarget();
+        const runnerId = ($('applyRunner') || {}).value || '';
+        const spawning = (t === 'paper' || t === 'ab_test') && !runnerId;
+        const links = [
+            {
+                id: origin || null,
+                label: 'Backtest result',
+                note: origin ? `session handle ${origin}` : 'not started from a backtest',
+                missing: !origin,
+            },
+            {
+                id: (state.run && state.run.run_id) || null,
+                label: 'Optimize run',
+                note: (state.run && state.run.run_id) || '—',
+                missing: false,
+            },
+            {
+                id: t === 'none' ? null : (spawning ? 'new runner' : runnerId),
+                label: t === 'live' ? 'Live runner' : 'Paper runner',
+                note: t === 'none' ? 'record only — no runner changes'
+                    : spawning ? 'a new runner will be created'
+                        : (runnerId || '—'),
+                missing: false,
+            },
+        ];
+        el.innerHTML = `<span class="opt-chain-title">Applied from</span>` + links.map((l, i) => {
+            const cls = l.missing ? 'opt-chain-missing' : '';
+            const arrow = i < links.length - 1 ? '<span class="opt-chain-arrow">→</span>' : '';
+            return `<span class="opt-chain-link ${cls}">`
+                + `<span class="opt-chain-label">${C.escapeHtml(l.label)}</span>`
+                + `<code>${C.escapeHtml(l.id || '—')}</code>`
+                + `<span class="opt-chain-note">${C.escapeHtml(l.note)}</span></span>${arrow}`;
+        }).join('');
+    }
+
     async function openApply(params) {
         state.applyParams = params || state.run.best_params;
+        renderChain();
         $('applyParams').innerHTML = paramsPreview(state.applyParams);
         $('applyError').innerHTML = '';
         $('applyConfirmLive').checked = false;
@@ -491,6 +540,7 @@
         const t = applyTarget();
         const row = $('applyRunnerRow');
         const sel = $('applyRunner');
+        renderChain();
         const wantMode = t === 'live' ? 'live' : 'paper';
         const runners = state.runners.filter((r) => r.mode === wantMode);
         row.hidden = t === 'none';
@@ -576,6 +626,7 @@
         $('applyConfirm').addEventListener('click', confirmApply);
         $('presetConfirm').addEventListener('click', confirmPreset);
         document.querySelectorAll('input[name="applyTarget"]').forEach((r) => r.addEventListener('change', syncApplyTarget));
+        $('applyRunner').addEventListener('change', renderChain);
         document.querySelectorAll('.modal-overlay [data-close]').forEach((b) => b.addEventListener('click', () => {
             b.closest('.modal-overlay').hidden = true;
         }));

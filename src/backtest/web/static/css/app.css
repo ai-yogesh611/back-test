@@ -1858,3 +1858,54 @@ select.input option.sym-no-data:disabled { cursor: not-allowed; }
     display: block; margin-top: 2px; font-size: .72rem; line-height: 1.35; color: #94a3b8;
     max-height: 2.7em; overflow: hidden;
 }
+
+/* ==========================================================================
+   §6 "Tune This" — Backtest → Optimize hand-off
+   ========================================================================== */
+.tune-this {
+    margin-top: 16px;
+    border: 1px solid rgba(59, 130, 246, .35);
+    border-radius: 10px;
+    background: linear-gradient(180deg, rgba(59, 130, 246, .07), transparent 60%), var(--panel-2, #111827);
+    padding: 14px 16px;
+}
+.tune-this-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 10px; }
+.tune-this-title { font-weight: 600; color: var(--text, #e2e8f0); }
+.tune-this-sub { line-height: 1.5; }
+.tune-this-fields {
+    list-style: none; margin: 0 0 10px; padding: 0;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 4px 16px;
+}
+.tune-this-fields li { display: flex; justify-content: space-between; gap: 10px; font-size: .82rem; }
+.tune-this-fields span { color: #94a3b8; }
+.tune-this-fields strong { color: var(--text, #e2e8f0); font-weight: 500; }
+.tune-this-hint { margin: 0 0 6px; font-size: .8rem; line-height: 1.55; }
+.tune-this-id { margin: 0 0 10px; font-size: .72rem; }
+.tune-this-id code { color: #94a3b8; }
+
+/* §6 notice at the top of the Optimize form. */
+.opt-prefill-notice {
+    margin-bottom: 14px; padding: 10px 14px; border-radius: 8px;
+    border: 1px solid rgba(59, 130, 246, .35);
+    background: rgba(59, 130, 246, .08);
+    color: var(--text, #e2e8f0);
+    font-size: .84rem; line-height: 1.6;
+}
+.opt-prefill-notice[hidden] { display: none; }
+.opt-prefill-warn { border-color: rgba(224, 147, 143, .45); background: rgba(224, 147, 143, .08); }
+.opt-prefill-notice code { color: #7fc8a0; }
+
+/* §6 reverse flow: the three-link audit chain in the apply modal. */
+.opt-chain {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+    padding: 10px 12px; margin-bottom: 14px;
+    border: 1px solid var(--border, #1f2937); border-radius: 8px;
+    background: rgba(148, 163, 184, .05);
+}
+.opt-chain-title { font-size: .72rem; text-transform: uppercase; letter-spacing: .07em; color: #64748b; }
+.opt-chain-link { display: flex; flex-direction: column; gap: 1px; }
+.opt-chain-label { font-size: .72rem; color: #94a3b8; }
+.opt-chain-link code { font-size: .8rem; color: #7fc8a0; }
+.opt-chain-note { font-size: .68rem; color: #64748b; }
+.opt-chain-missing code, .opt-chain-missing .opt-chain-label { color: #e0938f; }
+.opt-chain-arrow { color: #475569; font-size: .9rem; }
