@@ -28,7 +28,7 @@
             banner.id = 'analyticsErrorBanner';
             banner.setAttribute('role', 'alert');
             banner.style.cssText = 'margin: 10px 0; padding: 10px 14px; border-radius: 6px; ' +
-                'background: rgba(239,68,68,0.12); color: var(--danger); border: 1px solid rgba(239,68,68,0.4); ' +
+                'background: rgba(224,147,143,0.12); color: var(--danger); border: 1px solid rgba(224,147,143,0.4); ' +
                 'display: flex; justify-content: space-between; align-items: center; gap: 12px;';
             const host = document.querySelector('.page-content') || document.body;
             host.insertBefore(banner, host.firstChild);
@@ -132,6 +132,20 @@
             });
         }
 
+        // Comparison-table column sorting (re-render from the last payload)
+        document.querySelectorAll('#strategyTableHead th[data-sort]').forEach((th) => {
+            th.style.cursor = 'pointer';
+            th.addEventListener('click', () => {
+                const key = th.dataset.sort;
+                if (strategyTableSort.key === key) {
+                    strategyTableSort.dir = -strategyTableSort.dir;
+                } else {
+                    strategyTableSort = { key, dir: -1 }; // default: worst/highest first
+                }
+                if (lastStrategyCards) renderStrategyCards(lastStrategyCards);
+            });
+        });
+
         if (refreshBtn) {
             refreshBtn.addEventListener('click', () => {
                 if (analyticsDetailPane.style.display !== 'none' && currentStrategyId) {
@@ -175,6 +189,7 @@
             }
 
             clearError();
+            lastStrategyCards = data.strategy_cards || [];
             renderOverviewMetrics(data.portfolio_metrics, data.active_runners, data.total_runners);
             renderPortfolioEquityChart(data.portfolio_equity_curve);
             renderStrategyCards(data.strategy_cards);
@@ -247,7 +262,7 @@
                     {
                         label: 'Portfolio Equity (₹)',
                         data: dataEquity,
-                        borderColor: '#10b981',
+                        borderColor: '#7fc8a0',
                         backgroundColor: 'rgba(16, 185, 129, 0.1)',
                         fill: true,
                         tension: 0.25,
@@ -294,87 +309,89 @@
         });
     }
 
+    // Strategy comparison table state (single-upon-one view)
+    let strategyTableSort = { key: null, dir: -1 }; // default: worst first once a column is picked
+    let lastStrategyCards = []; // cached payload so column sorts re-render without a refetch
+
+    const _SORTERS = {
+        return:  (m) => (m ? m.total_return_pct : -Infinity),
+        sharpe:  (m) => (m ? m.sharpe_ratio : -Infinity),
+        drawdown:(m) => (m ? -m.max_drawdown_pct : -Infinity), // bigger dd sorts worse
+        winrate: (m) => (m ? m.win_rate : -Infinity),
+        trades:  (m) => (m ? m.total_trades : -Infinity),
+        pnl:     (m) => (m ? m.total_pnl : -Infinity),
+    };
+
     function renderStrategyCards(cards) {
-        const container = document.getElementById('strategyCardsGrid');
+        // Renders the comparison TABLE (was: card grid). One row per strategy
+        // instance; major factors aligned column-by-column for direct
+        // one-upon-one comparison. Click a row → full detail (same as before).
+        const container = document.getElementById('strategyTableBody');
         const emptyState = document.getElementById('noStrategiesEmpty');
         if (!container) return;
 
-        container.innerHTML = '';
         if (!cards || cards.length === 0) {
+            container.innerHTML = '';
             emptyState.style.display = 'block';
             return;
         }
         emptyState.style.display = 'none';
 
-        cards.forEach((card, idx) => {
+        let rows = cards.slice();
+        const { key, dir } = strategyTableSort;
+        if (key && _SORTERS[key]) {
+            rows.sort((a, b) => dir * (_SORTERS[key](a.metrics) - _SORTERS[key](b.metrics)));
+        }
+
+        // Header sort-direction arrows
+        document.querySelectorAll('#strategyTableHead th[data-sort]').forEach((th) => {
+            const base = th.textContent.replace(/ [▲▼]$/, '');
+            th.textContent = base + (th.dataset.sort === key ? (dir === 1 ? ' ▲' : ' ▼') : ' ↕');
+        });
+
+        container.innerHTML = '';
+        rows.forEach((card) => {
             const m = card.metrics;
             const health = card.health || { badge: '🟢 Healthy', status: 'green' };
-            const cardEl = document.createElement('div');
-            cardEl.className = 'card strategy-analytics-card';
-            cardEl.style.cssText = 'padding: 16px; display: flex; flex-direction: column; justify-content: space-between; transition: transform 0.15s ease, box-shadow 0.15s ease; cursor: pointer;';
-
             const retColor = m.total_return_pct >= 0 ? 'var(--success)' : 'var(--danger)';
             const retSign = m.total_return_pct >= 0 ? '+' : '';
+            const ddColor = m.max_drawdown_pct > 12 ? 'var(--danger)' : (m.max_drawdown_pct > 8 ? 'var(--warning)' : 'inherit');
+            const healthColor = health.status === 'red' ? 'var(--danger)' : (health.status === 'yellow' ? 'var(--warning)' : 'var(--success)');
+            const paused = card.status && card.status !== 'RUNNING';
 
-            cardEl.innerHTML = `
-                <div>
-                    <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px;">
-                        <div>
-                            <strong style="font-size: 1.05rem; display: block;">${esc(card.name)}</strong>
-                            <span class="small muted">${esc(card.strategy_name)} · ${esc(card.mode.toUpperCase())} · ${esc(card.symbols.join(', '))}</span>
-                        </div>
-                        <span class="badge" style="font-size: 0.75rem; background: var(--surface-2); padding: 2px 8px; border-radius: 10px;">${esc(health.badge)}</span>
-                    </div>
-
-                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 12px 0; background: var(--surface-2); padding: 10px; border-radius: 6px;">
-                        <div>
-                            <div class="small muted" style="font-size: 0.7rem;">RETURN</div>
-                            <strong style="color: ${retColor};">${retSign}${m.total_return_pct}%</strong>
-                        </div>
-                        <div>
-                            <div class="small muted" style="font-size: 0.7rem;">SHARPE</div>
-                            <strong>${m.sharpe_ratio.toFixed(2)}</strong>
-                        </div>
-                        <div>
-                            <div class="small muted" style="font-size: 0.7rem;">MAX DD</div>
-                            <strong style="color: ${m.max_drawdown_pct > 12 ? 'var(--danger)' : 'inherit'};">-${m.max_drawdown_pct}%</strong>
-                        </div>
-                    </div>
-
-                    <div style="height: 50px; position: relative; margin-bottom: 8px;">
-                        <canvas id="miniChart_${idx}"></canvas>
-                    </div>
-                </div>
-
-                <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border); padding-top: 10px; margin-top: 4px;">
-                    <span class="small muted">${m.total_trades} trades (WR: ${m.win_rate}%)</span>
-                    <button class="btn btn-ghost btn-small" type="button" style="color: var(--accent);">View Analytics →</button>
-                </div>
+            const tr = document.createElement('tr');
+            tr.style.cursor = 'pointer';
+            tr.innerHTML = `
+                <td>
+                    <strong>${esc(card.name)}</strong>${paused ? ' <span class="badge muted" style="font-size:0.65rem; padding:1px 6px; border-radius:8px;">PAUSED</span>' : ''}
+                    <div class="small muted">${esc(card.strategy_name)} · ${esc(card.mode.toUpperCase())} · ${esc(card.symbols.join(', '))}</div>
+                </td>
+                <td class="num" style="color: ${retColor}; font-weight:600;">${retSign}${m.total_return_pct}%</td>
+                <td class="num">${m.sharpe_ratio.toFixed(2)}</td>
+                <td class="num" style="color: ${ddColor}; font-weight:600;">-${m.max_drawdown_pct}%</td>
+                <td class="num">${m.win_rate}%</td>
+                <td class="num">${m.total_trades}</td>
+                <td class="num" style="color: ${m.total_pnl >= 0 ? 'var(--success)' : 'var(--danger)'};">${m.total_pnl >= 0 ? '+' : '-'}₹${Math.abs(Math.round(m.total_pnl)).toLocaleString('en-IN')}</td>
+                <td><span style="color: ${healthColor};">${esc(health.badge)}</span></td>
+                <td style="width: 110px;"><canvas class="strategy-trend-canvas" height="34" style="width: 100%;"></canvas></td>
             `;
-
-            cardEl.addEventListener('click', () => {
+            tr.addEventListener('click', () => {
                 loadStrategyDetail(card.instance_id);
                 window.history.pushState({}, '', `/analytics?strategy=${encodeURIComponent(card.instance_id)}`);
             });
+            container.appendChild(tr);
 
-            container.appendChild(cardEl);
-
-            // Render mini sparkline
+            // Row sparkline
             setTimeout(() => {
-                const canvas = document.getElementById(`miniChart_${idx}`);
+                const canvas = tr.querySelector('.strategy-trend-canvas');
                 if (canvas && card.mini_curve && card.mini_curve.length > 1) {
-                    // Time labels when the backend provides them (fix #9) —
-                    // index labels were misleading once curves decimate.
-                    const tsLabels = (card.mini_curve_ts && card.mini_curve_ts.length === card.mini_curve.length)
-                        ? card.mini_curve_ts
-                        : card.mini_curve.map((_, i) => i);
                     new Chart(canvas.getContext('2d'), {
                         type: 'line',
                         data: {
-                            labels: tsLabels,
+                            labels: card.mini_curve.map((_, i) => i),
                             datasets: [{
                                 data: card.mini_curve,
-                                borderColor: m.total_return_pct >= 0 ? '#10b981' : '#ef4444',
+                                borderColor: m.total_return_pct >= 0 ? '#7fc8a0' : '#e0938f',
                                 borderWidth: 2,
                                 fill: false,
                                 pointRadius: 0,
@@ -384,6 +401,7 @@
                         options: {
                             responsive: true,
                             maintainAspectRatio: false,
+                            animation: false,
                             plugins: { legend: { display: false }, tooltip: { enabled: false } },
                             scales: { x: { display: false }, y: { display: false } }
                         }
@@ -442,6 +460,7 @@
 
             clearError();
             renderDetailHeader(data);
+            renderStrategyDescription(data);
             renderDetailMetrics(data.metrics, data.health);
             renderDegradationBanner(data.edge_degradation);
             renderDetailEquityChart(data.equity_curve);
@@ -486,6 +505,34 @@
         } else {
             banner.style.display = 'none';
         }
+    }
+
+    function renderStrategyDescription(data) {
+        // Placeholder-first: older strategies have no description yet — the
+        // space exists so the backfill PR only touches strategy files. The
+        // placeholder names exactly what a good description must cover.
+        const body = document.getElementById('strategyDescriptionBody');
+        const meta = document.getElementById('strategyDescriptionMeta');
+        if (!body) return;
+
+        const meta_ = data.strategy_meta;
+        if (meta_ && meta_.description) {
+            body.innerHTML = `<p style="margin: 0 0 8px;">${esc(meta_.description)}</p>`;
+            if (meta.version || meta_.author) {
+                meta.textContent = `v${meta_.version || '?'} · by ${meta_.author || 'unknown'} · from the strategy registry`;
+            } else {
+                meta.textContent = 'From the strategy registry.';
+            }
+            return;
+        }
+
+        body.innerHTML = `
+            <p style="margin: 0 0 6px;"><em class="muted">No description yet for <strong>${esc(data.strategy_name)}</strong> — pending the description backfill.</em></p>
+            <p class="muted" style="margin: 0;">A complete entry will explain: <strong>how the strategy works</strong> (entry logic and signal),
+            <strong>how it takes profit</strong> (targets and exit policy), <strong>how it stops losses</strong> (stop placement, trailing behaviour),
+            and <strong>where it fits</strong> (favourable and unfavourable market regimes).</p>
+        `;
+        meta.textContent = `Runner: ${data.name} · period ${data.period} · ${data.mode.toUpperCase()}`;
     }
 
     function renderDetailMetrics(m, health) {
@@ -569,7 +616,7 @@
                     {
                         label: 'Equity (₹)',
                         data: dataEquity,
-                        borderColor: '#10b981',
+                        borderColor: '#7fc8a0',
                         backgroundColor: 'rgba(16, 185, 129, 0.12)',
                         fill: true,
                         tension: 0.25,
@@ -642,7 +689,7 @@
                     {
                         label: 'Rolling Win Rate (%)',
                         data: dataWr,
-                        borderColor: '#f59e0b',
+                        borderColor: '#d4b26a',
                         backgroundColor: 'rgba(245, 158, 11, 0.1)',
                         fill: false,
                         borderDash: [3, 3],
@@ -770,8 +817,8 @@
             const pnl = Number(t.pnl || 0);
             const pnlColor = pnl >= 0 ? 'var(--success)' : 'var(--danger)';
             const pnlSign = pnl >= 0 ? '+' : '';
-            const badge = pnl >= 0 ? '<span class="badge" style="background: rgba(16,185,129,0.15); color: var(--success); padding: 2px 6px; border-radius: 4px;">WIN</span>'
-                                   : '<span class="badge" style="background: rgba(239,68,68,0.15); color: var(--danger); padding: 2px 6px; border-radius: 4px;">LOSS</span>';
+            const badge = pnl >= 0 ? '<span class="badge" style="background: rgba(127,200,160,0.15); color: var(--success); padding: 2px 6px; border-radius: 4px;">WIN</span>'
+                                   : '<span class="badge" style="background: rgba(224,147,143,0.15); color: var(--danger); padding: 2px 6px; border-radius: 4px;">LOSS</span>';
 
             // Instrument class tag (fix #10): option qty is LOTS, equity qty
             // is shares — say which one the row is.

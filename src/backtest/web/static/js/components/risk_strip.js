@@ -208,7 +208,7 @@
         data: {
           labels,
           datasets: [
-            { label: "Daily Loss %", data: dlData, borderColor: "#ef4444", backgroundColor: "rgba(239,68,68,.1)", fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2 },
+            { label: "Daily Loss %", data: dlData, borderColor: "#e0938f", backgroundColor: "rgba(224,147,143,.1)", fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2 },
           ]
         },
         options: {

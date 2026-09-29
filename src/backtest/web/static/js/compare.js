@@ -3,7 +3,7 @@
  * Slot management (add/remove, independent strategy + params), Run All →
  * /api/backtest/run-many, render 3 views, per-slot Open-in-Backtest / Promote.
  */
-const PALETTE = ["#3b82f6", "#f59e0b", "#22c55e", "#ef4444"]; // blue, orange, green, red
+const PALETTE = ["#3b82f6", "#d4b26a", "#7fc8a0", "#e0938f"]; // blue, orange, green, red
 const TF_OPTIONS = ["1D", "1H", "4H", "1W"].map((t) => `<option>${t}</option>`).join("");
 
 let strategies = [];          // [{name,...}]

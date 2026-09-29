@@ -1164,6 +1164,14 @@
     $("btn-pause-all").addEventListener("click", () => bulk("pause_all"));
     $("btn-resume-all").addEventListener("click", () => bulk("resume_all"));
     $("btn-emergency").addEventListener("click", () => {
+      // Scope honesty: on a bucket page the API flattens ONLY that bucket —
+      // the modal must say so, never "all runners".
+      const scopeLine = $("emergency-scope-line");
+      if (scopeLine) {
+        scopeLine.innerHTML = PAGE_MODE
+          ? `This will <strong>cancel new entries and market-exit every open position in the ${PAGE_MODE.toUpperCase()} bucket only</strong>, then halt that bucket. Other buckets keep trading.`
+          : "This will <strong>cancel new entries and market-exit every open position across all runners</strong>, then halt the portfolio.";
+      }
       $("emergency-modal").hidden = false;
     });
     $("emergency-confirm").addEventListener("click", async () => {

@@ -24,3 +24,6 @@ gunicorn>=21.2
 # lint gate (ticket #11): tests/test_lint_baseline.py runs flake8 inside the
 # canonical pytest gate so the F-10 zero-findings baseline cannot silently rot.
 flake8>=7.1
+
+# --- Pine Script converter (2026-09-29) ---
+lark>=1.1
