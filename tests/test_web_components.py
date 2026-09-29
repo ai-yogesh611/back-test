@@ -143,6 +143,28 @@ def test_richer_metric_sections_behaviour():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_single_run_checks_behaviour():
+    """PRD backTest-enhance §3: the benchmark / cost-shock / Monte Carlo panels.
+
+    Pins the three ways a diagnostics panel can lie while looking healthy: an
+    absent check rendering as an absent panel, a "Base (0.05%)" column implying
+    a frictionless run was costed, and the Monte Carlo's reorder block — whose
+    final equity is invariant by construction — presented as a distribution.
+    """
+    result = subprocess.run(
+        ["node", str(_REPO_ROOT / "tests" / "js" / "test_run_checks.mjs")],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert (
+        result.returncode == 0
+    ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "28 tests passed" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
 def test_cross_broker_analytics_ui_behaviour():
     """PRD-003: the By Broker / Execution Quality sections and their modals.
 

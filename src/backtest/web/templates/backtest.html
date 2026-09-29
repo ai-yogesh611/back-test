@@ -72,6 +72,9 @@
         <!-- PRD §2.2: the cards above keep their layout; the richer families
              live in labelled collapsible sections below them. -->
         <div id="metricSections"></div>
+        <!-- PRD §3: benchmark / cost shock / Monte Carlo. Each qualifies the
+             numbers above it, so they sit below and start collapsed. -->
+        <div id="runChecks"></div>
 
         <div class="card">
             <div class="tabs">
@@ -123,6 +126,7 @@
 <script src="{{ url_for('static', filename='js/components/timeframes.js') }}"></script>
 <script src="{{ url_for('static', filename='js/components/metrics_cards.js') }}"></script>
 <script src="{{ url_for('static', filename='js/components/metric_sections.js') }}"></script>
+<script src="{{ url_for('static', filename='js/components/run_checks.js') }}"></script>
 <script src="{{ url_for('static', filename='js/components/trade_table.js') }}"></script>
 <script src="{{ url_for('static', filename='js/charts/equity_chart.js') }}"></script>
 <script src="{{ url_for('static', filename='js/charts/drawdown_chart.js') }}"></script>

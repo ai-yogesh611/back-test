@@ -117,6 +117,10 @@ function renderResults(result) {
     // PRD §2.2: risk/tail, drawdown detail, trade quality and statistical
     // confidence, plus the insufficient-sample banner when it applies.
     if (typeof MetricSections !== "undefined") MetricSections.renderInto("metricSections", result.metrics);
+    // PRD §3.1/§3.2/§3.3: buy-and-hold reference, slippage stress and trade
+    // sequence resampling. Read from the same payload as the cards above, so a
+    // check can never qualify a different result than the one being shown.
+    if (typeof RunChecks !== "undefined") RunChecks.renderInto("runChecks", result);
     TradeTable.render("tradeTable-wrap", result.trades);
     // default tab = equity; render lazily on tab switch
     renderChartForPane("equity");

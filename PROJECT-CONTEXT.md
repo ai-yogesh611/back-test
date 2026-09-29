@@ -344,3 +344,91 @@ operator asked to see.
 `BacktestAdapter.to_all()`), `tests/js/test_metric_sections.mjs` (19, via
 `tests/test_web_components.py`), plus `bars_held` cases in
 `tests/test_engine_trades.py`.
+
+---
+
+## Single-Run Checks (PRD §3, 2026-09-29)
+
+Implements **Part 1 §3** — benchmark comparison, cost-shock stress and Monte
+Carlo. These ride on the *same* result payload as the metric cards
+(`benchmark`, `cost_shock`, `monte_carlo`), not behind separate fetches, so a
+check can never qualify a different result than the one on screen.
+`POST /api/backtest/monte-carlo` is the PRD's standalone endpoint and calls
+the same function — a test asserts the two agree.
+
+### Two PRD rules that cannot fire, and what replaced them
+
+**1. "2x and 3x the configured slippage."** The canonical path is frictionless
+by default (`free_executor` = zero slippage, zero fees), so 2 x 0 = 0. Taken
+literally the table shows three identical green rows for every strategy — a
+vacuously reassuring result, which is worse than none. `cost_shock.py` now
+stresses from `DEFAULT_COST_SHOCK_BASE_BPS = 5.0` (the same NSE large-cap
+default the `FixedBpsSlippage` docstring already states) when the run is
+frictionless, and the payload carries `base_bps_source` so the panel says the
+cards above were produced at 0 bps. When a slippage level *is* configured, the
+1x column reuses the actual result instead of re-running it.
+
+**2. "Shuffle the trades, then report median / 5th / 95th percentile final
+equity, and flag anything above the 90th percentile."** Two independent
+problems:
+
+- A shuffle changes the path, never the sum. Final equity is **identical** in
+  all 1,000 reorderings, and P(profit) is exactly 100% or 0%. Reporting those
+  as a distribution puts three identical numbers in a table shaped like a
+  spread.
+- A same-size bootstrap resamples the very sample that defines its own
+  distribution, so the actual result's percentile has a **ceiling of ~0.74 for
+  any n** (`test_the_actual_percentile_has_a_mathematical_ceiling`). A 90th-
+  percentile rule can never fire, no matter what the trades look like.
+
+So `monte_carlo.py` runs two experiments and keeps them apart. `reorder` is
+the PRD's shuffle and is reported **path-only** (its final equity is invariant
+by construction, which the payload asserts in
+`reorder.final_equity_is_invariant`). The final-equity spread comes from
+`bootstrap` — resample *with* replacement, so the multiset changes too. And
+the "was this one lucky trade?" question is asked directly via
+`trade_concentration`: a run whose gross profit is 90% one trade has not been
+shown to repeat, and no amount of resampling can show it, because the outlier
+is *inside* the sample being resampled.
+
+### Other decisions
+- **Slippage is passed to the executor at construction**, never assigned
+  afterwards. `OrderExecutor.__init__` hands the calculator to its
+  `SimulatedFillProvider`, so `executor.slippage = ...` is a silent no-op and
+  every fill still comes out frictionless — which looks exactly like "slippage
+  does not affect this strategy". Both `free_executor` and `costed_executor`
+  now take a `slippage=` argument and the docstrings say why.
+- **Dropped trades are reported, not folded into the return.** Past a certain
+  slippage an all-in order needs more buying power than the account has, so
+  trades stop happening. Each scenario carries `trades_dropped` and the panel
+  says the fall is a sizing limit, not only a thinner edge.
+- **Alpha is simple excess return** (strategy minus benchmark, same period) as
+  the PRD words it — NOT the regression intercept. Beta is the OLS slope, with
+  a flat-benchmark guard: zero variance in the denominator is reported as 0.0,
+  not as an enormous number that would read as enormous sensitivity.
+- **A verdict drawn from a handful of trades is suppressed**
+  (`status: insufficient_trades`), on the same reasoning as §2's flag.
+- **Every failure path returns `available: False` with a reason.** A stress
+  test that throws must not take the result page down with it. Quick-screen
+  has no slippage argument, so it reports unavailable rather than being
+  silently skipped.
+- **Monte Carlo drawdowns are at trade boundaries**, not per bar — the
+  resampled path has one point per trade. Stated in `drawdown_note` so the
+  panel never presents 0.1% as the run's max drawdown.
+- Seeded (`DEFAULT_SEED = 42`) so refreshing the page does not move the numbers.
+
+### UI
+`web/static/js/components/run_checks.js` renders three collapsed
+`<details>` panels below the §2 sections. They qualify the headline numbers,
+so they are opt-in — but an unavailable check always renders its own row with
+the reason, because a silently absent panel reads as a panel that passed.
+
+### Cost
+Three extra engine runs, ~60 ms each on 800 bars. A full `/api/backtest/run`
+with all three checks completes in ~0.5 s.
+
+### Tests
+`tests/test_run_checks.py` (80), `tests/test_api_run_checks.py` (22),
+`tests/js/test_run_checks.mjs` (28, via `tests/test_web_components.py`), plus
+updated shape assertions in `tests/test_api_backtest.py` and
+`tests/test_backtest_adapter.py`.

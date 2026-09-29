@@ -1623,3 +1623,69 @@ select.input option.sym-no-data:disabled { cursor: not-allowed; }
 .metric-confidence-ok { background: var(--success-tint); color: var(--success-text); border-color: var(--success-shade); }
 .metric-confidence-warn { background: var(--warning-tint); color: var(--warning-text); border-color: var(--warning-shade); }
 .metric-confidence-insufficient { background: var(--danger-tint); color: var(--danger-text); border-color: var(--danger-shade); }
+
+/* ------------------------------------------------------------------
+ * Single-run checks (PRD backTest-enhance §3).
+ * Three collapsed panels below the metric sections. They each qualify
+ * the numbers above them, so they are opt-in — but "unavailable" is
+ * always spelled out, never rendered as an absent panel.
+ * ------------------------------------------------------------------ */
+#runChecks { margin-bottom: 18px; }
+.runcheck-panel {
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: var(--radius); margin-bottom: 8px; overflow: hidden;
+}
+.runcheck-head {
+    cursor: pointer; padding: 10px 14px; font-weight: 600; font-size: .88rem;
+    list-style: none; user-select: none;
+}
+.runcheck-head::-webkit-details-marker { display: none; }
+.runcheck-head::before { content: "▸ "; color: var(--muted); }
+.runcheck-panel[open] > .runcheck-head::before { content: "▾ "; }
+.runcheck-panel[open] > .runcheck-head { border-bottom: 1px solid var(--border); }
+.runcheck-head:hover { color: var(--primary); }
+.runcheck-note { margin: 0; padding: 8px 14px 0; font-size: .78rem; color: var(--muted); }
+.runcheck-body { padding: 10px 14px 14px; font-size: .84rem; }
+.runcheck-rows { margin-top: 4px; }
+.runcheck-row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    gap: 16px; padding: 5px 0; border-bottom: 1px solid var(--border);
+}
+.runcheck-row:last-child { border-bottom: none; }
+.runcheck-label { color: var(--muted); }
+.runcheck-value { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.runcheck-section-label {
+    margin: 12px 0 2px; font-size: .74rem; text-transform: uppercase;
+    letter-spacing: .04em; color: var(--muted);
+}
+.runcheck-footnote { margin: 10px 0 0; font-size: .76rem; color: var(--muted); }
+.runcheck-unavailable { margin: 0; font-size: .8rem; color: var(--muted); font-style: italic; }
+.runcheck-caveat-block {
+    margin: 8px 0; padding: 8px 10px; font-size: .78rem; border-radius: 6px;
+    background: rgba(245,158,11,.10); border: 1px solid rgba(245,158,11,.30); color: var(--warning-text);
+}
+.runcheck-caveat { display: block; font-size: .68rem; color: var(--warning-text); font-style: italic; }
+.runcheck-banner {
+    margin: 8px 0; border-radius: 6px; padding: 9px 12px; font-size: .82rem;
+    border: 1px solid transparent;
+}
+.runcheck-subbanner { margin-top: 8px; font-size: .78rem; }
+.runcheck-banner-error, .runcheck-subbanner.runcheck-banner-error { background: var(--danger-tint); border-color: var(--danger-shade); color: var(--danger-text); }
+.runcheck-banner-warn, .runcheck-subbanner.runcheck-banner-warn { background: var(--warning-tint); border-color: var(--warning-shade); color: var(--warning-text); }
+.runcheck-banner-info, .runcheck-subbanner.runcheck-banner-info { background: rgba(59,130,246,.10); border-color: rgba(59,130,246,.30); color: #93c5fd; }
+.runcheck-verdict {
+    display: inline-block; border-radius: 6px; padding: 5px 11px;
+    font-size: .8rem; font-weight: 600; margin-bottom: 4px;
+}
+.runcheck-ok { background: var(--success-tint); color: var(--success-text); border: 1px solid var(--success-shade); }
+.runcheck-warn { background: var(--warning-tint); color: var(--warning-text); border: 1px solid var(--warning-shade); }
+.runcheck-error { background: var(--danger-tint); color: var(--danger-text); border: 1px solid var(--danger-shade); }
+.runcheck-table { width: 100%; border-collapse: collapse; margin: 8px 0 4px; font-size: .82rem; }
+.runcheck-table th, .runcheck-table td { padding: 5px 8px; border-bottom: 1px solid var(--border); text-align: left; }
+.runcheck-table th { font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
+.runcheck-table td.num, .runcheck-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.runcheck-bps { color: var(--muted); font-size: .74rem; }
+.runcheck-yes { color: var(--success-text); font-weight: 600; }
+.runcheck-no { color: var(--danger-text); font-weight: 600; }
+.runcheck-table td.pos { color: var(--success-text); }
+.runcheck-table td.neg { color: var(--danger-text); }

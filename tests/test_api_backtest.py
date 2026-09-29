@@ -25,7 +25,21 @@ _VALID = {
     "params": {"fast": 10, "slow": 30},
 }
 
-_FULL_SHAPE = {"config", "metrics", "equity", "drawdown", "trades", "signals", "provenance"}
+# PRD §3 added three single-run checks to the SAME payload. They are here
+# rather than behind their own fetches so a check can never comment on a
+# different result than the one the cards above it describe.
+_FULL_SHAPE = {
+    "config",
+    "metrics",
+    "equity",
+    "drawdown",
+    "trades",
+    "signals",
+    "provenance",
+    "benchmark",
+    "cost_shock",
+    "monte_carlo",
+}
 
 
 # --- single backtest (canonical: BacktestDriver) ----------------------------

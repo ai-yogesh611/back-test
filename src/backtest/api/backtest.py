@@ -44,6 +44,8 @@ from backtest.data.provenance import ENGINE_FILL_EXACT, ENGINE_MIXED
 from backtest.engine.backtest_runner import resolve_interval, resolve_warmup_start
 from backtest.engine.backtest_runner import run_backtest as _run_driver
 from backtest.engine.backtest_runner import run_quick_screen
+from backtest.engine.cost_shock import run_cost_shock
+from backtest.engine.monte_carlo import monte_carlo_trade_order
 from backtest.logging_config import get_logger, timed
 from backtest.runner import build_source
 from backtest.strategy.registry import get_strategy
@@ -209,6 +211,63 @@ QUICK_SCREEN = "quick_screen"
 
 
 # ---------------------------------------------------------------------------
+# Cost shock (PRD §3.2)
+# ---------------------------------------------------------------------------
+
+
+def _cost_shock(
+    candles: Any,
+    strategy: str,
+    params: dict,
+    symbol: str,
+    capital: float,
+    timeframe: str,
+    engine: str,
+    metrics: dict,
+) -> dict:
+    """PRD §3.2 table, or a well-formed "not available" block.
+
+    Quick-screen is the legacy vectorized path with a built-in cost model and
+    no slippage argument, so it is reported as unavailable with a reason rather
+    than silently skipped — a stress test that is quietly absent is
+    indistinguishable from one that passed.
+
+    Two extra engine runs, ~60ms each on 800 bars. The whole block is wrapped
+    so a failure degrades the page rather than failing the user's backtest.
+    """
+    if engine == QUICK_SCREEN:
+        return {
+            "available": False,
+            "reason": "cost shock runs on the canonical engine, not Fast Preview",
+            "scenarios": [],
+        }
+    try:
+        block = run_cost_shock(
+            candles,
+            strategy,
+            params,
+            symbol,
+            capital,
+            timeframe,
+            _run_driver,
+            actual_metrics=metrics,
+        )
+    except Exception as exc:  # noqa: BLE001 — a diagnostic must not fail the run
+        log.warning("[cost-shock] %s/%s failed: %s", strategy, symbol, exc)
+        return {"available": False, "reason": f"cost shock failed: {exc}", "scenarios": []}
+    log.info(
+        "[cost-shock] %s/%s base=%sbps(%s) status=%s rows=%d",
+        strategy,
+        symbol,
+        block.get("base_bps"),
+        block.get("base_bps_source"),
+        block.get("status"),
+        len(block.get("scenarios") or []),
+    )
+    return block
+
+
+# ---------------------------------------------------------------------------
 # Single backtest
 # ---------------------------------------------------------------------------
 
@@ -304,6 +363,9 @@ def run_backtest_endpoint() -> tuple:
     payload["config"].update(
         {"timeframe": timeframe, "from_date": from_date, "to_date": to_date, "engine": engine}
     )
+    payload["cost_shock"] = _cost_shock(
+        candles_full, strategy, params, symbol, capital, timeframe, engine, result.metrics
+    )
     payload["provenance"] = _provenance(
         candles_full,
         source_name=current_app.config.get("BACKTEST_SOURCE", "synthetic"),
@@ -317,6 +379,66 @@ def run_backtest_endpoint() -> tuple:
     _provenance_log(payload["provenance"], f"run/{strategy}")
     _summarise(payload, f"run/{strategy}", params)
     return jsonify(payload), 200
+
+
+@backtest_bp.post("/api/backtest/monte-carlo")
+def monte_carlo_endpoint() -> tuple:
+    """PRD §3.3 — resample a finished result's trades.
+
+    ``/api/backtest/run`` already returns a ``monte_carlo`` block, so this
+    endpoint exists for the two cases that need one: re-running with a
+    different simulation count, and re-running against a result that is in the
+    client's hands rather than the server's. Both call the same
+    :func:`~backtest.engine.monte_carlo.monte_carlo_trade_order`, so the two
+    paths cannot drift.
+
+    Accepts either an inline ``trades`` list or a ``trades`` payload in the
+    same shape ``to_all()`` returns.
+    """
+    data = request.get_json(silent=True) or {}
+    try:
+        simulations = int(data.get("simulations", 1000))
+    except (TypeError, ValueError):
+        log.warning("[mc] rejected: simulations=%r is not an integer", data.get("simulations"))
+        return jsonify({"error": "simulations must be an integer"}), 400
+    if simulations < 2 or simulations > 50_000:
+        log.warning("[mc] rejected: simulations=%s out of range", simulations)
+        return jsonify({"error": "simulations must be between 2 and 50000"}), 400
+
+    payload = data.get("result")
+    if isinstance(payload, dict) and "trades" in payload:
+        raw = payload["trades"]
+    else:
+        raw = data.get("trades")
+    if not isinstance(raw, list):
+        return jsonify({"error": "trades (a list) or a result payload is required"}), 400
+
+    try:
+        capital = float(data.get("capital", 100_000))
+    except (TypeError, ValueError):
+        return jsonify({"error": "capital must be a number"}), 400
+
+    pnls = []
+    for row in raw:
+        if isinstance(row, dict):
+            if row.get("is_open"):
+                continue  # an open trade has not happened yet
+            pnl = row.get("pnl")
+        else:
+            pnl = row
+        try:
+            pnls.append(float(pnl))
+        except (TypeError, ValueError):
+            return jsonify({"error": f"non-numeric trade pnl: {pnl!r}"}), 400
+
+    block = monte_carlo_trade_order(pnls, capital, simulations=simulations)
+    log.info(
+        "[mc] %d closed trades, %d simulations, P(profit)=%s%%",
+        len(pnls),
+        simulations,
+        (block.get("bootstrap") or {}).get("profit_probability_pct", "n/a"),
+    )
+    return jsonify(block), 200
 
 
 # ---------------------------------------------------------------------------
@@ -519,6 +641,9 @@ def run_single_backtest(params: dict) -> dict:
             engine = "backtest_driver"
 
         payload = BacktestAdapter(result).to_all()
+        payload["cost_shock"] = _cost_shock(
+            candles_full, strategy, slot_params, symbol, capital, timeframe, engine, result.metrics
+        )
         payload["config"].update(
             {
                 "timeframe": timeframe,
