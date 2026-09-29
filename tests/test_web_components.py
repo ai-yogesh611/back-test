@@ -292,6 +292,23 @@ def test_certification_readiness_panel_behaviour():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_deflated_sharpe_panel_behaviour():
+    """PRD Part 2 §3. The maths is pinned in tests/optimization/test_deflation.py;
+    this pins that the two statistics stay distinguishable in the UI."""
+    result = subprocess.run(
+        ["node", str(_REPO_ROOT / "tests" / "js" / "test_deflated_sharpe.mjs")],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert (
+        result.returncode == 0
+    ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "11 tests passed" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
 def test_data_source_gate_behaviour():
     """Runs 16 checks on the gate; the refusal itself is pinned in
     tests/test_api_data_source_policy.py."""

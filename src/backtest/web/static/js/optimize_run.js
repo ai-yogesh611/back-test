@@ -153,6 +153,54 @@
     const COMPARE_METRICS = ['sharpe', 'sortino', 'calmar', 'total_return', 'cagr', 'max_drawdown',
         'win_rate', 'profit_factor', 'total_trades', 'expectancy', 'drawdown_duration_days'];
 
+    /**
+     * PRD Part 2 §3 — the deflated Sharpe.
+     *
+     * Two numbers on two scales, and the wording keeps them apart on purpose:
+     * the bar is a Sharpe (what the best-of-N had to beat), the probability is
+     * a probability (how likely the edge is real). Rendering them as one
+     * "Deflated Sharpe" figure would be the easy mistake and the wrong one.
+     */
+    function renderDeflatedSharpe(dsr, observedMetrics) {
+        const observed = observedMetrics && observedMetrics.sharpe;
+        $('dsrObserved').textContent = C.isNum(observed) ? C.fmtNum(observed, 2) : '—';
+        const reason = $('dsrReason');
+        if (!dsr || dsr.status !== 'ok') {
+            // An absent statistic is a normal outcome (a 2-combination search
+            // has no selection to correct for). Say why rather than showing a
+            // confident dash that reads like a zero.
+            $('dsrBar').textContent = '—';
+            $('dsrVerdict').textContent = '';
+            $('dsrVerdict').className = 'opt-dsr-verdict';
+            $('dsrFacts').innerHTML = '';
+            reason.textContent = (dsr && dsr.reason)
+                || 'Not enough combinations were tried for a multiple-testing correction.';
+            return;
+        }
+        reason.textContent = '';
+        const bar = Number(dsr.deflated_sharpe);
+        $('dsrBar').textContent = C.fmtNum(bar, 2);
+
+        const verdict = $('dsrVerdict');
+        if (C.isNum(observed)) {
+            const clears = Number(observed) >= bar;
+            verdict.className = `opt-dsr-verdict ${clears ? 'pos' : 'neg'}`;
+            verdict.textContent = clears
+                ? `Clears the bar by ${C.fmtNum(Number(observed) - bar, 2)}.`
+                : `Does not clear the bar — short by ${C.fmtNum(bar - Number(observed), 2)}.`;
+        } else {
+            verdict.className = 'opt-dsr-verdict';
+            verdict.textContent = '';
+        }
+
+        const pct = C.isNum(dsr.probability) ? `${(dsr.probability * 100).toFixed(0)}%` : '—';
+        $('dsrFacts').innerHTML = [
+            ['Chances taken', C.isNum(dsr.trials) ? dsr.trials.toLocaleString() : '—'],
+            ['Likely genuinely positive', pct],
+            ['Return observations', C.isNum(dsr.observations) ? dsr.observations.toLocaleString() : '—'],
+        ].map(([k, v]) => `<li><span>${C.escapeHtml(k)}</span><span>${C.escapeHtml(v)}</span></li>`).join('');
+    }
+
     function renderOverview() {
         const r = state.run;
         const a = r.analysis || {};
@@ -170,6 +218,7 @@
         const cmp = a.comparison;
         const baseM = (cmp && cmp.baseline.metrics) || r.baseline_metrics || {};
         const optM = (cmp && cmp.optimized.metrics) || r.best_metrics || {};
+        renderDeflatedSharpe(a.deflated_sharpe, optM);
         $('compareBody').innerHTML = [['score', r.baseline_score, r.best_score]].concat(
             COMPARE_METRICS.map((k) => [k, baseM[k], optM[k]])).map(([k, b, o]) => {
             const better = C.isImprovement(k, b, o);

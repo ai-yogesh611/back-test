@@ -817,3 +817,69 @@ anything. Two states is what makes "not a gate" legible.
 A **missing** readiness payload is treated as *not* certifiable, not as green.
 An older cached payload would otherwise light up the primary button and claim
 eight green checks nobody ran.
+
+---
+
+## Deflated Sharpe Ratio (PRD Part 2 §3, 2026-09-29)
+
+`optimization/deflation.py`. Bailey & López de Prado (2014), JPM 40(5) — the
+statistic that asks what the best of N trials was worth *before* you knew
+which one would win.
+
+### Two numbers, two scales — the mistake to avoid
+
+The wireframe asks for "Deflated Sharpe: 0.89" next to "Sharpe: 1.42" and
+compares it to 0.5. The actual statistic is a probability on 0–1. So the
+function returns both, and the card keeps them apart in the wording:
+
+* **`deflated_sharpe`** = SR₀, the Sharpe the best-of-N had to beat. Same scale
+  as the reported Sharpe, so "1.42 against a bar of 0.89" is a real
+  comparison. This is what the wireframe means.
+* **`probability`** = the canonical DSR, 0–1. "Likely genuinely positive".
+
+Reporting only the first would be a "corrected Sharpe" the paper does not
+define. Reporting only the second would leave the wireframe comparing a
+probability against a Sharpe.
+
+### Two things that fail silently
+
+**The annualisation trap.** Every Sharpe in the system is annualised; the
+paper is about per-observation Sharpes, and both the trial variance and the
+SR² term change under the conversion. The first implementation passed an
+already-computed √periods_per_year into a function that took the *period
+count*, so the scale was applied twice — every result came out 3.98× too
+large, and still looked like a Sharpe. `_annual_scale()` is now the only
+place the factor exists.
+
+**Excess vs raw kurtosis.** γ₄ is 3 for a normal distribution, so
+(γ₄−1)/4 = 1/2 and the term collapses to Lo's √(1 + SR²/2). Passing excess
+kurtosis (0 for a normal) shrinks the denominator and inflates every
+probability — a known bug elsewhere (vectorbt #10). Defaulted to raw.
+
+### Trials counted honestly
+
+N is the combinations *tried*, not the rows written. Combinations that failed
+constraints or errored were still chances taken; dropping them would flatter
+every run. A 2-combination search has no selection to correct for and says so
+rather than reporting a confident-looking number.
+
+### Storage
+
+`optimization_runs.deflated_sharpe` holds SR₀ alone — the sortable,
+comparable number. The full block (probability, trials, observations,
+dispersion) lives in `analysis["deflated_sharpe"]`, and the block always has
+the same keys, degraded or not, so callers render an absent statistic without
+special-casing.
+
+`NUMERIC(6, 3)`, not `NUMERIC(4, 2)` like `robustness_score`: the bar rises
+with the size of the search, so a wide search over a narrow distribution
+overflows 99.99 — and a clamped value still looks plausible.
+
+Migration **014** in all three forms: Alembic, PostgreSQL SQL, and the SQLite
+mirror. The two reporting views project their columns explicitly and
+`CREATE OR REPLACE VIEW` cannot change that list, so they are replaced whole.
+
+### Tests
+35 on the statistic (quantiles against published values, E[max Z] exact at
+N=2, annualisation invariance, raw-vs-excess kurtosis, every degraded path),
+8 on the wiring through a real service run, 11 on the card.

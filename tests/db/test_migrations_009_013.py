@@ -1,10 +1,10 @@
-"""Migrations 009–013 — the parameter optimization engine schema.
+"""Migrations 009–014 — the parameter optimization engine schema.
 
 * SQLite: the hand-written mirror (``009_013_optimization_engine.sqlite.sql``)
   is executed **verbatim** after 001–004 and must agree with the ORM (tables,
   columns, index names), be idempotent, seed the three default presets and
   enforce the FK / CHECK behaviour the engine relies on.
-* Alembic: 009→013 chain onto 008 with a single head.
+* Alembic: 009→014 chain onto 008 with a single head.
 * PostgreSQL files: verified textually (views, trigger, seed, rollback order).
 * Optional live PostgreSQL round trip: set ``OPTIMIZATION_TEST_PG_URL`` to a
   server URL with CREATEDB rights; the test creates and drops its own
@@ -38,12 +38,17 @@ PG_FILES = {
     "011": MIGRATIONS / "011_optimization_indexes.sql",
     "012": MIGRATIONS / "012_optimization_views.sql",
     "013": MIGRATIONS / "013_optimization_seed_presets.sql",
+    "014": MIGRATIONS / "014_optimization_deflated_sharpe.sql",
 }
 PG_ROLLBACK = MIGRATIONS / "009_013_optimization_rollback.sql"
-TABLES = {"optimization_runs", "optimization_results", "parameter_presets",
-          "optimization_audit"}
-VIEWS = ("v_latest_optimization", "v_top_results", "v_optimization_summary",
-         "v_parameter_history", "v_active_presets")
+TABLES = {"optimization_runs", "optimization_results", "parameter_presets", "optimization_audit"}
+VIEWS = (
+    "v_latest_optimization",
+    "v_top_results",
+    "v_optimization_summary",
+    "v_parameter_history",
+    "v_active_presets",
+)
 SEED_IDS = [f"00000000-0000-4000-8000-00000000000{i}" for i in (1, 2, 3)]
 
 
@@ -90,16 +95,18 @@ def test_sqlite_file_matches_orm_columns_and_indexes(sqlite_db: Path):
 def test_sqlite_file_is_idempotent(sqlite_db: Path):
     conn = _conn(sqlite_db)
     conn.executescript(SQLITE_OPT.read_text())  # second application must not raise
-    n = conn.execute("SELECT COUNT(*) FROM parameter_presets WHERE strategy_id='default'") \
-        .fetchone()[0]
+    n = conn.execute(
+        "SELECT COUNT(*) FROM parameter_presets WHERE strategy_id='default'"
+    ).fetchone()[0]
     conn.close()
     assert n == 3
 
 
 def test_seeded_presets_and_ledger(sqlite_db: Path):
     conn = _conn(sqlite_db)
-    rows = conn.execute("SELECT preset_id, name, source, is_active FROM parameter_presets "
-                        "ORDER BY preset_id").fetchall()
+    rows = conn.execute(
+        "SELECT preset_id, name, source, is_active FROM parameter_presets " "ORDER BY preset_id"
+    ).fetchall()
     versions = {r[0] for r in conn.execute("SELECT version FROM schema_migrations")}
     conn.close()
     assert [r[0] for r in rows] == SEED_IDS
@@ -114,40 +121,56 @@ def _insert_run(conn: sqlite3.Connection, status: str = "completed") -> str:
     conn.execute(
         "INSERT INTO optimization_runs (run_id, strategy_id, objective_function, method, "
         "param_space, backtest_config, status) VALUES (?, 'sma_crossover', 'sharpe', 'grid', "
-        "'[]', '{}', ?)", (rid, status))
+        "'[]', '{}', ?)",
+        (rid, status),
+    )
     return rid
 
 
 def test_fk_behaviour_cascade_and_set_null(sqlite_db: Path):
     conn = _conn(sqlite_db)
     rid = _insert_run(conn)
-    conn.execute("INSERT INTO optimization_results (result_id, run_id, params, "
-                 "objective_score, constraints_met) VALUES (?, ?, '{}', 1.0, 1)",
-                 (str(uuid.uuid4()), rid))
-    conn.execute("INSERT INTO optimization_audit (audit_id, run_id, strategy_id, action) "
-                 "VALUES (?, ?, 'sma_crossover', 'apply')", (str(uuid.uuid4()), rid))
-    conn.execute("INSERT INTO parameter_presets (preset_id, strategy_id, name, params, source, "
-                 "optimization_run_id) VALUES (?, 'sma_crossover', 'p', '{}', 'optimization', ?)",
-                 (str(uuid.uuid4()), rid))
+    conn.execute(
+        "INSERT INTO optimization_results (result_id, run_id, params, "
+        "objective_score, constraints_met) VALUES (?, ?, '{}', 1.0, 1)",
+        (str(uuid.uuid4()), rid),
+    )
+    conn.execute(
+        "INSERT INTO optimization_audit (audit_id, run_id, strategy_id, action) "
+        "VALUES (?, ?, 'sma_crossover', 'apply')",
+        (str(uuid.uuid4()), rid),
+    )
+    conn.execute(
+        "INSERT INTO parameter_presets (preset_id, strategy_id, name, params, source, "
+        "optimization_run_id) VALUES (?, 'sma_crossover', 'p', '{}', 'optimization', ?)",
+        (str(uuid.uuid4()), rid),
+    )
     conn.execute("DELETE FROM optimization_runs WHERE run_id = ?", (rid,))
     assert conn.execute("SELECT COUNT(*) FROM optimization_results").fetchone()[0] == 0
     assert conn.execute("SELECT run_id FROM optimization_audit").fetchone()[0] is None
-    assert conn.execute("SELECT optimization_run_id FROM parameter_presets "
-                        "WHERE name='p'").fetchone()[0] is None
+    assert (
+        conn.execute(
+            "SELECT optimization_run_id FROM parameter_presets " "WHERE name='p'"
+        ).fetchone()[0]
+        is None
+    )
     conn.close()
 
 
-@pytest.mark.parametrize("sql", [
-    "INSERT INTO optimization_runs (run_id, strategy_id, objective_function, method, "
-    "param_space, backtest_config, status) VALUES ('x', 's', 'sharpe', 'grid', '[]', '{}', "
-    "'bogus')",
-    "INSERT INTO optimization_runs (run_id, strategy_id, objective_function, method, "
-    "param_space, backtest_config) VALUES ('x', 's', 'luck', 'grid', '[]', '{}')",
-    "INSERT INTO optimization_runs (run_id, strategy_id, objective_function, method, "
-    "param_space, backtest_config) VALUES ('x', 's', 'sharpe', 'magic', '[]', '{}')",
-    "INSERT INTO parameter_presets (preset_id, strategy_id, name, params, source) VALUES "
-    "('x', 's', 'n', '{}', 'nowhere')",
-])
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "INSERT INTO optimization_runs (run_id, strategy_id, objective_function, method, "
+        "param_space, backtest_config, status) VALUES ('x', 's', 'sharpe', 'grid', '[]', '{}', "
+        "'bogus')",
+        "INSERT INTO optimization_runs (run_id, strategy_id, objective_function, method, "
+        "param_space, backtest_config) VALUES ('x', 's', 'luck', 'grid', '[]', '{}')",
+        "INSERT INTO optimization_runs (run_id, strategy_id, objective_function, method, "
+        "param_space, backtest_config) VALUES ('x', 's', 'sharpe', 'magic', '[]', '{}')",
+        "INSERT INTO parameter_presets (preset_id, strategy_id, name, params, source) VALUES "
+        "('x', 's', 'n', '{}', 'nowhere')",
+    ],
+)
 def test_check_constraints_reject_unknown_enums(sqlite_db: Path, sql: str):
     conn = _conn(sqlite_db)
     with pytest.raises(sqlite3.IntegrityError):
@@ -165,10 +188,17 @@ def test_store_runs_on_the_hand_migrated_database(sqlite_db: Path):
     store = OptimizationStore(manager)
     store.ensure_schema()  # no-op on an up-to-date schema, must not duplicate the seed
     assert len([p for p in store.list_presets() if p["strategy_id"] == "default"]) == 3
-    rid = store.create_run(strategy_id="sma_crossover", objective="sharpe", method="grid",
-                           param_space=[], constraints=[], backtest_config={},
-                           walk_forward_enabled=False, walk_forward_config={},
-                           total_combinations=1)
+    rid = store.create_run(
+        strategy_id="sma_crossover",
+        objective="sharpe",
+        method="grid",
+        param_space=[],
+        constraints=[],
+        backtest_config={},
+        walk_forward_enabled=False,
+        walk_forward_config={},
+        total_combinations=1,
+    )
     assert store.get_run(rid)["status"] == "pending"
     manager.disconnect()
 
@@ -178,15 +208,22 @@ def test_store_runs_on_the_hand_migrated_database(sqlite_db: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_alembic_chain_009_to_013():
+def test_alembic_chain_009_to_014():
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config(str(REPO_ROOT / "alembic.ini")))
-    assert script.get_heads() == ["013"]
-    revs = ("009", "010", "011", "012", "013")
+    assert script.get_heads() == ["014"]
+    revs = ("009", "010", "011", "012", "013", "014")
     chain = {r: script.get_revision(r).down_revision for r in revs}
-    assert chain == {"009": "008", "010": "009", "011": "010", "012": "011", "013": "012"}
+    assert chain == {
+        "009": "008",
+        "010": "009",
+        "011": "010",
+        "012": "011",
+        "013": "012",
+        "014": "013",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -224,8 +261,15 @@ def test_pg_rollback_drops_views_before_tables():
     first_table_drop = sql.index("DROP TABLE")
     for v in VIEWS:
         assert sql.index(f"DROP VIEW IF EXISTS {v}") < first_table_drop
-    order = [sql.index(f"DROP TABLE IF EXISTS {t}") for t in (
-        "optimization_audit", "parameter_presets", "optimization_results", "optimization_runs")]
+    order = [
+        sql.index(f"DROP TABLE IF EXISTS {t}")
+        for t in (
+            "optimization_audit",
+            "parameter_presets",
+            "optimization_results",
+            "optimization_runs",
+        )
+    ]
     assert order == sorted(order), "children must be dropped before optimization_runs"
 
 
@@ -234,8 +278,10 @@ def test_pg_rollback_drops_views_before_tables():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not os.getenv("OPTIMIZATION_TEST_PG_URL"),
-                    reason="set OPTIMIZATION_TEST_PG_URL to run the PostgreSQL round trip")
+@pytest.mark.skipif(
+    not os.getenv("OPTIMIZATION_TEST_PG_URL"),
+    reason="set OPTIMIZATION_TEST_PG_URL to run the PostgreSQL round trip",
+)
 def test_postgres_alembic_round_trip():
     from alembic import command
     from alembic.config import Config
@@ -250,8 +296,9 @@ def test_postgres_alembic_round_trip():
     try:
         cfg = Config(str(REPO_ROOT / "alembic.ini"))
         # -x db_url wins over FORWARD_TEST_DB_URL in db/alembic/env.py
-        cfg.cmd_opts = type("Opts", (), {"x": [
-            f"db_url={url.render_as_string(hide_password=False)}"]})()
+        cfg.cmd_opts = type(
+            "Opts", (), {"x": [f"db_url={url.render_as_string(hide_password=False)}"]}
+        )()
         command.upgrade(cfg, "head")
         eng = create_engine(url)
         with eng.connect() as c:
@@ -259,12 +306,19 @@ def test_postgres_alembic_round_trip():
             assert TABLES <= names
             views = set(inspect(c).get_view_names())
             assert set(VIEWS) <= views
-            assert c.execute(text("SELECT COUNT(*) FROM parameter_presets "
-                                  "WHERE strategy_id='default'")).scalar() == 3
-            rid = c.execute(text(
-                "INSERT INTO optimization_runs (strategy_id, objective_function, method, "
-                "param_space, backtest_config) VALUES ('s', 'sharpe', 'grid', '[]', '{}') "
-                "RETURNING run_id")).scalar()
+            assert (
+                c.execute(
+                    text("SELECT COUNT(*) FROM parameter_presets " "WHERE strategy_id='default'")
+                ).scalar()
+                == 3
+            )
+            rid = c.execute(
+                text(
+                    "INSERT INTO optimization_runs (strategy_id, objective_function, method, "
+                    "param_space, backtest_config) VALUES ('s', 'sharpe', 'grid', '[]', '{}') "
+                    "RETURNING run_id"
+                )
+            ).scalar()
             assert rid is not None  # gen_random_uuid() server default
             c.commit()
         eng.dispose()
@@ -279,3 +333,39 @@ def test_postgres_alembic_round_trip():
         with admin.connect() as c:
             c.execute(text(f'DROP DATABASE IF EXISTS "{scratch}" WITH (FORCE)'))
         admin.dispose()
+
+
+def test_014_adds_the_deflated_sharpe_column(sqlite_db):
+    """PRD Part 2 §3. Additive, nullable, and wide enough for a big search.
+
+    A (4, 2) column would silently round a 123.456 bar to 12.35 — the value
+    would still look plausible, which is the failure mode worth guarding.
+    """
+    info = {
+        r["name"]: r
+        for r in inspect(create_engine(f"sqlite:///{sqlite_db}")).get_columns("optimization_runs")
+    }
+    assert "deflated_sharpe" in info
+    assert info["deflated_sharpe"]["nullable"] is True
+
+    conn = _conn(sqlite_db)
+    rid = _insert_run(conn)
+    conn.execute("UPDATE optimization_runs SET deflated_sharpe = 123.456 WHERE run_id = ?", (rid,))
+    stored = conn.execute(
+        "SELECT deflated_sharpe FROM optimization_runs WHERE run_id = ?", (rid,)
+    ).fetchone()[0]
+    conn.close()
+    assert float(stored) == pytest.approx(123.456, abs=0.001)
+
+
+def test_014_recreates_the_views_with_the_new_column():
+    """CREATE OR REPLACE VIEW cannot change a column list, so 014 replaces the
+    two affected views whole. A forgotten view would still work — just
+    silently without the new column."""
+    sql = PG_FILES["014"].read_text()
+    assert "CREATE OR REPLACE VIEW v_latest_optimization" in sql
+    assert "CREATE OR REPLACE VIEW v_optimization_summary" in sql
+    for view in ("v_latest_optimization", "v_optimization_summary"):
+        block = sql.split(f"CREATE OR REPLACE VIEW {view} AS", 1)[1]
+        block = block.split(";", 1)[0]
+        assert "deflated_sharpe" in block, f"{view} was not updated to carry the column"

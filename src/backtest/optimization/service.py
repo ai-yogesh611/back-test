@@ -42,6 +42,8 @@ from backtest.optimization.config import (
     OptimizationConfig,
     parse_config,
 )
+from backtest.data.base import periods_per_year as annualisation_factor
+from backtest.optimization.deflation import deflated_sharpe, deflation_warning
 from backtest.optimization.evaluator import (
     Cancelled,
     Evaluator,
@@ -816,7 +818,21 @@ class OptimizationService:
         robust = an.robustness_score(
             sensitivity, wf_report, cluster, best["metrics"] if best else None
         )
+        # PRD Part 2 §3. Every combination tried is a trial, including the
+        # ones that failed constraints or errored — they were chances taken,
+        # and leaving them out flatters the result.
+        deflated = deflated_sharpe(
+            [float(r.get("metrics", {}).get("sharpe") or 0.0) for r in rows],
+            (best or {}).get("metrics", {}).get("sharpe") if best else None,
+            trials=max(len(rows), job.planned_evals) if rows else None,
+            observations=len(candles),
+            periods_per_year=annualisation_factor(cfg.backtest.timeframe),
+        )
         warnings = an.warning_signs(cfg, best, sensitivity, wf_report, baseline)
+        gap = deflation_warning(deflated, (best or {}).get("metrics", {}).get("sharpe")
+                                if best else None)
+        if gap:
+            warnings.append(gap)
         comparison = None
         if best is not None:
             comparison = {
@@ -842,6 +858,7 @@ class OptimizationService:
             "sensitivity": sensitivity,
             "cluster": cluster,
             "robustness": robust,
+            "deflated_sharpe": deflated,
             "warnings": warnings,
             "comparison": comparison,
             "compliance": compliance_report(best["metrics"], cfg.constraints) if best else [],
@@ -870,6 +887,7 @@ class OptimizationService:
             "valid_combinations": sum(1 for r in rows if r["constraints_met"]),
             "analysis": analysis,
             "robustness_score": robust.get("score"),
+            "deflated_sharpe": deflated.get("deflated_sharpe"),
         }
         if best:
             fields.update(

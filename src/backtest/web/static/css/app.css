@@ -1961,3 +1961,14 @@ select.input option.sym-no-data:disabled { cursor: not-allowed; }
 .dsg-body { margin: 0 0 6px; color: var(--text, #e2e8f0); }
 .dsg-hint { margin: 0; }
 .dsg-disabled { opacity: .45; cursor: not-allowed; }
+
+/* ---- Deflated Sharpe card (PRD Part 2 §3) -------------------------------
+   The bar and the observed Sharpe sit side by side because the comparison
+   between them is the finding; the probability is demoted to the facts list
+   because it is a different kind of number. */
+.opt-dsr-main { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+.opt-dsr-value { font-size: 1.8rem; font-weight: 600; color: var(--text, #e2e8f0); }
+.opt-dsr-vs { font-size: .8rem; }
+.opt-dsr-vs strong { color: var(--text, #e2e8f0); font-weight: 600; }
+.opt-dsr-verdict { font-size: .8rem; margin-bottom: 8px; }
+.opt-dsr-reason { margin: 8px 0 0; line-height: 1.5; }

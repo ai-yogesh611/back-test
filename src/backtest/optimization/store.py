@@ -237,7 +237,8 @@ class OptimizationStore:
         "started_at", "completed_at", "error_message", "total_combinations",
         "tested_combinations", "valid_combinations", "best_params", "best_score",
         "baseline_score", "walk_forward_enabled", "overfitted", "avg_train_score",
-        "avg_test_score", "robustness_score", "created_by", "created_at", "backtest_config",
+        "avg_test_score", "robustness_score", "deflated_sharpe", "created_by",
+        "created_at", "backtest_config",
     )
 
     def list_runs(self, *, strategy_id: str | None = None, status: str | None = None,

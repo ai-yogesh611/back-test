@@ -1235,6 +1235,11 @@ class OptimizationRun(Base):
     # -- analytics (extension): sensitivity, equity curves, warnings --------
     analysis: Mapped[Optional[Any]] = mapped_column(JSONVariant)
     robustness_score: Mapped[Optional[Decimal]] = mapped_column(Numeric(4, 2))
+    # PRD Part 2 §3. The Sharpe the best-of-N had to beat, on the same scale
+    # as `best_metrics.sharpe`. The full statistic (including the probability)
+    # is in `analysis["deflated_sharpe"]`; this column is the one number you
+    # would want to sort or filter on.
+    deflated_sharpe: Mapped[Optional[Decimal]] = mapped_column(Numeric(6, 3))
 
     # -- metadata -----------------------------------------------------------
     created_by: Mapped[Optional[str]] = mapped_column(String(100))

@@ -45,6 +45,10 @@ CREATE TABLE IF NOT EXISTS optimization_runs (
 	avg_test_score NUMERIC(10, 4), 
 	analysis JSON, 
 	robustness_score NUMERIC(4, 2), 
+	-- PRD Part 2 §3: the Sharpe the best-of-N had to beat. NUMERIC(6,3) rather
+	-- than matching robustness_score's 4,2 because the bar rises with the size
+	-- of the search and a wide search on a narrow distribution overflows 99.99.
+	deflated_sharpe NUMERIC(6, 3), 
 	created_by VARCHAR(100), 
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 

@@ -88,6 +88,20 @@
                     <div id="robustLabel" class="opt-robust-label"></div>
                     <ul id="robustComponents" class="opt-kv"></ul>
                 </div>
+                <!-- PRD Part 2 §3. The bar the best-of-N had to clear, next
+                     to the Sharpe it cleared. Kept in its own card because
+                     the two numbers mean different things and the comparison
+                     between them is the entire point. -->
+                <div class="card opt-dsr-card">
+                    <h2 class="card-title">Deflated Sharpe</h2>
+                    <div class="opt-dsr-main">
+                        <span id="dsrBar" class="opt-dsr-value">—</span>
+                        <span class="opt-dsr-vs muted">vs Sharpe <strong id="dsrObserved">—</strong></span>
+                    </div>
+                    <div id="dsrVerdict" class="opt-dsr-verdict"></div>
+                    <ul id="dsrFacts" class="opt-kv"></ul>
+                    <p id="dsrReason" class="muted small opt-dsr-reason"></p>
+                </div>
                 <div class="card">
                     <h2 class="card-title">Current vs optimized</h2>
                     <div class="table-scroll">
