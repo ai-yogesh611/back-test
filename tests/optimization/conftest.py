@@ -48,3 +48,16 @@ def service(store, fake_manager):
 @pytest.fixture()
 def sma_doc():
     return _sma_doc()
+
+
+@pytest.fixture()
+def unacknowledged():
+    """An optimize submission with the synthetic tick deliberately NOT given.
+
+    Separate from ``sma_doc`` (which arrives ticked) so that tests about the
+    gate have to ask for this by name — the absence of an acknowledgement is
+    the thing under test, and it should never be an accident.
+    """
+    from .support import unacknowledged_sma_doc
+
+    return unacknowledged_sma_doc()

@@ -1007,3 +1007,76 @@ Any `danger` escalates the panel to red and counts itself out in the title.
 `closed_trades`. Full suite 4242 passed; the `test_catalogue_entries_carry_params_and_kind`
 order-dependent failure and the `benchmarks/` collection errors are both
 pre-existing and reproduce on a clean tree.
+
+## PRD Part 2 §2 — Data Source Lock and Attestation (shipped)
+
+### The problem, restated
+*"Optimize pulls candles from whatever source the app started with, and
+there's no visible confirmation of this anywhere."* The gap is not the data —
+it is that nobody had to **say which data**. A run that optimized 240
+combinations against RELIANCE daily bars and one that optimized them against a
+random walk produce numbers that look identical on the page. The second is not
+wrong; it just is not a claim about RELIANCE, and nothing said so.
+
+### The record
+`src/backtest/optimization/attestation.py`. Reuses
+`backtest.data.provenance` rather than restating it — that module already owns
+the source labels, and two authorities for one label is how a page ends up
+saying "Synthetic" in one place and "demo data" in another.
+
+Three moments, deliberately different:
+
+| when | what it is | bar count |
+|---|---|---|
+| setup page | `attestation_preview` | `None` — not knowable yet |
+| run record | `attestation_record` | measured on the candles |
+| results / audit | read back | never recomputed |
+
+**The preview does not guess.** A box that invents a bar count is a box that
+lies; the run record fills it in, and the setup page says "shown after the run".
+
+### The one hard gate, and the many warnings
+Synthetic requires an explicit tick. Everything else — staleness, an
+undateable feed, zero bars — warns and allows. A box that refuses work for
+reasons the operator cannot act on teaches them to ignore it, and then it is
+not doing its job either.
+
+The gate is enforced in `OptimizationService.submit()`, not just in the browser:
+a gate only the browser enforces is a suggestion. The refusal carries
+`code="synthetic_data_not_acknowledged"` so the UI can point at the tick
+without matching on wording.
+
+### Migration 015 — additive, unbackfilled
+Eight nullable columns, no defaults, **no backfill**. Every run that predates
+015 has no attestation, and that is the honest state of it — a backfilled value
+would be a claim nobody checked. `_run_provenance()` therefore has two paths:
+the stored attestation when present, and a **derived** block marked
+`derived: true` for older runs. A rebuilt record presented with the same
+authority as a measured one is the exact failure §2 exists to prevent.
+
+The stored attestation is the DATA half only. `_run_provenance()` **merges** it
+with the engine half from `build_provenance` rather than replacing — a run that
+remembers its data but has quietly lost its engine label is not more complete,
+just differently incomplete.
+
+### Two bugs this feature introduced, caught before shipping
+1. **`rerun()` silently lost the acknowledgement.** It rebuilds the config
+   document from `backtest_config`, which does not carry it — so "Rerun" on
+   any synthetic run became impossible. The single most confusing way for a
+   gate to behave, and invisible until someone pressed the button. Fixed in
+   `config_doc_from_run()`; pinned by a test.
+2. **The measured rewrite dropped the acknowledgement.** `_execute()` replaces
+   the preview with the measured record, and the ack is the one field not
+   derived from data — nothing in the candles can re-earn what a person
+   ticked. Now carried across explicitly from the stored record.
+
+### Test-harness note
+`SMA_DOC` now carries the tick, because the fixture source IS synthetic. Tests
+about the gate use `unacknowledged_sma_doc()` / the `unacknowledged` fixture, so
+the absence is asked for by name and is never an accident.
+
+### Verification
+60 new tests (31 record + gate, 15 API/migration/audit, 17 JS, plus migration
+coverage). Full suite **4292 passed**. The 3 remaining failures — two
+`benchmarks/test_load_testing.py` timing assertions and the order-dependent
+`test_catalogue_entries_carry_params_and_kind` — all reproduce on a clean tree.

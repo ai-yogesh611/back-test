@@ -71,10 +71,31 @@ SMA_DOC = {
     ],
     "constraints": [{"metric": "min_trades", "operator": ">=", "value": 3}],
     "backtestConfig": {"startDate": "2021-01-01", "endDate": "2023-12-31", "symbol": "DEMO"},
+    # PRD Part 2 §2 gates synthetic data behind an explicit acknowledgement and
+    # this fixture source IS synthetic, so the canonical document carries the
+    # tick. Tests about the GATE use `unacknowledged_sma_doc()` instead — the
+    # absence is the thing under test and should never be an accident.
+    "dataAttestation": {"acknowledged": True},
 }
 
 
 def sma_doc(**over) -> dict:
+    """A submission whose operator has already ticked the synthetic box.
+
+    See ``SMA_DOC``: the tick lives on the canonical document so no test has to
+    remember to add it, and the gate tests ask for its absence by name.
+    """
     doc = copy.deepcopy(SMA_DOC)
     doc.update(over)
+    return doc
+
+
+def unacknowledged_sma_doc(**over) -> dict:
+    """The same submission with the synthetic tick NOT given.
+
+    Use this in tests that pin the gate itself; use :func:`sma_doc` for
+    everything else.
+    """
+    doc = sma_doc(**over)
+    doc.pop("dataAttestation", None)
     return doc

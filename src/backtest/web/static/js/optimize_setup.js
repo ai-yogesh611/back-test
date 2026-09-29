@@ -21,6 +21,8 @@
             { enabled: true, metric: 'min_trades', operator: '>=', value: 10 },
         ],
         lastEstimate: null,
+        attestation: null,     // §2 data confirmation for the current selection
+        syntheticAck: false,   // the operator's explicit tick, per selection
         estimating: 0,
     };
 
@@ -369,6 +371,90 @@
         };
     }
 
+    // ------------------------------------------------------- §2 attestation
+
+    /**
+     * PRD Part 2 §2 — the data confirmation box.
+     *
+     * Two things are deliberate. First, this is a PREVIEW: bar count and the
+     * real coverage are not knowable until the candles are fetched, so they
+     * read "—" rather than a number the box would have had to invent. The run
+     * page shows what was actually loaded. Second, staleness warns and allows.
+     * Re-fetching is the operator's decision, and a box that refuses work for
+     * reasons they cannot act on teaches them to ignore it.
+     *
+     * Synthetic is the exception the PRD calls for, and the one hard gate in
+     * the Optimize flow. It is enforced again on the server — a gate only the
+     * browser enforces is a suggestion.
+     */
+    function renderAttestation(res) {
+        const el = $('optAttestation');
+        if (!el) return;
+        const a = res.attestation || {};
+        const real = !!a.data_source_real;
+        const day = (v) => (v ? C.escapeHtml(v) : '<span class="muted">—</span>');
+
+        el.hidden = false;
+        el.className = `opt-attestation ${real ? '' : 'opt-attestation--synthetic'}`;
+        el.innerHTML = `
+            <div class="opt-attestation-head">
+                <span class="opt-attestation-title">DATA CONFIRMATION</span>
+                <span class="opt-attestation-source ${real ? 'pos' : 'neg'}">
+                    ${C.escapeHtml(a.data_source_label || 'Unknown source')}
+                </span>
+            </div>
+            <dl class="opt-attestation-grid">
+                <dt>Source</dt><dd>${C.escapeHtml(a.data_source_label || '—')}</dd>
+                <dt>Symbol</dt><dd>${C.escapeHtml(a.symbol || '—')}</dd>
+                <dt>Timeframe</dt><dd>${C.escapeHtml(a.timeframe || '—')}</dd>
+                <dt>Bars</dt><dd>${a.bars_count === null || a.bars_count === undefined
+                    ? '<span class="muted">— (shown after the run)</span>'
+                    : a.bars_count.toLocaleString()}</dd>
+                <dt>Range</dt><dd>${day(a.date_from)} → ${day(a.date_to)}</dd>
+                <dt>Fetched</dt><dd>${a.data_fetch_date ? day(a.data_fetch_date)
+                    : (real ? '<span class="muted">unknown</span>' : 'n/a — generated')}</dd>
+            </dl>
+            ${(res.warnings || []).map((w) => `<p class="opt-attestation-note opt-attestation-note--${w.level === 'error' ? 'error' : 'warn'}">
+                ${w.level === 'error' ? '⛔' : '⚠️'} ${C.escapeHtml(w.message)}</p>`).join('')}
+            ${a.requires_acknowledgement ? `
+                <label class="opt-attestation-ack">
+                    <input type="checkbox" id="optSyntheticAck">
+                    <span>${C.escapeHtml(res.acknowledgement || '')}</span>
+                </label>
+                <p class="opt-attestation-note opt-attestation-note--warn">
+                    Tick to start. This run's results will be labelled synthetic
+                    everywhere they appear, including the audit trail.</p>` : ''}`;
+
+        // The tick is the only thing standing between the operator and a run
+        // whose numbers look like every other run's and are not.
+        const ack = $('optSyntheticAck');
+        if (ack) {
+            ack.checked = state.syntheticAck;
+            ack.addEventListener('change', () => {
+                state.syntheticAck = ack.checked;
+                renderEstimate(state.lastEstimate, null);
+            });
+        }
+    }
+
+    async function refreshAttestation(cfg) {
+        try {
+            const res = await C.api('/api/optimize/attestation', { method: 'POST', body: cfg });
+            renderAttestation(res);
+            state.attestation = res;
+        } catch (e) {
+            // A box that cannot load must not look like a box that says the
+            // data is fine. Say so instead of showing the last good answer.
+            const el = $('optAttestation');
+            el.hidden = false;
+            el.className = 'opt-attestation opt-attestation--synthetic';
+            el.innerHTML = `<p class="opt-attestation-note opt-attestation-note--error">
+                ⛔ Could not confirm the data source: ${C.escapeHtml(e.message)}</p>`;
+            state.attestation = null;
+        }
+        renderEstimate(state.lastEstimate, null);
+    }
+
     const onChange = C.debounce(estimate, 350);
 
     async function estimate() {
@@ -382,6 +468,7 @@
             if (ticket !== state.estimating) return;
             state.lastEstimate = res.estimate;
             renderEstimate(res.estimate, null);
+            refreshAttestation(cfg);
         } catch (e) {
             if (ticket !== state.estimating) return;
             if (e.status === 503) {
@@ -394,6 +481,13 @@
         renderWfPreview(cfg);
     }
 
+    /** May this run start? Real data always; synthetic only once ticked. */
+    function attestationCleared() {
+        const res = state.attestation;
+        if (!res) return false;   // unknown: the box failed to load
+        return res.satisfied || state.syntheticAck;
+    }
+
     function renderEstimate(est, errors) {
         $('estGrid').textContent = est ? est.grid_size.toLocaleString() : '—';
         $('estEvals').textContent = est ? est.total_evaluations.toLocaleString() : '—';
@@ -403,8 +497,8 @@
             .map((w) => `<li>⚠ ${C.escapeHtml(w)}</li>`).join('');
         $('estErrors').innerHTML = Object.entries(errors || {})
             .map(([k, v]) => `<li><strong>${C.escapeHtml(k)}</strong>: ${C.escapeHtml(v)}</li>`).join('');
-        $('optStart').disabled = !est;
-        $('optDraft').disabled = !est;
+        $('optStart').disabled = !est || !attestationCleared();
+        $('optDraft').disabled = !est || !attestationCleared();
         document.querySelectorAll('#optParamTable tr[data-i]').forEach((tr) => {
             const p = state.params[Number(tr.dataset.i)];
             tr.classList.toggle('opt-row-error', !!(errors && errors[`parameters.${p.name}`]));
@@ -426,6 +520,14 @@
     async function submit(start) {
         const cfg = buildConfig();
         cfg.start = start;
+        // The server re-checks this. Sending it is not for the server's sake —
+        // it is so the stored run records what the operator actually agreed to.
+        if (state.syntheticAck) {
+            cfg.dataAttestation = {
+                acknowledged: true,
+                acknowledged_at: new Date().toISOString(),
+            };
+        }
         $('optStart').disabled = true;
         try {
             const res = await C.api('/api/optimize/runs', { method: 'POST', body: cfg });
@@ -434,6 +536,13 @@
         } catch (e) {
             renderEstimate(state.lastEstimate, e.errors || { error: e.message });
             C.toast(e.message, 'error');
+            // Matched on the machine-readable code, never on the wording: a
+            // refusal whose meaning lives in a sentence breaks on the next
+            // reword, and this one is the only thing pointing at the tick.
+            if (e.code === 'synthetic_data_not_acknowledged') {
+                const ack = $('optSyntheticAck');
+                if (ack) { ack.checked = false; state.syntheticAck = false; ack.scrollIntoView({ block: 'center' }); }
+            }
         }
     }
 

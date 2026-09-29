@@ -36,14 +36,21 @@ from typing import Any, Callable
 
 import pandas as pd
 
+from backtest.data.base import periods_per_year as annualisation_factor
+from backtest.engine.monte_carlo import DEFAULT_SIMULATIONS, monte_carlo_trade_order
 from backtest.optimization import analysis as an
+from backtest.optimization.attestation import (
+    SYNTHETIC_ACKNOWLEDGEMENT,
+    attestation_columns,
+    attestation_is_satisfied,
+    attestation_preview,
+    attestation_record,
+)
 from backtest.optimization.config import (
     ConfigValidationError,
     OptimizationConfig,
     parse_config,
 )
-from backtest.data.base import periods_per_year as annualisation_factor
-from backtest.engine.monte_carlo import DEFAULT_SIMULATIONS, monte_carlo_trade_order
 from backtest.optimization.deflation import deflated_sharpe, deflation_warning
 from backtest.optimization.evaluator import (
     Cancelled,
@@ -87,9 +94,21 @@ APPLY_TARGETS = ("paper", "live", "ab_test", "none")
 class OptimizationError(Exception):
     """User-facing service error (maps to HTTP 4xx)."""
 
-    def __init__(self, message: str, status: int = 400) -> None:
+    def __init__(
+        self,
+        message: str,
+        status: int = 400,
+        *,
+        code: str | None = None,
+        **details: Any,
+    ) -> None:
         super().__init__(message)
         self.status = status
+        #: Machine-readable tag, so the UI can react to *which* refusal this is
+        #: rather than pattern-matching the message text. A refusal whose
+        #: meaning lives in a sentence is a refusal the next reword will break.
+        self.code = code
+        self.details = details
 
 
 def _now() -> datetime:
@@ -260,10 +279,68 @@ class OptimizationService:
     # Lifecycle
     # ------------------------------------------------------------------
 
+    def attestation_for(self, doc: dict, *, candles: Any = None) -> dict[str, Any]:
+        """PRD Part 2 §2 — the data confirmation for a setup document.
+
+        With ``candles`` this is the measured record kept on the run; without
+        it, the preview the setup page shows before anything is fetched.
+        """
+        return self._attestation_from_cfg(self.parse(doc), doc, candles)
+
+    def _attestation_from_cfg(
+        self, cfg: OptimizationConfig, doc: dict | None = None, candles: Any = None
+    ) -> dict[str, Any]:
+        """Build the attestation from an already-parsed config.
+
+        Split out from :meth:`attestation_for` so the run thread can re-measure
+        the record from the config it already holds, instead of re-parsing the
+        document it was never given.
+        """
+        bt = cfg.backtest
+        att = (
+            attestation_record(
+                bt.source,
+                candles,
+                symbol=bt.symbol,
+                timeframe=bt.timeframe,
+                start_date=bt.start_date,
+                end_date=bt.end_date,
+            )
+            if candles is not None
+            else attestation_preview(
+                bt.source,
+                symbol=bt.symbol,
+                timeframe=bt.timeframe,
+                start_date=bt.start_date,
+                end_date=bt.end_date,
+            )
+        )
+        # The operator's tick travels on the document, not on the attestation
+        # we just rebuilt — it is a statement about this submission, and
+        # rebuilding the record must not silently carry it forward.
+        claimed = (doc or {}).get("dataAttestation") or {}
+        if claimed.get("acknowledged") and not att["data_source_real"]:
+            att["acknowledged"] = True
+            att["acknowledged_at"] = claimed.get("acknowledged_at") or _now().isoformat()
+        return att
+
     def submit(
         self, doc: dict, *, created_by: str | None = None, start: bool = True
     ) -> dict[str, Any]:
         cfg = self.parse(doc)
+        # PRD Part 2 §2 — synthetic is the one input that cannot be defended
+        # after the fact, so it carries a real gate. Checked here rather than in
+        # the browser because a gate only the browser enforces is a suggestion.
+        # Everything else in the attestation warns and allows.
+        attestation = self.attestation_for(doc)
+        if not attestation_is_satisfied(attestation):
+            raise OptimizationError(
+                "synthetic data requires an explicit acknowledgement: "
+                f"'{SYNTHETIC_ACKNOWLEDGEMENT}'",
+                409,
+                code="synthetic_data_not_acknowledged",
+                data_source=attestation["data_source"],
+            )
         run_id = self.store.create_run(
             strategy_id=cfg.strategy_id,
             objective=cfg.objective,
@@ -282,6 +359,7 @@ class OptimizationService:
             created_by=created_by,
             status="pending" if start else "draft",
             baseline_params=cfg.baseline_params,
+            **attestation_columns(attestation),
         )
         log.info(
             "[optimize] run %s created: %s %s over %d combos (%s)",
@@ -424,6 +502,16 @@ class OptimizationService:
                 "seed": method_settings.get("seed"),
             },
             "bucketId": run.get("bucket_id"),
+            # PRD Part 2 §2. Re-running a synthetic run is the same operator
+            # repeating the same decision, so the acknowledgement travels with
+            # the configuration. Without this, "Rerun" on any synthetic run
+            # would be silently impossible — the single most confusing way for
+            # a gate to behave.
+            "dataAttestation": {
+                k: v
+                for k, v in (run.get("data_attestation") or {}).items()
+                if k in ("acknowledged", "acknowledged_at")
+            },
         }
 
     def config_from_run(self, run: dict) -> OptimizationConfig:
@@ -465,7 +553,8 @@ class OptimizationService:
         if candles is None or len(candles) == 0:
             raise OptimizationError(
                 f"no candles for {cfg.backtest.symbol} "
-                f"{cfg.backtest.start_date}→{cfg.backtest.end_date}", 404
+                f"{cfg.backtest.start_date}→{cfg.backtest.end_date}",
+                404,
             )
         settings = {
             "capital": cfg.backtest.initial_capital,
@@ -478,8 +567,7 @@ class OptimizationService:
 
         result = evaluate(candles, settings, cfg.strategy_id, dict(params), keep_pnls=True)
         pnls = result.get("trade_pnls") or []
-        mc = monte_carlo_trade_order(pnls, cfg.backtest.initial_capital,
-                                     simulations=simulations)
+        mc = monte_carlo_trade_order(pnls, cfg.backtest.initial_capital, simulations=simulations)
         mc["params"] = dict(params)
         mc["run_id"] = run_id
         return mc
@@ -617,8 +705,9 @@ class OptimizationService:
             "selector_type": cfg.backtest.selector_type,
         }
         try:
-            result = evaluate(candles, settings, cfg.strategy_id, dict(best["params"]),
-                              keep_regimes=True)
+            result = evaluate(
+                candles, settings, cfg.strategy_id, dict(best["params"]), keep_regimes=True
+            )
         except Exception as exc:  # noqa: BLE001
             log.warning("[regimes] could not split the winner: %s", exc)
             return None
@@ -630,6 +719,25 @@ class OptimizationService:
         self.store.update_run(run_id, status="running", started_at=_now(), error_message=None)
         self._set_phase(job, "loading", f"{cfg.backtest.symbol} {cfg.backtest.timeframe}")
         candles = self.loader(cfg)
+        # PRD Part 2 §2. The preview written at submit time described what was
+        # ASKED for; this is what the search actually got. A symbol with gaps
+        # returns fewer bars and a narrower range, and the record kept on the
+        # run has to be the second one or it is certifying data that was never
+        # there.
+        #
+        # The measured record REPLACES the preview wholesale, so the synthetic
+        # acknowledgement has to be carried across explicitly. It is the one
+        # field not derived from the data — a person ticked it at submit time,
+        # and nothing in the candles can confirm or re-earn it.
+        try:
+            measured = self._attestation_from_cfg(cfg, candles=candles)
+            previous = (self.store.get_run(run_id) or {}).get("data_attestation") or {}
+            if previous.get("acknowledged") and not measured.get("data_source_real"):
+                measured["acknowledged"] = True
+                measured["acknowledged_at"] = previous.get("acknowledged_at")
+            self.store.update_run(run_id, **attestation_columns(measured))
+        except Exception:  # noqa: BLE001
+            log.warning("[attestation] could not record data provenance", exc_info=True)
         if candles is None or len(candles) == 0:
             raise ValueError(
                 f"no candles for {cfg.backtest.symbol} {cfg.backtest.start_date}→"
@@ -917,8 +1025,9 @@ class OptimizationService:
         # wearing a number. One backtest against a search of thousands.
         regimes = self._regime_breakdown_for(cfg, best, candles) if best else None
         warnings = an.warning_signs(cfg, best, sensitivity, wf_report, baseline)
-        gap = deflation_warning(deflated, (best or {}).get("metrics", {}).get("sharpe")
-                                if best else None)
+        gap = deflation_warning(
+            deflated, (best or {}).get("metrics", {}).get("sharpe") if best else None
+        )
         if gap:
             warnings.append(gap)
         comparison = None
@@ -1180,6 +1289,11 @@ class OptimizationService:
             },
         ]
         details["chain"] = chain
+        # PRD Part 2 §2 — the audit row is the last place a run's data can be
+        # checked, long after the results page has scrolled away. Copied in
+        # rather than re-derived: the attestation is a fact about the candles
+        # the search loaded, and those are not here to measure again.
+        details["data_attestation"] = run.get("data_attestation")
         audit = self.store.add_audit(
             run_id=run_id,
             strategy_id=run["strategy_id"],

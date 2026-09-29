@@ -1241,6 +1241,27 @@ class OptimizationRun(Base):
     # would want to sort or filter on.
     deflated_sharpe: Mapped[Optional[Decimal]] = mapped_column(Numeric(6, 3))
 
+    # -- data attestation (PRD Part 2 §2, migration 015) --------------------
+    # What this run actually ran on, measured on the candles the search loaded
+    # rather than on the range that was requested. All nullable and all
+    # unbackfilled on purpose: a row written before this migration has no
+    # attestation, and that is the truth of it. A guessed value here would be a
+    # claim nobody checked.
+    #
+    # The flat columns exist so runs can be listed and filtered by source
+    # without unpacking JSON in every query; `data_attestation` holds the whole
+    # record, including staleness and the synthetic acknowledgement. They are
+    # written together by `attestation.attestation_columns()` and nowhere else,
+    # so the two cannot drift.
+    data_source: Mapped[Optional[str]] = mapped_column(String(30))
+    data_fetch_date: Mapped[Optional[date]] = mapped_column(Date)
+    bars_count: Mapped[Optional[int]] = mapped_column(Integer)
+    symbol: Mapped[Optional[str]] = mapped_column(String(30))
+    timeframe: Mapped[Optional[str]] = mapped_column(String(10))
+    date_from: Mapped[Optional[date]] = mapped_column(Date)
+    date_to: Mapped[Optional[date]] = mapped_column(Date)
+    data_attestation: Mapped[Optional[Any]] = mapped_column(JSONVariant)
+
     # -- metadata -----------------------------------------------------------
     created_by: Mapped[Optional[str]] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(

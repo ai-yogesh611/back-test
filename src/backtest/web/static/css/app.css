@@ -2016,3 +2016,50 @@ select.input option.sym-no-data:disabled { cursor: not-allowed; }
 .opt-regime-box { margin-bottom: 16px; }
 .opt-regime-unnamed td { color: #94a3b8; font-style: italic; }
 .opt-regime-note { margin: 8px 0 0; }
+
+/* ---- Data attestation (PRD Part 2 §2) ----------------------------------
+   The box that says which data the run will use, before it runs. */
+.opt-attestation {
+    grid-column: 1 / -1;
+    margin-top: 4px;
+    padding: 12px 14px;
+    border-radius: 8px;
+    border: 1px solid rgba(148, 163, 184, .35);
+    background: rgba(15, 23, 42, .55);
+}
+.opt-attestation--synthetic { border-color: rgba(239, 68, 68, .55); background: rgba(40, 14, 14, .5); }
+.opt-attestation-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; margin-bottom: 10px;
+}
+.opt-attestation-title {
+    font-size: .7rem; letter-spacing: .09em; font-weight: 700;
+    color: #94a3b8; text-transform: uppercase;
+}
+.opt-attestation-source { font-size: .8rem; font-weight: 600; }
+.opt-attestation-grid {
+    display: grid; grid-template-columns: max-content 1fr;
+    gap: 4px 16px; margin: 0; font-size: .8rem;
+}
+.opt-attestation-grid dt { color: #94a3b8; }
+.opt-attestation-grid dd { margin: 0; font-variant-numeric: tabular-nums; }
+.opt-attestation-note { margin: 10px 0 0; font-size: .78rem; line-height: 1.5; }
+.opt-attestation-note--warn { color: #fbbf24; }
+.opt-attestation-note--error { color: #f87171; }
+.opt-attestation-ack {
+    display: flex; align-items: flex-start; gap: 8px;
+    margin-top: 10px; font-size: .8rem; line-height: 1.5; cursor: pointer;
+}
+
+/* ---- Stored attestation, shown on results + audit (§2) ------------------ */
+.opt-attestation-strip {
+    display: flex; flex-wrap: wrap; gap: 6px 18px;
+    padding: 10px 12px; margin-bottom: 14px;
+    border-radius: 6px; font-size: .78rem;
+    background: rgba(15, 23, 42, .5);
+    border: 1px solid rgba(148, 163, 184, .25);
+}
+.opt-attestation-strip--synthetic { border-color: rgba(239, 68, 68, .5); background: rgba(40, 14, 14, .45); }
+.opt-attestation-strip .k { color: #94a3b8; margin-right: 5px; }
+.opt-attestation-strip .v { font-variant-numeric: tabular-nums; }
+.opt-attestation-unrecorded { color: #94a3b8; font-style: italic; }

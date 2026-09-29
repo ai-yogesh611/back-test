@@ -675,7 +675,13 @@
                 const d = a.action_details || {};
                 const diff = Object.entries(a.params_diff || {}).map(([k, v]) => `${k}: ${v.old ?? '—'} → ${v.new ?? '—'}`).join(', ');
                 const canRollback = a.action === 'apply' && !d.rolled_back;
-                return `<tr><td class="small">${C.fmtDate(a.timestamp)}</td><td>${C.escapeHtml(a.action)}${d.rolled_back ? ' <span class="muted small">(rolled back)</span>' : ''}</td>
+                // PRD Part 2 §2 — the audit row is the last place a run's data
+                // can be checked, long after the results page has scrolled away.
+                const att = d.data_attestation;
+                const attLine = att
+                    ? ` <span class="${att.data_source_real ? 'muted' : 'neg'}" title="${C.escapeHtml(att.date_from || '')} → ${C.escapeHtml(att.date_to || '')}">${C.escapeHtml(att.data_source_label || att.data_source || '')}</span>`
+                    : '';
+                return `<tr><td class="small">${C.fmtDate(a.timestamp)}</td><td>${C.escapeHtml(a.action)}${d.rolled_back ? ' <span class="muted small">(rolled back)</span>' : ''}${attLine}</td>
                     <td class="small">${C.escapeHtml(d.target || a.applied_to_mode || '—')}${d.new_instance_id ? ` · ${C.escapeHtml(String(d.new_instance_id).slice(0, 8))}` : ''}</td>
                     <td class="small">${C.escapeHtml(diff || '—')}</td><td class="small">${C.escapeHtml(a.user_id || '—')}</td>
                     <td>${canRollback ? `<button class="btn btn-sm" data-rollback="${a.audit_id}">↶ Rollback</button>` : ''}</td></tr>`;

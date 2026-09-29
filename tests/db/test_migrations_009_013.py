@@ -1,10 +1,10 @@
-"""Migrations 009–014 — the parameter optimization engine schema.
+"""Migrations 009–015 — the parameter optimization engine schema.
 
 * SQLite: the hand-written mirror (``009_013_optimization_engine.sqlite.sql``)
   is executed **verbatim** after 001–004 and must agree with the ORM (tables,
   columns, index names), be idempotent, seed the three default presets and
   enforce the FK / CHECK behaviour the engine relies on.
-* Alembic: 009→014 chain onto 008 with a single head.
+* Alembic: 009→015 chain onto 008 with a single head.
 * PostgreSQL files: verified textually (views, trigger, seed, rollback order).
 * Optional live PostgreSQL round trip: set ``OPTIMIZATION_TEST_PG_URL`` to a
   server URL with CREATEDB rights; the test creates and drops its own
@@ -39,6 +39,7 @@ PG_FILES = {
     "012": MIGRATIONS / "012_optimization_views.sql",
     "013": MIGRATIONS / "013_optimization_seed_presets.sql",
     "014": MIGRATIONS / "014_optimization_deflated_sharpe.sql",
+    "015": MIGRATIONS / "015_optimization_data_attestation.sql",
 }
 PG_ROLLBACK = MIGRATIONS / "009_013_optimization_rollback.sql"
 TABLES = {"optimization_runs", "optimization_results", "parameter_presets", "optimization_audit"}
@@ -208,13 +209,13 @@ def test_store_runs_on_the_hand_migrated_database(sqlite_db: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_alembic_chain_009_to_014():
+def test_alembic_chain_009_to_015():
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config(str(REPO_ROOT / "alembic.ini")))
-    assert script.get_heads() == ["014"]
-    revs = ("009", "010", "011", "012", "013", "014")
+    assert script.get_heads() == ["015"]
+    revs = ("009", "010", "011", "012", "013", "014", "015")
     chain = {r: script.get_revision(r).down_revision for r in revs}
     assert chain == {
         "009": "008",
@@ -223,6 +224,7 @@ def test_alembic_chain_009_to_014():
         "012": "011",
         "013": "012",
         "014": "013",
+        "015": "014",
     }
 
 
@@ -369,3 +371,74 @@ def test_014_recreates_the_views_with_the_new_column():
         block = sql.split(f"CREATE OR REPLACE VIEW {view} AS", 1)[1]
         block = block.split(";", 1)[0]
         assert "deflated_sharpe" in block, f"{view} was not updated to carry the column"
+
+
+def test_015_adds_the_attestation_columns(sqlite_db):
+    """PRD Part 2 §2. Additive, nullable, and unbackfilled.
+
+    Every run that predates this migration has no attestation, and that is the
+    honest state of it. A backfilled value would be a claim nobody checked, so
+    the test pins that the columns are nullable rather than that they are
+    populated.
+    """
+    info = {
+        r["name"]: r
+        for r in inspect(create_engine(f"sqlite:///{sqlite_db}")).get_columns("optimization_runs")
+    }
+    for column in (
+        "data_source",
+        "data_fetch_date",
+        "bars_count",
+        "symbol",
+        "timeframe",
+        "date_from",
+        "date_to",
+        "data_attestation",
+    ):
+        assert column in info, f"015 must add {column}"
+        assert info[column]["nullable"] is True, f"{column} must stay nullable"
+
+
+def test_015_stores_a_full_attestation_json_record(sqlite_db):
+    """The flat columns are for filtering; the JSON record is the thing a page
+    reads back, and it has to survive a round trip intact."""
+    import json
+
+    conn = _conn(sqlite_db)
+    rid = _insert_run(conn)
+    record = {
+        "data_source": "db",
+        "data_source_real": True,
+        "bars_count": 1247,
+        "date_from": "2020-01-01",
+        "date_to": "2024-12-31",
+        "stale": True,
+        "stale_days": 44,
+    }
+    conn.execute(
+        "UPDATE optimization_runs SET data_attestation = ? WHERE run_id = ?",
+        (json.dumps(record), rid),
+    )
+    stored = conn.execute(
+        "SELECT data_attestation FROM optimization_runs WHERE run_id = ?", (rid,)
+    ).fetchone()[0]
+    conn.close()
+    assert json.loads(stored) == record
+
+
+def test_015_recreates_the_views_with_the_new_columns():
+    """CREATE OR REPLACE VIEW cannot change a column list, so 015 replaces the
+    two affected views whole. A forgotten view would still work — just silently
+    without the new columns."""
+    sql = PG_FILES["015"].read_text()
+    for view in ("v_latest_optimization", "v_optimization_summary"):
+        assert f"CREATE OR REPLACE VIEW {view} AS" in sql
+        block = sql.split(f"CREATE OR REPLACE VIEW {view} AS", 1)[1].split(";", 1)[0]
+        assert "data_source" in block, f"{view} was not updated to carry the columns"
+
+
+def test_015_backfills_nothing():
+    """A backfilled attestation would be a value nobody measured."""
+    sql = PG_FILES["015"].read_text()
+    assert "UPDATE optimization_runs" not in sql
+    assert "server_default" not in sql
