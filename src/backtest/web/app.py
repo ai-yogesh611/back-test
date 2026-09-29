@@ -35,6 +35,7 @@ from backtest.api import (
     strategies_bp,
 )
 from backtest.api.optimize import optimize_bp
+from backtest.pine.api import pine_bp
 from backtest.api.playbooks import playbooks_bp
 from backtest.api.segments import segments_bp
 from backtest.api.portfolio import list_instances
@@ -368,6 +369,7 @@ def create_app(
     app.register_blueprint(intelligence_bp)
     app.register_blueprint(playbooks_bp)
     app.register_blueprint(analytics_bp)
+    app.register_blueprint(pine_bp)
     app.register_blueprint(optimize_bp)
     app.register_blueprint(segments_bp)
     app.register_blueprint(settings_bp)
@@ -451,6 +453,11 @@ def create_app(
     def optimize_run_page(run_id: str) -> Any:
         """One run: live progress while running, results dashboard after."""
         return render_template("optimize_run.html", active="optimize", run_id=run_id)
+
+    @app.get("/strategy-builder")
+    def strategy_builder_page() -> Any:
+        """Pine Script → Python strategy converter UI."""
+        return render_template("strategy_builder.html", active="strategy_builder")
 
     @app.get("/forward")
     def forward_page() -> Any:

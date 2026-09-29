@@ -26,6 +26,11 @@ def register(cls: type["Strategy"]) -> type["Strategy"]:
     return cls
 
 
+def unregister(name: str) -> bool:
+    """Drop a strategy from the registry (hot-reload of plugins). True if dropped."""
+    return _REGISTRY.pop(name, None) is not None
+
+
 def _discover() -> None:
     """Import every module under ``backtest.strategies``.
 

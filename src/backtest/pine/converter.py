@@ -47,11 +47,13 @@ class PineScriptConverter:
         Raises:
             PineConversionError: If parsing or generation fails
         """
-        # 1. Extract strategy name from Pine if not provided
+        # 1. Extract strategy name from Pine if not provided. User-provided
+        # names are sanitized too — they become a Python class name, so
+        # "Outside Bar Strategy" must become "OutsideBarStrategy".
         if not strategy_name:
             match = re.search(r'strategy\(["\']([^"\']+)', pine_code)
             strategy_name = match.group(1) if match else "ImportedStrategy"
-            strategy_name = self._sanitize_class_name(strategy_name)
+        strategy_name = self._sanitize_class_name(strategy_name) or "ImportedStrategy"
 
         # 2. Parse Pine Script to AST
         try:
@@ -100,7 +102,11 @@ class PineScriptConverter:
         plugin_dir = Path("plugins/strategies")
         plugin_dir.mkdir(parents=True, exist_ok=True)
 
-        filename = f"{strategy_name.lower()}_imported.py"
+        # The plugin loader derives a module name from the filename, so it
+        # must be a valid Python identifier: no spaces or special characters.
+        safe = re.sub(r"[^a-z0-9_]", "_", strategy_name.lower())
+        safe = re.sub(r"_+", "_", safe).strip("_") or "imported_strategy"
+        filename = f"{safe}_imported.py"
         filepath = plugin_dir / filename
 
         # Add header comment
@@ -117,7 +123,7 @@ Re-convert from Pine Script if changes needed.
 """
 
 from backtest.strategy.base import Strategy
-from backtest.strategy.signal import Signal
+
 import pandas as pd
 import numpy as np
 
@@ -125,7 +131,7 @@ import numpy as np
 
         full_code = header + python_code
 
-        filepath.write_text(full_code)
+        filepath.write_text(full_code, encoding="utf-8")
 
         return filepath
 
@@ -137,9 +143,9 @@ import numpy as np
         except SyntaxError as e:
             return False, f"Syntax error: {e}"
 
-        # 2. Required methods
-        if "def calculate" not in code:
-            return False, "Missing calculate() method"
+        # 2. Required methods — the plugin contract is entries()/generate_signals()
+        if "def entries" not in code and "def generate_signals" not in code:
+            return False, "Missing entries()/generate_signals() method"
 
         # 3. Security check
         dangerous = [

@@ -28,6 +28,10 @@ class PineScriptParser:
     - alertcondition()
     """
 
+    #: Pine ta.* calls that must survive as conditions even though they are
+    #: not plain indicator declarations (handled by the codegen).
+    _CONDITION_FUNCS = ("crossover", "crossunder", "change")
+
     def parse(self, pine_code: str) -> Dict[str, Any]:
         """Parse Pine Script to AST.
 
@@ -54,11 +58,91 @@ class PineScriptParser:
                 i += 1
                 continue
 
+            # Parse input(): atrPeriod = input(10, "ATR Length")
+            #                factor = input.float(3.0, "Factor", step = 0.01)
+            input_match = re.match(
+                r"(\w+)\s*=\s*input(?:\.(\w+))?\(([^)]*)\)", stripped
+            )
+            if input_match:
+                var_name = input_match.group(1)
+                kind = input_match.group(2)
+                args_str = input_match.group(3)
+                first_arg = args_str.split(",")[0].strip()
+                default: Any = first_arg
+                try:
+                    if "." in first_arg:
+                        default = float(first_arg)
+                    else:
+                        default = int(first_arg)
+                except ValueError:
+                    default = first_arg.strip("\"'")
+                # input.float/input.int pin the type; a quoted default means str.
+                if kind == "float":
+                    default = float(default)
+                elif kind == "int":
+                    default = int(float(default))
+                elif kind == "bool":
+                    default = str(first_arg).lower() in ("true", "1")
+                elif kind == "string":
+                    default = str(default)
+                # Label: first quoted string in the args
+                label_match = re.search(r'"([^"]+)"', args_str)
+                statements.append({
+                    "type": "input",
+                    "name": var_name,
+                    "default": default,
+                    "label": label_match.group(1) if label_match else var_name,
+                })
+
+                i += 1
+                continue
+
+            # Parse tuple destructuring: [_, direction] = ta.supertrend(f, p)
+            tuple_match = re.match(r"\[([^\]]+)\]\s*=\s*(.+)", stripped)
+            if tuple_match:
+                names = [n.strip() for n in tuple_match.group(1).split(",")]
+                expr = tuple_match.group(2).strip()
+                func_match = re.match(r"(ta|math)\.(\w+)\((.*)\)", expr)
+                if func_match:
+                    namespace = func_match.group(1)
+                    func_name = func_match.group(2)
+                    args = self._parse_args(func_match.group(3))
+                    # Assign each name; conditions use the LAST name (Pine
+                    # convention: the direction/signal comes second).
+                    for idx, name in enumerate(names):
+                        statements.append({
+                            "type": "indicator_call",
+                            "var_name": name,
+                            "namespace": namespace,
+                            "function": func_name,
+                            "args": args,
+                            "tuple_index": idx,
+                            "tuple_len": len(names),
+                        })
+                else:
+                    for name in names:
+                        statements.append({"type": "assignment", "name": name, "value": expr})
+
+                i += 1
+                continue
+
             # Parse declaration: fast = ta.ema(close, 12)
             decl_match = re.match(r'(\w+)\s*=\s*(.+)', stripped)
             if decl_match:
                 var_name = decl_match.group(1)
                 expr = decl_match.group(2).strip()
+
+                # Bare function-call condition value (e.g. long = ta.crossover(a, b))
+                bare_cond = re.match(r'ta\.(crossover|crossunder)\((.*)\)', expr)
+                if bare_cond:
+                    statements.append({
+                        "type": "assignment",
+                        "name": var_name,
+                        "value": expr,
+                    })
+
+                    i += 1
+                    continue
 
                 # Check if it's a function call
                 func_match = re.match(r'(ta|math)\.(\w+)\((.*)\)', expr)
@@ -86,8 +170,9 @@ class PineScriptParser:
                 i += 1
                 continue
 
-            # Parse if statement
-            if_match = re.match(r'if\s+(.+):', stripped)
+            # Parse if statement — Pine uses indentation, not a trailing
+            # colon, so the ':' is optional here (Python-style Pine also works).
+            if_match = re.match(r'if\s+(.+?)(?::\s*)?$', stripped)
             if if_match:
                 condition_str = if_match.group(1).strip()
                 condition = self._parse_condition(condition_str)
@@ -112,7 +197,7 @@ class PineScriptParser:
                 else_body = []
                 if i < len(original_lines):
                     else_stripped = original_lines[i].split('//')[0].strip()
-                    if else_stripped.startswith('else:'):
+                    if re.match(r'else\s*:?\s*$', else_stripped):
                         i += 1
                         while i < len(original_lines):
                             next_line = original_lines[i]
@@ -218,6 +303,18 @@ class PineScriptParser:
                 "namespace": "ta",
                 "function": "crossunder",
                 "args": [crossunder_match.group(1).strip(), crossunder_match.group(2).strip()],
+            }
+
+        # Check for ta.change(direction) < 0 / > 0 (Supertrend flip pattern)
+        change_match = re.match(
+            r'ta\.change\((\w+)\)\s*(<|>)\s*(-?\d+(?:\.\d+)?)', condition_str
+        )
+        if change_match:
+            return {
+                "type": "change_flip",
+                "variable": change_match.group(1),
+                "operator": change_match.group(2),
+                "value": change_match.group(3),
             }
 
         # Check for comparison: a > b

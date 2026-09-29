@@ -1,284 +1,497 @@
 """Code generator — converts Pine AST to Python Strategy code.
 
-Maps Pine Script functions to platform Strategy API calls, generates
-the class structure with __init__, calculate(), and proper imports.
+Emits the platform-correct plugin pattern: a vectorized ``entries()``
+(pd.Series of booleans aligned to the candles) which the Strategy base
+turns into ``generate_signals()`` via ``_signals_from_entries_exits``.
+All Pine ``ta.*`` functions used are emitted as self-contained numpy
+helpers, so the generated file has no dependency on indicator methods
+that ``Strategy`` does not actually provide.
+
+Known limitations (documented in generated header):
+- The platform equity model is long-only; Pine short entries are OR-ed
+  into the entries series and flagged in a comment.
+- ``plot()``/``label()``/``alertcondition()`` are ignored (no visualization).
+- ``request.security()`` (multi-timeframe) is not supported.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+import re
+from typing import Dict, List, Optional
 
 
 class PineCodeGenerator:
     """Generate Python Strategy code from Pine AST."""
 
-    INDICATOR_MAP = {
-        # Pine function → Platform method
-        "ta.ema": "self.ema",
-        "ta.sma": "self.sma",
-        "ta.rsi": "self.rsi",
-        "ta.macd": "self.macd",
-        "ta.atr": "self.atr",
-        "ta.bbands": "self.bollinger_bands",
-        "ta.stoch": "self.stochastic",
-        "ta.adx": "self.adx",
-        "ta.crossover": "crossed_above",
-        "ta.crossunder": "crossed_below",
-        "math.max": "max",
-        "math.min": "min",
+    #: Pine ta.* function → (python helper name, arg order transform)
+    SUPPORTED_FUNCS = {
+        "ema": "_ema",
+        "sma": "_sma",
+        "rsi": "_rsi",
+        "atr": None,  # special: _atr(high, low, close, period)
+        "supertrend": None,  # special: _supertrend(high, low, close, period, factor)
+        "change": "_changed",
+        "crossover": "_cross_above",
+        "crossunder": "_cross_below",
+        "highest": "_highest",
+        "lowest": "_lowest",
     }
 
+    # Standard OHLC series names usable as function arguments.
+    SERIES_NAMES = {"open", "high", "low", "close", "volume", "hl2", "hlc3", "ohlc4"}
+
     def generate(self, ast: Dict, strategy_name: str) -> str:
-        """Generate Python strategy code from AST.
+        """Generate a complete, loadable plugin module for ``strategy_name``."""
+        env = self._collect_env(ast)
+        inputs = [s for s in ast.get("statements", []) if s.get("type") == "input"]
+        logic_lines = self._generate_logic(ast, env)
+        calc_lines = self._generate_indicator_calculations(ast, env)
+        helpers = self._required_helpers(ast, env)
+        params_block = self._generate_params(inputs)
 
-        Args:
-            ast: Parsed Pine Script AST
-            strategy_name: Python class name for the strategy
-
-        Returns:
-            Complete Python strategy source code as string
-        """
-        # Extract metadata
-        indicators_used = self._extract_indicators(ast)
-        config_params = self._extract_input_params(ast)
-
-        # Generate class
-        code = f'''"""Auto-generated from Pine Script v5.
-
-Original strategy logic preserved.
-Plot/draw statements ignored (no visualization).
-"""
-
-from backtest.strategy.base import Strategy
-from backtest.strategy.signal import Signal
-import pandas as pd
-import numpy as np
-
-
-def crossed_above(a, b):
-    """Helper: returns True where a crosses above b."""
-    if len(a) < 2 or len(b) < 2:
-        return False
-    return a[-2] <= b[-2] and a[-1] > b[-1]
-
-
-def crossed_below(a, b):
-    """Helper: returns True where a crosses below b."""
-    if len(a) < 2 or len(b) < 2:
-        return False
-    return a[-2] >= b[-2] and a[-1] < b[-1]
-
-
-class {strategy_name}(Strategy):
+        class_code = f'''class {strategy_name}(Strategy):
     """
-    Auto-generated from Pine Script v5.
+    Auto-generated from Pine Script v5 by the Strategy Builder.
 
-    Original strategy logic preserved.
-    Plot/draw statements ignored (no visualization).
+    Entries are OR-ed across all Pine entry conditions; the platform
+    equity model is long-only, so short entries are folded into the
+    same entries series (flagged below).
     """
 
     name = "{strategy_name.lower()}"
-    description = "Auto-generated from Pine Script v5"
+    description = "Imported from Pine Script v5 via Strategy Builder"
     version = "1.0"
     author = "Pine Converter"
 
-    params = {{
-{self._generate_init_params(config_params)}
-    }}
+{params_block}
 
-    def calculate(self, df: pd.DataFrame) -> Signal:
-        """
-        Main strategy logic.
-        Returns Signal(+1, -1, or 0) based on Pine Script conditions.
-        """
-        # Extract OHLCV
-        close = df['close'].values
-        high = df['high'].values
-        low = df['low'].values
-        volume = df['volume'].values if 'volume' in df.columns else None
+    def entries(self, df: pd.DataFrame) -> pd.Series:
+        high = df["high"].values
+        low = df["low"].values
+        close = df["close"].values
+        n = len(close)
 
-        # Calculate indicators
-{self._generate_indicator_calculations(indicators_used, ast)}
-
-        # Strategy logic
-{self._generate_logic(ast)}
-
-        return Signal(0)  # Default: no action
+        # Pine inputs → instance params (bound by Strategy.__init__)
+{self._generate_param_bindings(inputs)}
+        # Indicator calculations
+{calc_lines}
+        # Entry conditions (long-only platform: shorts folded in)
+        long_entries = np.zeros(n, dtype=bool)
+        short_entries = np.zeros(n, dtype=bool)
+{logic_lines}
+        # The base class turns entries/exits into generate_signals().
+        return pd.Series(long_entries | short_entries, index=df.index)
 '''
 
-        return code
+        return (
+            '"""\n'
+            "Auto-generated from Pine Script v5 by the Strategy Builder.\n"
+            "\n"
+            "Long-only platform: Pine short entries are OR-ed into entries.\n"
+            "Plot/draw statements ignored (no visualization).\n"
+            '"""\n\n'
+            "from backtest.strategy.base import Strategy\n\n"
+            "import numpy as np\n"
+            "import pandas as pd\n\n\n"
+            + helpers
+            + "\n\n"
+            + class_code
+        )
 
-    def _generate_init_params(self, config_params: List[Dict]) -> str:
-        """Generate __init__ parameters from Pine input() calls."""
-        if not config_params:
-            return "        # No configurable parameters"
+    # ------------------------------------------------------------------
+    # Environment: variable → expression, so conditions referencing
+    # assigned variables resolve to their underlying expressions.
+    # ------------------------------------------------------------------
 
-        lines = []
-        for param in config_params:
-            name = param["name"]
-            default = param.get("default", 0)
-            ptype = param.get("type", "float")
-            lines.append(f'        "{name}": {{')
-            lines.append(f'            "default": {default},')
-            lines.append(f'            "type": "{ptype}",')
-            lines.append(f'            "label": "{name.replace("_", " ").title()}",')
-            lines.append('            "tooltip": "Parameter from Pine Script",')
-            lines.append('        }},')
-        return "\n".join(lines)
-
-    def _generate_indicator_calculations(
-        self, indicators: List[Dict], ast: Dict
-    ) -> str:
-        """Generate indicator calculation code."""
-        lines = []
-
-        for indicator in indicators:
-            func_key = f"{indicator.get('namespace', 'ta')}.{indicator['function']}"
-            var_name = indicator.get("var_name", f"_{indicator['function']}")
-            args = indicator.get("args", [])
-
-            if func_key == "ta.ema" and len(args) >= 2:
-                period = args[1] if isinstance(args[1], (int, float)) else 14
-                lines.append(f"        {var_name} = self.ema(close, {period})")
-
-            elif func_key == "ta.sma" and len(args) >= 2:
-                period = args[1] if isinstance(args[1], (int, float)) else 14
-                lines.append(f"        {var_name} = self.sma(close, {period})")
-
-            elif func_key == "ta.rsi" and len(args) >= 2:
-                period = args[1] if isinstance(args[1], (int, float)) else 14
-                lines.append(f"        {var_name} = self.rsi(close, {period})")
-
-            elif func_key == "ta.macd" and len(args) >= 3:
-                fast = args[1] if isinstance(args[1], (int, float)) else 12
-                slow = args[2] if isinstance(args[2], (int, float)) else 26
-                signal_period = (
-                    args[3] if len(args) > 3 and isinstance(args[3], (int, float)) else 9
+    def _collect_env(self, ast: Dict) -> Dict[str, str]:
+        env: Dict[str, str] = {}
+        for st in ast.get("statements", []):
+            if st.get("type") == "assignment":
+                env[st["name"]] = st["value"]
+            elif st.get("type") == "indicator_call":
+                env[st["var_name"]] = (
+                    f"{st.get('namespace', 'ta')}.{st['function']}("
+                    + ", ".join(str(a) for a in st.get("args", []))
+                    + ")"
                 )
-                lines.append(
-                    f"        {var_name}_macd, {var_name}_signal, {var_name}_hist = "
-                    f"self.macd(close, {fast}, {slow}, {signal_period})"
-                )
+        return env
 
-            elif func_key == "ta.atr" and len(args) >= 4:
-                period = args[3] if isinstance(args[3], (int, float)) else 14
-                lines.append(f"        {var_name} = self.atr(high, low, close, {period})")
+    # ------------------------------------------------------------------
+    # Expression translation
+    # ------------------------------------------------------------------
 
-            elif func_key == "ta.bbands" and len(args) >= 3:
-                period = args[1] if isinstance(args[1], (int, float)) else 20
-                std = args[2] if isinstance(args[2], (int, float)) else 2
-                lines.append(
-                    f"        {var_name}_upper, {var_name}_middle, {var_name}_lower = "
-                    f"self.bollinger_bands(close, {period}, {std})"
-                )
-
-            elif func_key in ("ta.crossover", "ta.crossunder"):
-                # These are handled in condition translation, not as standalone calculations
-                pass
-
-        if not lines:
-            lines.append("        # No indicators to calculate")
-
-        return "\n".join(lines)
-
-    def _generate_logic(self, ast: Dict) -> str:
-        """Generate conditional logic (if/else)."""
-        lines = []
-
-        for statement in ast.get("statements", []):
-            if statement["type"] == "if_statement":
-                condition = self._translate_condition(statement["condition"])
-                lines.append(f"        if {condition}:")
-
-                # Check for strategy.entry() in if block
-                for inner_stmt in statement.get("body", []):
-                    if inner_stmt["type"] == "strategy_call":
-                        if inner_stmt["function"] == "strategy.entry":
-                            direction = inner_stmt.get("direction", "")
-                            signal = "+1" if "long" in direction else "-1"
-                            lines.append(f"            return Signal({signal})")
-
-                        elif inner_stmt["function"] == "strategy.close":
-                            lines.append("            return Signal(0)")
-
-                # Handle else block
-                if statement.get("else_body"):
-                    lines.append("        else:")
-                    for inner_stmt in statement["else_body"]:
-                        if inner_stmt["type"] == "strategy_call":
-                            if inner_stmt["function"] == "strategy.entry":
-                                direction = inner_stmt.get("direction", "")
-                                signal = "+1" if "long" in direction else "-1"
-                                lines.append(f"            return Signal({signal})")
-                            elif inner_stmt["function"] == "strategy.close":
-                                lines.append("            return Signal(0)")
-
-        if not lines:
-            lines.append("        # No entry/exit logic found")
-            lines.append("        # TODO: Implement your strategy logic here")
-
-        return "\n".join(lines)
-
-    def _translate_condition(self, condition: Dict) -> str:
-        """Translate Pine condition to Python."""
-        if not isinstance(condition, dict):
+    def _expr(self, expr: str, env: Dict[str, str], depth: int = 0) -> str:
+        """Translate one Pine expression (possibly nested calls) to Python."""
+        e = expr.strip()
+        if depth > 6:  # cycle / runaway guard
             return "False"
 
-        if condition["type"] == "function_call":
-            func = condition["function"]
-            namespace = condition.get("namespace", "ta")
-            full_func = f"{namespace}.{func}"
-            args = condition.get("args", [])
+        if e in env:
+            return self._expr(env[e], env, depth + 1)
 
-            if full_func == "ta.crossover" and len(args) >= 2:
-                arg0 = self._format_arg(args[0])
-                arg1 = self._format_arg(args[1])
-                return f"crossed_above({arg0}, {arg1})"
-            elif full_func == "ta.crossunder" and len(args) >= 2:
-                arg0 = self._format_arg(args[0])
-                arg1 = self._format_arg(args[1])
-                return f"crossed_below({arg0}, {arg1})"
+        for m in re.finditer(r"(ta|math)\.(\w+)\(([^()]*)\)", e):
+            ns, func, args_str = m.group(1), m.group(2), m.group(3)
+            args = [a.strip() for a in args_str.split(",") if a.strip()]
+            py_args = [self._expr(a, env, depth + 1) for a in args]
+            repl = self._map_call(ns, func, py_args)
+            if repl is None:
+                return "False"  # unsupported function → condition never fires
+            e = e[: m.start()] + repl + e[m.end():]
 
-        elif condition["type"] == "comparison":
-            left = self._format_arg(condition["left"])
-            op = condition["operator"]
-            right = self._format_arg(condition["right"])
-            return f"{left} {op} {right}"
+        return e
 
-        return "False"  # Fallback
+    def _map_call(self, ns: str, func: str, args: List[str]) -> Optional[str]:
+        """Map one ta./math. call to its Python helper, or None if unsupported."""
+        if ns == "math":
+            if func == "max":
+                return f"np.maximum({', '.join(args)})" if len(args) == 2 else None
+            if func == "min":
+                return f"np.minimum({', '.join(args)})" if len(args) == 2 else None
+            if func == "abs":
+                return f"np.abs({args[0]})" if args else None
+            return None
 
-    def _format_arg(self, arg: Any) -> str:
-        """Format an argument for code generation."""
-        if isinstance(arg, dict):
-            if arg["type"] == "function_call":
-                func = arg["function"]
-                namespace = arg.get("namespace", "ta")
-                full_func = f"{namespace}.{func}"
-                args = ", ".join(self._format_arg(a) for a in arg.get("args", []))
-                mapped = self.INDICATOR_MAP.get(full_func, func)
-                return f"{mapped}({args})"
-            elif arg["type"] == "identifier":
-                return str(arg.get("name", "unknown"))
-        elif isinstance(arg, (int, float)):
-            return str(arg)
-        elif isinstance(arg, str):
-            # Could be a variable name or quoted string
-            if arg.startswith(("'", '"')) and arg.endswith(("'", '"')):
-                return arg  # Keep as string literal
-            return arg  # Treat as variable name
-        return str(arg)
+        if func == "atr" and len(args) >= 1:
+            return f"_atr(high, low, close, int({args[-1]}))"
+        if func == "supertrend" and len(args) >= 2:
+            # Pine returns [supertrend, direction]; we need direction.
+            return f"_supertrend(high, low, close, int({args[1]}), float({args[0]}))"
+        if func == "crossover" and len(args) == 2:
+            return f"_cross_above({args[0]}, {args[1]})"
+        if func == "crossunder" and len(args) == 2:
+            return f"_cross_below({args[0]}, {args[1]})"
+        if func == "change" and len(args) == 1:
+            return f"_changed({args[0]})"
+        if func == "highest" and len(args) == 2:
+            return f"_highest({args[0]}, int({args[1]}))"
+        if func == "lowest" and len(args) == 2:
+            return f"_lowest({args[0]}, int({args[1]}))"
+        helper = self.SUPPORTED_FUNCS.get(func)
+        if helper and len(args) >= 2:
+            src = self._series_arg(args[0])
+            return f"{helper}({src}, int({args[1]}))"
+        return None
 
-    def _extract_indicators(self, ast: Dict) -> List[Dict]:
-        """Extract all indicator function calls from AST."""
-        indicators = []
-        for statement in ast.get("statements", []):
-            if statement["type"] == "function_call" or (
-                statement.get("type") == "indicator_call"
+    def _series_arg(self, arg: str) -> str:
+        """Map a Pine series identifier to the local series variable."""
+        a = arg.strip()
+        if a == "hl2":
+            return "(high + low) / 2.0"
+        if a == "hlc3":
+            return "(high + low + close) / 3.0"
+        if a == "ohlc4":
+            return "(open + high + low + close) / 4.0"
+        if a in self.SERIES_NAMES:
+            return a
+        return a  # a previously computed variable
+
+    # ------------------------------------------------------------------
+    # Logic generation
+    # ------------------------------------------------------------------
+
+    def _generate_logic(self, ast: Dict, env: Dict[str, str]) -> str:
+        lines: List[str] = []
+        for st in ast.get("statements", []):
+            if st.get("type") != "if_statement":
+                continue
+            cond = self._translate_condition(st["condition"], env)
+            for inner in st.get("body", []):
+                if inner.get("type") == "strategy_call" and inner["function"] == "strategy.entry":
+                    if "long" in inner.get("direction", ""):
+                        lines.append(f"        long_entries |= {cond}")
+                    else:
+                        lines.append(
+                            f"        short_entries |= {cond}"
+                            "  # short folded in (long-only platform)"
+                        )
+                elif inner.get("type") == "strategy_call" and inner["function"] == "strategy.close":
+                    lines.append(f"        # strategy.close under: {cond} (handled by exits model)")
+            for inner in st.get("else_body", []):
+                if inner.get("type") == "strategy_call" and inner["function"] == "strategy.entry":
+                    if "long" in inner.get("direction", ""):
+                        lines.append(f"        # else-branch entry skipped: {cond}")
+        if not lines:
+            lines.append(
+                "        # No entry conditions recognised — strategy stays flat."
+            )
+            lines.append(
+                "        # Re-check the Pine script: only `if <condition>:` +"
+                " strategy.entry(...) blocks convert."
+            )
+        return "\n".join(lines)
+
+    def _translate_condition(self, condition: Dict, env: Dict[str, str]) -> str:
+        if not isinstance(condition, dict):
+            return "False"
+        ctype = condition.get("type")
+
+        if ctype == "function_call":
+            ns = condition.get("namespace", "ta")
+            func = condition.get("function", "")
+            args = [self._expr(str(a), env) for a in condition.get("args", [])]
+            repl = self._map_call(ns, func, args)
+            return repl if repl is not None else "False"
+
+        if ctype == "comparison":
+            left = self._expr(str(condition["left"]), env)
+            right = self._expr(str(condition["right"]), env)
+            return f"{left} {condition['operator']} {right}"
+
+        if ctype == "change_flip":
+            var = str(condition.get("variable", ""))
+            op = condition.get("operator", "<")
+            # Pine: ta.change(direction) < 0 → flipped to bull → long;
+            #       ta.change(direction) > 0 → flipped to bear → short.
+            src = self._expr(var, env) if var in env else var
+            if op == "<":
+                return f"_changed({src}) < 0"
+            return f"_changed({src}) > 0"
+
+        if ctype == "identifier":
+            return self._expr(str(condition.get("name", "")), env)
+
+        return "False"
+
+    # ------------------------------------------------------------------
+    # Indicator calculations + inputs → params
+    # ------------------------------------------------------------------
+
+    def _generate_indicator_calculations(self, ast: Dict, env: Dict[str, str]) -> str:
+        lines: List[str] = []
+        stmts = [
+            s for s in ast.get("statements", []) if s.get("type") == "indicator_call"
+        ]
+        # Destructured tuples: the direction element (index 1) must be emitted
+        # before the line element (index 0), which references it.
+        stmts.sort(
+            key=lambda s: 1 if s.get("tuple_index") == 1 else 0, reverse=True
+        )  # direction (index 1) first — the line element references it
+        for st in stmts:
+            var = st["var_name"]
+            func = st.get("function", "")
+            args = [str(a) for a in st.get("args", [])]
+            tuple_len = st.get("tuple_len", 0)
+            expr = self._map_call(st.get("namespace", "ta"), func, args)
+            if expr is None:
+                lines.append(f"        # {var}: ta.{func} not supported — skipped")
+                continue
+            if tuple_len == 2:
+                # [value, direction] = ta.supertrend(...) — the SECOND name gets
+                # the direction array; the first gets the supertrend line itself.
+                if st.get("tuple_index") == 1:
+                    lines.append(f"        {var} = {expr}")
+                else:
+                    dir_var = self._tuple_partner(ast, st)
+                    partner = f"{dir_var}" if dir_var else "None"
+                    lines.append(
+                        f"        {var} = _supertrend_line(high, low, close, "
+                        f"int({args[1] if len(args) > 1 else 10}), "
+                        f"float({args[0] if args else 3.0}), {partner})"
+                    )
+            else:
+                lines.append(f"        {var} = {expr}")
+        if not lines:
+            lines.append("        # No indicators to precompute")
+        return "\n".join(lines)
+
+    def _tuple_partner(self, ast: Dict, st: Dict) -> Optional[str]:
+        """For a destructured tuple element, find the sibling variable name."""
+        idx = st.get("tuple_index")
+        if idx is None:
+            return None
+        for other in ast.get("statements", []):
+            if (
+                other.get("type") == "indicator_call"
+                and other.get("tuple_index") == (1 if idx == 0 else 0)
+                and other.get("tuple_len") == st.get("tuple_len")
+                and other.get("args") == st.get("args")
             ):
-                indicators.append(statement)
-        return indicators
+                return other["var_name"]
+        return None
 
-    def _extract_input_params(self, ast: Dict) -> List[Dict]:
-        """Extract input() parameters (not yet implemented, placeholder)."""
-        # TODO: Parse input() calls from Pine Script
-        return []
+    def _generate_params(self, inputs: List[Dict]) -> str:
+        if not inputs:
+            return "    params: dict = {}  # Pine script declared no input() parameters"
+        lines = ["    params = {"]
+        for p in inputs:
+            default = p.get("default", 0)
+            # NB: statement dicts carry their own "type" key ("input"), so the
+            # param type is inferred from the default value instead.
+            if isinstance(default, float):
+                ptype = "float"
+            elif isinstance(default, int):
+                ptype = "int"
+            else:
+                ptype = "str"
+            lines.append(f'        "{p["name"]}": {{')
+            lines.append(f'            "default": {default!r},')
+            lines.append(f'            "type": "{ptype}",')
+            label = p.get("label", p["name"]).replace("_", " ").title()
+            lines.append(f'            "label": "{label}",')
+            lines.append('            "tooltip": "Pine Script input()",')
+            lines.append("        },")
+        lines.append("    }")
+        return "\n".join(lines)
+
+    def _generate_param_bindings(self, inputs: List[Dict]) -> str:
+        if not inputs:
+            return ""
+        lines = [
+            f"        {p['name']} = self.{p['name']}"  # Pine input → param
+            for p in inputs
+        ]
+        return "\n".join(lines) + "\n" if lines else ""
+
+    # ------------------------------------------------------------------
+    # Helpers: only emit what the translated code actually references
+    # ------------------------------------------------------------------
+
+    def _required_helpers(self, ast: Dict, env: Dict[str, str]) -> str:
+        all_exprs = list(env.values())
+        for st in ast.get("statements", []):
+            if st.get("type") == "if_statement":
+                all_exprs.append(str(st["condition"]))
+        blob = " ".join(all_exprs)
+
+        needed = set()
+        for func, helper in self.SUPPORTED_FUNCS.items():
+            if helper and re.search(rf"\b{helper}\(", helper) and False:
+                pass
+        for func in ("ema", "sma", "rsi", "highest", "lowest"):
+            if re.search(rf"ta\.{func}\(", blob):
+                needed.add(self.SUPPORTED_FUNCS[func])
+        if re.search(r"ta\.atr\(", blob):
+            needed.add("_atr")
+        if re.search(r"ta\.supertrend\(", blob):
+            needed.add("_supertrend")
+        if re.search(r"ta\.change\(", blob) or "'change_flip'" in blob:
+            needed.add("_changed")
+        if re.search(r"ta\.crossover\(", blob):
+            needed.add("_cross_above")
+        if re.search(r"ta\.crossunder\(", blob):
+            needed.add("_cross_below")
+        if re.search(r"ta\.atr\(", blob) or re.search(r"ta\.supertrend\(", blob):
+            needed.add("_tr_atr")
+
+        helpers = []
+        if "_ema" in needed:
+            helpers.append(
+                "def _ema(src, period):\n"
+                "    src = np.asarray(src, dtype=float)\n"
+                "    out = np.empty_like(src)\n"
+                "    alpha = 2.0 / (period + 1.0)\n"
+                "    out[0] = src[0]\n"
+                "    for i in range(1, len(src)):\n"
+                "        out[i] = alpha * src[i] + (1.0 - alpha) * out[i - 1]\n"
+                "    return out"
+            )
+        if "_sma" in needed:
+            helpers.append(
+                "def _sma(src, period):\n"
+                "    src = np.asarray(src, dtype=float)\n"
+                "    out = np.full(len(src), np.nan)\n"
+                "    if len(src) >= period:\n"
+                "        out[period - 1:] = np.convolve(\n"
+                "            src, np.ones(period) / period, mode=\"valid\")\n"
+                "    return out"
+            )
+        if "_rsi" in needed:
+            helpers.append(
+                "def _rsi(src, period):\n"
+                "    src = np.asarray(src, dtype=float)\n"
+                "    delta = np.diff(src, prepend=src[0])\n"
+                "    gain = np.where(delta > 0, delta, 0.0)\n"
+                "    loss = np.where(delta < 0, -delta, 0.0)\n"
+                "    avg_gain = _ema(gain, period)\n"
+                "    avg_loss = _ema(loss, period)\n"
+                "    rs = np.divide(avg_gain, avg_loss, out=np.full(len(src), 100.0),\n"
+                "                  where=avg_loss != 0)\n"
+                "    return 100.0 - 100.0 / (1.0 + rs)"
+            )
+        if "_tr_atr" in needed:
+            helpers.append(
+                "def _tr_atr(high, low, close, period):\n"
+                "    n = len(close)\n"
+                "    tr = np.empty(n)\n"
+                "    tr[0] = high[0] - low[0]\n"
+                "    for i in range(1, n):\n"
+                "        tr[i] = max(high[i] - low[i], abs(high[i] - close[i - 1]),\n"
+                "                 abs(low[i] - close[i - 1]))\n"
+                "    atr = np.empty(n)\n"
+                "    atr[0] = tr[0]\n"
+                "    for i in range(1, n):\n"
+                "        atr[i] = (atr[i - 1] * (period - 1) + tr[i]) / period\n"
+                "    return atr"
+            )
+        if "_atr" in needed:
+            helpers.append(
+                "def _atr(high, low, close, period):\n"
+                "    return _tr_atr(high, low, close, period)"
+            )
+        if "_supertrend" in needed:
+            needed.add("_supertrend_line")
+            helpers.append(
+                "def _supertrend(high, low, close, period, factor):\n"
+                "    \"\"\"Pine ta.supertrend: +1 bull, -1 bear.\"\"\"\n"
+                "    n = len(close)\n"
+                "    atr = _tr_atr(high, low, close, period)\n"
+                "    hl2 = (high + low) / 2.0\n"
+                "    upper = hl2 + factor * atr\n"
+                "    lower = hl2 - factor * atr\n"
+                "    direction = np.ones(n, dtype=int)\n"
+                "    for i in range(1, n):\n"
+                "        if not (upper[i] < upper[i - 1] or close[i - 1] > upper[i - 1]):\n"
+                "            upper[i] = upper[i - 1]\n"
+                "        if not (lower[i] > lower[i - 1] or close[i - 1] < lower[i - 1]):\n"
+                "            lower[i] = lower[i - 1]\n"
+                "        if direction[i - 1] == 1:\n"
+                "            direction[i] = -1 if close[i] < lower[i] else 1\n"
+                "        else:\n"
+                "            direction[i] = 1 if close[i] > upper[i] else -1\n"
+                "    return direction"
+            )
+            helpers.append(
+                "def _supertrend_line(high, low, close, period, factor, direction):\n"
+                "    \"\"\"The supertrend price line, given a direction array.\"\"\"\n"
+                "    atr = _tr_atr(high, low, close, period)\n"
+                "    hl2 = (high + low) / 2.0\n"
+                "    return np.where(direction == 1, hl2 - factor * atr, hl2 + factor * atr)"
+            )
+        if "_changed" in needed:
+            helpers.append(
+                "def _changed(arr):\n"
+                "    arr = np.asarray(arr)\n"
+                "    out = np.zeros(len(arr), dtype=arr.dtype)\n"
+                "    out[1:] = arr[1:] - arr[:-1]\n"
+                "    return out"
+            )
+        if "_cross_above" in needed:
+            helpers.append(
+                "def _cross_above(a, b):\n"
+                "    a = np.asarray(a, dtype=float)\n"
+                "    b = np.asarray(b, dtype=float)\n"
+                "    out = np.zeros(len(a), dtype=bool)\n"
+                "    out[1:] = (a[:-1] <= b[:-1]) & (a[1:] > b[1:])\n"
+                "    return out"
+            )
+        if "_cross_below" in needed:
+            helpers.append(
+                "def _cross_below(a, b):\n"
+                "    a = np.asarray(a, dtype=float)\n"
+                "    b = np.asarray(b, dtype=float)\n"
+                "    out = np.zeros(len(a), dtype=bool)\n"
+                "    out[1:] = (a[:-1] >= b[:-1]) & (a[1:] < b[1:])\n"
+                "    return out"
+            )
+        if "_highest" in needed:
+            helpers.append(
+                "def _highest(src, period):\n"
+                "    return pd.Series(src).rolling(period).max().values"
+            )
+        if "_lowest" in needed:
+            helpers.append(
+                "def _lowest(src, period):\n"
+                "    return pd.Series(src).rolling(period).min().values"
+            )
+
+        return "\n\n\n".join(helpers)

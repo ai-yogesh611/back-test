@@ -1,0 +1,174 @@
+{% extends "base.html" %}
+{% block title %}Strategy Builder · Trading Bot{% endblock %}
+
+{% block content %}
+<div style="max-width:1200px; margin:0 auto; padding:16px;">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+    <div>
+      <h1 style="margin:0;">🧩 Strategy Builder</h1>
+      <div class="muted">Paste TradingView Pine Script v5, convert it to a Python strategy, then save it as a plugin — saved strategies appear in the Engine Playground and Optimize pickers after a restart.</div>
+    </div>
+  </div>
+
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; align-items:start;">
+    <!-- Left: input -->
+    <div>
+      <label for="pine-name" class="muted" style="display:block; margin-bottom:4px;">Strategy name (optional — defaults to the Pine script's title)</label>
+      <input id="pine-name" class="input" type="text" placeholder="e.g. my_ema_cross" style="width:100%; margin-bottom:10px;">
+
+      <label for="pine-code" class="muted" style="display:block; margin-bottom:4px;">Pine Script v5 source</label>
+      <textarea id="pine-code" class="input" rows="20" spellcheck="false"
+        placeholder='//@version=5&#10;strategy("EMA Cross")&#10;...'"
+        style="width:100%; font-family:monospace; font-size:13px; resize:vertical;"></textarea>
+
+      <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap;">
+        <button id="pine-convert" class="btn" type="button">⚙️ Convert</button>
+        <button id="pine-validate" class="btn btn-ghost" type="button" disabled>✅ Validate (backtest)</button>
+        <button id="pine-save" class="btn btn-ghost" type="button" disabled>💾 Save as plugin</button>
+        <button id="pine-copy-prompt" class="btn btn-ghost" type="button" title="Complex strategies may need manual conversion — copy the LLM prompt and use ChatGPT/Claude">📋 Copy LLM prompt</button>
+      </div>
+      <div id="pine-error" class="error-text" style="margin-top:10px; color:var(--danger-text,#e0938f); white-space:pre-wrap;" hidden></div>
+    </div>
+
+    <!-- Right: output -->
+    <div>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+        <label for="pine-output" class="muted">Converted Python strategy</label>
+        <span id="pine-meta" class="muted" style="font-size:12px;"></span>
+      </div>
+      <textarea id="pine-output" class="input" rows="24" readonly
+        style="width:100%; font-family:monospace; font-size:12px; background:var(--surface-2,#212a36);"></textarea>
+      <div id="pine-status" class="muted" style="margin-top:10px; font-size:12px;"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var nameEl = document.getElementById('pine-name');
+  var codeEl = document.getElementById('pine-code');
+  var outEl = document.getElementById('pine-output');
+  var metaEl = document.getElementById('pine-meta');
+  var errEl = document.getElementById('pine-error');
+  var statusEl = document.getElementById('pine-status');
+  var convertBtn = document.getElementById('pine-convert');
+  var validateBtn = document.getElementById('pine-validate');
+  var saveBtn = document.getElementById('pine-save');
+  var promptBtn = document.getElementById('pine-copy-prompt');
+
+  var converted = null; // {python_code, metadata, strategy_name}
+
+  function setError(msg) {
+    errEl.hidden = !msg;
+    errEl.textContent = msg || '';
+  }
+  function setStatus(msg) {
+    statusEl.textContent = msg || '';
+  }
+
+  convertBtn.addEventListener('click', function () {
+    setError('');
+    setStatus('Converting…');
+    converted = null;
+    validateBtn.disabled = true;
+    saveBtn.disabled = true;
+    fetch('/api/pine/convert', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pine_code: codeEl.value, strategy_name: nameEl.value || undefined })
+    }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        if (!res.ok || !res.d.success) {
+          outEl.value = '';
+          metaEl.textContent = '';
+          setError(res.d.error || 'Conversion failed.');
+          setStatus('');
+          return;
+        }
+        converted = res.d;
+        outEl.value = res.d.python_code;
+        var m = res.d.metadata || {};
+        metaEl.textContent = m.indicators_used && m.indicators_used.length
+          ? 'indicators: ' + m.indicators_used.join(', ')
+          : '';
+        validateBtn.disabled = false;
+        saveBtn.disabled = false;
+        if (outEl.value.indexOf('No entry conditions recognised') !== -1) {
+          setError('Warning: no entry conditions were recognised in this Pine script — the converted strategy will stay flat. Try simplifying the script or use the LLM prompt for manual conversion.');
+        } else {
+          setStatus('Converted ✓ — validate it with a quick backtest, then save as a plugin.');
+        }
+      })
+      .catch(function (e) { setError('Network error: ' + e); setStatus(''); });
+  });
+
+  validateBtn.addEventListener('click', function () {
+    if (!converted) return;
+    setError('');
+    setStatus('Validating (running a 30-day backtest)…');
+    fetch('/api/pine/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        python_code: converted.python_code,
+        strategy_name: converted.strategy_name,
+        days: 30
+      })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d.is_valid) {
+          var m = d.backtest_metrics || {};
+          setStatus('Validation PASS — ' + JSON.stringify(m));
+        } else {
+          setStatus('Validation FAIL' + (d.rejection_reason ? ' — ' + d.rejection_reason : ''));
+        }
+      })
+      .catch(function (e) { setError('Network error: ' + e); setStatus(''); });
+  });
+
+  saveBtn.addEventListener('click', function () {
+    if (!converted) return;
+    setError('');
+    setStatus('Saving…');
+    fetch('/api/pine/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        python_code: converted.python_code,
+        strategy_name: converted.strategy_name,
+        metadata: converted.metadata || {}
+      })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d.success) {
+          if (d.loaded === false) {
+            setError(d.load_error || 'Saved but failed to load into the registry — see app log.');
+            setStatus('Saved to ' + d.plugin_path + ' but NOT loaded.');
+          } else {
+            setStatus('Saved ✓ ' + d.plugin_path + ' — loaded into the registry, ready to use (no restart needed).');
+          }
+        } else {
+          setError(d.error || 'Save failed.');
+          setStatus('');
+        }
+      })
+      .catch(function (e) { setError('Network error: ' + e); setStatus(''); });
+  });
+
+  promptBtn.addEventListener('click', function () {
+    fetch('/api/pine/prompt')
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (navigator.clipboard && d.prompt) {
+          navigator.clipboard.writeText(d.prompt).then(function () {
+            setStatus('LLM prompt copied — paste into ChatGPT/Claude with your Pine code.');
+          });
+        } else {
+          setError(d.prompt ? 'Clipboard unavailable.' : 'Prompt endpoint unavailable.');
+        }
+      });
+  });
+})();
+</script>
+{% endblock %}

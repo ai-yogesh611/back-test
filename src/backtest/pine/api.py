@@ -6,6 +6,8 @@ validating them, and saving as plugins.
 
 from __future__ import annotations
 
+import re
+
 from flask import Blueprint, jsonify, request
 
 from .converter import PineConversionError, PineScriptConverter
@@ -134,11 +136,39 @@ def save_as_plugin():
             metadata=data["metadata"],
         )
 
+        # Hot-load the new plugin into the registry so it appears in the
+        # strategy dropdowns without an app restart. Re-saving the same name
+        # replaces the previous version: unregister first, then force a rescan
+        # so the freshly written file is what gets registered.
+        from backtest.plugins import discover_plugins, plugin_strategy_names
+        from backtest.strategy.registry import get_strategy, unregister
+
+        # The codegen turns the user's name into a CamelCase class whose
+        # registry name is the lowercased concatenation ("Outside Bar
+        # Strategy" -> "outsidebarstrategy") — mirror that sanitization.
+        safe = re.sub(r"[^a-zA-Z0-9 ]", "", data["strategy_name"])
+        expected = "".join(w.capitalize() for w in safe.split()).lower() or "importedstrategy"
+        for existing in list(plugin_strategy_names()):
+            if existing == expected:
+                unregister(existing)
+        discover_plugins(force=True)
+        load_error = None
+        try:
+            get_strategy(expected)
+        except Exception:  # noqa: BLE001 — not registered → surface it honestly
+            load_error = (
+                "Plugin file saved, but it failed to load — check the app "
+                "log for 'plugin ... skipped'. The generated code may need "
+                "manual fixes."
+            )
+
         return jsonify(
             {
                 "success": True,
                 "plugin_path": str(filepath),
                 "strategy_name": data["strategy_name"],
+                "loaded": load_error is None,
+                "load_error": load_error,
             }
         )
 
