@@ -48,6 +48,7 @@ from backtest.engine.backtest_runner import run_quick_screen
 from backtest.engine.comparison import correlation_matrix, sharpe_significance
 from backtest.engine.cost_shock import run_cost_shock
 from backtest.engine.monte_carlo import monte_carlo_trade_order
+from backtest.engine.readiness import build_readiness
 from backtest.logging_config import get_logger, timed
 from backtest.runner import build_source
 from backtest.strategy.registry import get_strategy
@@ -379,6 +380,10 @@ def run_backtest_endpoint() -> tuple:
         source_obj=source,
     )
     _provenance_log(payload["provenance"], f"run/{strategy}")
+    # §5: the advisory traffic light. Computed from the payload that is about
+    # to be returned, so it can never describe a different run than the one
+    # rendered above it.
+    payload["readiness"] = build_readiness(payload)
     _summarise(payload, f"run/{strategy}", params)
     return jsonify(payload), 200
 
@@ -793,6 +798,9 @@ def run_single_backtest(params: dict) -> dict:
             source_obj=source,
         )
         _provenance_log(payload["provenance"], f"slot {sid}")
+        # §5: readiness is per-strategy, so each slot carries its own. It is
+        # computed in the worker so the web process does no extra engine work.
+        payload["readiness"] = build_readiness(payload)
         # NOTE: the [result]/[slot ...] INFO lines are emitted by the ENDPOINT
         # (web process) after the pool returns — worker-process log records
         # do not surface in the web process's log capture.

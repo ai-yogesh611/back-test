@@ -1,7 +1,7 @@
 /**
- * Compare Metrics Table (PRD backTest-enhance §4.1).
+ * Compare Metrics Table (PRD backTest-enhance §4.1) + §5 readiness.
  * renderCompareTable(containerId, slots, onAction)
- *   slots: [{id, label, color, result:{metrics}} | {id, label, color, error}]
+ *   slots: [{id, label, color, result:{metrics, readiness}} | {id, label, color, error}]
  *   onAction(slot, kind): kind = 'backtest' | 'forward'
  *
  * Failed slots get a column like any other (§4.1). A three-column table after
@@ -67,6 +67,28 @@ function renderCompareTable(containerId, slots, onAction) {
         });
         html += "</tr>";
     });
+
+    // Readiness row (§5) — one compact cell per strategy. The full eight-check
+    // breakdown lives on the Backtest page; here the reader's question is
+    // comparative ("which of these is actually certifiable?"), so the cell
+    // shows the tally and names whatever is not green.
+    if (slots.some((s) => s.result && s.result.readiness)) {
+        html += "<tr><td>Readiness (§5)</td>";
+        slots.forEach((s) => {
+            const rd = s.result && s.result.readiness;
+            if (!rd) { html += '<td class="metric-cell-void">—</td>'; return; }
+            const c = rd.counts || {};
+            const icons = [["green", "✅", c.green], ["yellow", "⚠️", c.yellow],
+                          ["red", "❌", c.red], ["unknown", "⬜", c.unknown]]
+                .filter(([, , n]) => n)
+                .map(([, icon, n]) => `${icon}${n}`).join(" ");
+            const why = (rd.red_flags || []).concat(rd.unproven || []).join("; ");
+            html += `<td class="cmp-ready-cell" title="${esc(why || "All checks passed")}">`
+                + `<span class="cmp-ready-tally-inline">${esc(icons)}</span>`
+                + `<span class="cmp-ready-why">${esc(why || "")}</span></td>`;
+        });
+        html += "</tr>";
+    }
 
     // Status row — the visible home of a slot's failure (§4.1)
     if (slots.some((s) => !s.result || s.error)) {

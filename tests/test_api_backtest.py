@@ -39,6 +39,9 @@ _FULL_SHAPE = {
     "benchmark",
     "cost_shock",
     "monte_carlo",
+    # PRD §5: the advisory readiness traffic light, derived from the four
+    # blocks above it. Asserted for its own sake in tests/test_api_readiness.py.
+    "readiness",
 }
 
 

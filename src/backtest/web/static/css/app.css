@@ -1799,3 +1799,62 @@ select.input option.sym-no-data:disabled { cursor: not-allowed; }
 .cmp-dot-b { background: #d4b26a; }
 .cmp-excluded .cmp-row { display: flex; gap: 10px; justify-content: space-between; padding: 4px 0; font-size: .84rem; }
 .cmp-excluded .cmp-bad { color: #e0938f; text-align: right; }
+
+/* ==========================================================================
+   Certification readiness (§5) — the advisory traffic light
+   ========================================================================== */
+.cmp-ready {
+    margin-top: 16px;
+    border: 1px solid var(--border, #1f2937);
+    border-radius: 10px;
+    background: var(--panel-2, #111827);
+    padding: 14px 16px 12px;
+}
+.cmp-ready-head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 10px; flex-wrap: wrap;
+    padding-bottom: 8px; margin-bottom: 10px;
+    border-bottom: 1px solid var(--border, #1f2937);
+}
+.cmp-ready-title { font-weight: 600; color: var(--text, #e2e8f0); }
+.cmp-ready-tally { font-size: .8rem; color: #94a3b8; font-variant-numeric: tabular-nums; }
+.cmp-ready-headline { margin: 0 0 12px; font-size: .88rem; font-weight: 600; }
+.cmp-ready-pass { color: #7fc8a0; }
+.cmp-ready-fail { color: #e0938f; }
+.cmp-ready-part { color: #d4b26a; }
+
+.cmp-ready-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 2px 20px; }
+.cmp-ready-row {
+    display: grid; grid-template-columns: 20px 1fr auto;
+    align-items: baseline; gap: 8px;
+    padding: 5px 0;
+    border-bottom: 1px solid rgba(148, 163, 184, .08);
+}
+.cmp-ready-icon { font-size: .82rem; }
+.cmp-ready-label { color: var(--text, #e2e8f0); font-size: .86rem; }
+.cmp-ready-value {
+    color: #94a3b8; font-size: .8rem; text-align: right;
+    font-variant-numeric: tabular-nums; max-width: 22ch;
+}
+.cmp-ready-unknown .cmp-ready-value { color: #64748b; font-style: italic; }
+.cmp-ready-detail {
+    grid-column: 2 / -1;
+    margin: 0 0 6px; font-size: .78rem; line-height: 1.5; color: #94a3b8;
+}
+.cmp-ready-note {
+    margin: 10px 0 0; padding: 8px 12px; border-radius: 6px;
+    background: rgba(148, 163, 184, .08); color: #94a3b8;
+    font-size: .8rem; line-height: 1.5;
+}
+.cmp-ready-summary {
+    margin: 10px 0 0; font-size: .86rem; line-height: 1.55; color: var(--text, #e2e8f0);
+}
+.cmp-ready-advisory { margin: 6px 0 0; font-size: .75rem; color: #64748b; line-height: 1.5; }
+
+/* Per-strategy readiness cell in the Compare table (§5). */
+.cmp-ready-cell { max-width: 26ch; vertical-align: top; }
+.cmp-ready-tally-inline { display: block; font-size: .84rem; letter-spacing: .04em; }
+.cmp-ready-why {
+    display: block; margin-top: 2px; font-size: .72rem; line-height: 1.35; color: #94a3b8;
+    max-height: 2.7em; overflow: hidden;
+}

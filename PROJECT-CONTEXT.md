@@ -544,3 +544,83 @@ and a flat curve is undefined rather than zero. `tests/test_api_backtest_compari
 the page markup. `tests/js/test_compare_panels.mjs` (24) pins what the panels
 render, and `tests/js/test_compare_controller.mjs` (13) pins the request the
 page actually sends; both are driven from `tests/test_web_components.py`.
+
+---
+
+## Certification Readiness (PRD §5, 2026-09-29)
+
+Implements **Part 1 §5** of `docs/backTest-enhance.md`. §1–§5 are now
+complete; §6 and all of Part 2 remain open.
+
+`engine/readiness.py` grades eight checks and returns
+`{verdict, counts, checks[], summary, red_flags[], unproven[],
+tune_this_available}`. It is computed server-side so the Backtest page and the
+Compare table cannot disagree about the same run.
+
+### The fourth state is the whole point of this module
+
+§5 draws a green/yellow/red table. Real runs need a fourth state, and this is
+the decision worth knowing about: **a check that could not be evaluated is
+`unknown`, never green.**
+
+The tempting shortcut is to let a missing input fall through to green — a
+Quick-Screen run has no cost shock, so "no cost shock" becomes "no cost
+problem", and the reader is handed a tick nobody earned on the most
+promotional panel on the page. Forcing it red is the opposite mistake: it
+charges the same underlying fact twice, once as Engine and again as Cost-Shock,
+and makes one limitation read as a strategy that failed four checks.
+
+So `unknown` renders neutrally, carries the server's reason verbatim, is listed
+in `unproven`, and is excluded from `all_green`. A run is "all green" only when
+all eight were genuinely evaluated and genuinely passed.
+
+The same reasoning drives two other guards:
+
+- **A run with zero closed trades gets `unknown` for max drawdown, not green.**
+  Its drawdown is 0.0%, which is inside the "under 15%" green band. A green
+  tick there would be the strongest possible endorsement of a result containing
+  no trades at all.
+- **The drawdown bands read absolute depth.** §5 writes the thresholds as
+  positive ("< 15%") while the metric is negative, so a naive comparison passes
+  every drawdown on earth. `-30 < 15` is true.
+
+### Thresholds come from §2, not from §5
+
+`TRADE_COUNT_OK`/`TRADE_COUNT_WARN` (30/20) are imported from
+`metrics_risk` rather than re-declared. §2 already bands the metric block on
+the same split, and two different trade-count bands on one page would be a
+contradiction the user has to notice.
+
+### The summary line the PRD does not supply
+
+§5 gives a line for "any red" and one for "all green", and nothing for the
+middle. The middle gets its own line that concedes exactly what is missing
+("Nothing failed, but 1 weak, 1 unproven…"). Saying "basic checks passed" in
+that gap would be the one statement a reader of this panel is entitled to rely
+on.
+
+### Cost-shock wording
+
+A green cost-shock tick on a frictionless run must not imply the strategy
+survived doubled costs it never paid, so the value reads
+`profitable at 10 bps (2x the 5 bps default — this run charged no slippage)`.
+The check grades on the **2x** row as §5 specifies, even when 3x has already
+failed; the 3x column is on the cost-shock panel above it.
+
+### The existing "Proceed to Paper" button is untouched
+
+§5's wireframe shows a disabled Proceed-to-Paper button. **Not implemented.**
+The standing constraint on this work is no Forward/Paper behaviour changes, and
+disabling that button is exactly such a change. §5 is advisory and says so in
+the payload (`advisory`, `gates_nothing`) and in the panel footer. The §6
+"Tune This" button is likewise not built; `tune_this_available` is exposed so
+§6 can consume it without editing this module.
+
+### Tests
+`tests/test_readiness.py` (56) pins the bands and, more importantly, the four
+cases that would mislead a reader: unknown is never green, an unknown never
+makes a run pass, a Quick-Screen run is not double-penalised, and a zero-trade
+run is not given a green drawdown. `tests/test_api_readiness.py` (10) pins the
+wiring — the block in a real response, one per slot in Compare, and none at all
+for a failed slot. `tests/js/test_certification.mjs` (14) pins the rendering,
+including escaping, via `tests/test_web_components.py`.

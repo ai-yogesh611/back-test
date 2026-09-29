@@ -267,3 +267,25 @@ def test_compare_controller_sends_the_right_request():
         result.returncode == 0
     ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     assert "13 tests passed" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_certification_readiness_panel_behaviour():
+    """PRD backTest-enhance §5: the advisory traffic light.
+
+    Pins the one behaviour that would be dangerous to get wrong: a check that
+    could not be evaluated must render neutrally and be named, never folded
+    into the pass count. Everything else in the panel is cosmetic by design —
+    it makes no decision and blocks nothing.
+    """
+    result = subprocess.run(
+        ["node", str(_REPO_ROOT / "tests" / "js" / "test_certification.mjs")],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert (
+        result.returncode == 0
+    ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "14 tests passed" in result.stdout

@@ -121,6 +121,8 @@ function renderResults(result) {
     // sequence resampling. Read from the same payload as the cards above, so a
     // check can never qualify a different result than the one being shown.
     if (typeof RunChecks !== "undefined") RunChecks.renderInto("runChecks", result);
+    // PRD §5: the readiness summary, from the same payload as everything above.
+    if (typeof Certification !== "undefined") Certification.renderInto("certification", result.readiness);
     TradeTable.render("tradeTable-wrap", result.trades);
     // default tab = equity; render lazily on tab switch
     renderChartForPane("equity");
