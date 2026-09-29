@@ -213,6 +213,16 @@ function showBanner(text) {
 
 async function init() {
     wireTabs();
+
+    // Which prices this run is measured on. A disabled source blocks the Run
+    // button and says why, rather than letting it 409 on click.
+    if (window.DataSourceGate) {
+        DataSourceGate.mount("dataSourceGate", {
+            status: $("dataSourceGate").dataset.status,
+            blockIds: ["runBtn"],
+        });
+    }
+
     $("runBtn").addEventListener("click", runBacktest);
     $("saveCompareBtn").addEventListener("click", saveToCompare);
     $("exportCsvBtn").addEventListener("click", exportCsv);

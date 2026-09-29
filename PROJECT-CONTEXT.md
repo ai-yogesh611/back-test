@@ -723,3 +723,97 @@ arithmetic, and the three judgement calls above — via
 config parser, including that a hostile handle is refused.
 `tests/optimization/test_tune_this_chain.py` (5) pins the chain against the
 real service and audit store.
+
+---
+
+## Synthetic data disabled app-wide (2026-09-29)
+
+`config/data_sources.yaml` is new: the list of market-data sources this
+deployment may run on, each with an `enabled` flag. **Synthetic is off.**
+`db`, `mstock` and `csv` are on.
+
+This closes the gap named in the PRD's own Pre-PRD Check 2 — the app could
+optimize on a random walk, return 8/10, and read as certified.
+
+### Disabling is not deleting
+
+`SyntheticSource` is untouched, the `--source synthetic` flag still parses, and
+89 test files still generate synthetic candles on purpose. What changed is the
+**app's answer** to "may I run a backtest on this source?" — and it is now a
+config line instead of a code change.
+
+That separation is the whole design. Removing the generator would have meant
+rewriting a third of the test suite and would have made turning it back on a
+code review; a policy file makes it one boolean.
+
+### Where the refusal lands
+
+`api/data_guard.py` guards the four routes that consume candles —
+`/api/backtest/run`, `/api/backtest/run-many`, `/api/optimize/runs`,
+`/api/optimize/estimate` — returning **409** with the reason and the list of
+sources that *are* enabled. `estimate` is guarded because letting it through
+would let you plan a run that then refuses to start.
+
+Deliberately **not** guarded: pages, run history, the strategy catalogue. You
+must still be able to read what you already did. A control that takes the app
+down with it is an outage, not a safeguard.
+
+### Failing open in the browser, closed on the server
+
+`data_source_gate.js` renders a one-line strip when allowed and a red panel
+plus a disabled Run button when not. It is presentation only — and when it
+cannot parse a status it **does not block**. The 409 is the real control;
+blocking on a missing data attribute would put a dead button under a tooltip
+reading `undefined` on any page that forgot to pass the status.
+
+It also does not un-block a button that was already disabled: `optStart` starts
+life disabled until a strategy is picked, and handing that back enabled would
+be a bug the gate introduced.
+
+### `certifiable` is a second, separate switch
+
+`csv` is enabled but **not** certifiable. It is real in shape and unverified
+in fact — bars of unknown provenance whose trustworthiness depends on wherever
+the files came from. Enabling it is honest; calling it certification-grade
+would put back the gap this closes, one column over. `db` and `mstock` are
+both enabled and certifiable.
+
+### Turning it back on
+
+Either edit `enabled: true` for `synthetic` in `config/data_sources.yaml`, or
+start with `BACKTEST_DATA_PROFILE=testing` (the profile that opts back in
+without editing the file). The test suite uses the profile via
+`tests/conftest.py` and `tox.ini`.
+
+A missing or malformed config file falls back to the **conservative** answer —
+synthetic off — on the grounds that a typo in a YAML path should not be the
+thing that quietly restores generated data.
+
+### Known consequence
+
+`--source mock_broker` runs the data pipeline as synthetic, so it is now
+blocked too. That follows from the policy rather than contradicting it: a
+zero-credential dry run is still a run on generated candles. If a demo or
+onboarding path needs it, the `testing` profile covers that.
+
+---
+
+## "Tune This" button: two states, not a gate (2026-09-29)
+
+Resolves the §6 call flagged at the time of writing. §5's `tune_this_available`
+is now **used**, as a display switch rather than a permission:
+
+| | certifiable | not certifiable |
+|---|---|---|
+| button | `btn-primary` | `btn-secondary` + demoted panel + "not certifiable" badge |
+| clickable | yes | **yes** |
+| hint | "All eight readiness checks passed" | "not certifiable — Optimize does not fix …" |
+
+A hard gate was rejected: the ordinary reason to open Optimize is that the
+result above is weak, so a disabled button would block the workflow the feature
+exists for. But identical styling in both states could not warn about
+anything. Two states is what makes "not a gate" legible.
+
+A **missing** readiness payload is treated as *not* certifiable, not as green.
+An older cached payload would otherwise light up the primary button and claim
+eight green checks nobody ran.

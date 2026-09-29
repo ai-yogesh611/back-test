@@ -3,6 +3,7 @@
 
 {% block content %}
 <div class="opt-page" id="optSetup" data-selected-strategy="{{ selected_strategy }}" data-source="{{ source }}">
+    <div id="dataSourceGate" data-status='{{ data_sources | tojson }}'></div>
     <div class="opt-page-head">
         <div>
             <h1 class="page-title">🎯 Parameter Optimization</h1>
@@ -208,6 +209,7 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="{{ url_for('static', filename='js/components/data_source_gate.js') }}"></script>
 <script src="{{ url_for('static', filename='js/optimize_common.js') }}"></script>
 <script src="{{ url_for('static', filename='js/components/symbol_picker.js') }}"></script>
 <script src="{{ url_for('static', filename='js/components/timeframes.js') }}"></script>

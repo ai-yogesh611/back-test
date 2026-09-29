@@ -18,15 +18,18 @@
  * otherwise would put a convincing-looking id in an audit log that resolves to
  * nothing.
  *
- * Why the button is never hidden
- * ------------------------------
- * §5 lists the button under "if all green", which reads like a gate. It is not
- * used as one. The most ordinary reason to open Optimize is that the backtest
- * above is mediocre — a weak result is exactly what you tune — so hiding the
- * button unless the result is already certifiable would block the workflow the
- * feature exists for. The button is always available; when readiness is not
- * all-green the hint says plainly that Optimize finds better parameters for
- * this strategy and does not repair the problems the readiness panel listed.
+ * Why the button is never disabled
+ * --------------------------------
+ * §5 lists the button under "if all green" and exposes `tune_this_available`
+ * for it, which reads like a gate. It is not used as one. The most ordinary
+ * reason to open Optimize is that the backtest above is mediocre — a weak
+ * result is exactly what you tune — so disabling the button unless the result
+ * is already certifiable would block the workflow the feature exists for.
+ *
+ * The flag is used for *appearance* instead: a certifiable result gets the
+ * primary button, a weak one gets a visibly demoted button plus a hint naming
+ * what Optimize will not fix. A dead-end button cannot teach that, and a
+ * button styled identically in both cases cannot warn about it.
  */
 (function (global) {
     "use strict";
@@ -133,6 +136,21 @@
         };
     }
 
+    /**
+     * §5's `tune_this_available`, with a cautious default.
+     *
+     * Absent readiness is NOT treated as "fine". An older cached payload, or a
+     * result rendered before the checks ran, would otherwise light up the
+     * primary button and claim eight green checks nobody ever made.
+     */
+    function buttonState(readiness) {
+        if (!readiness) return { available: false, known: false };
+        const flag = typeof readiness.tune_this_available === "boolean"
+            ? readiness.tune_this_available
+            : readiness.all_green;
+        return { available: flag === true, known: true };
+    }
+
     function render(container, run) {
         const el = document.getElementById(container);
         if (!el) return;
@@ -140,17 +158,26 @@
         if (!prefill) { el.innerHTML = ""; return; }
 
         const rd = prefill.readiness;
-        const ready = rd && rd.all_green;
-        const hint = ready
-            ? `<span class="pos">All eight readiness checks passed.</span>`
-            : `<span class="neg">This result is <strong>not</strong> certifiable yet. `
-              + `Optimize looks for better parameters <em>for this strategy</em> — it does not `
-              + `fix ${esc(((rd && rd.red_flags) || []).concat((rd && rd.unproven) || [])
-                  .slice(0, 3).join(", ") || "the items listed above")}.</span>`;
+        const { available, known } = buttonState(rd);
+        const problems = ((rd && rd.red_flags) || []).concat((rd && rd.unproven) || []);
+        let hint;
+        if (available) {
+            hint = `<span class="pos">All eight readiness checks passed.</span>`;
+        } else if (!known) {
+            hint = `<span class="neg">This result has no readiness assessment, `
+                + `so it is not certifiable. You can still tune it — Optimize will not `
+                + `know what it is fixing.</span>`;
+        } else {
+            hint = `<span class="neg">This result is <strong>not</strong> certifiable yet. `
+                + `Optimize looks for better parameters <em>for this strategy</em> — it does not `
+                + `fix ${esc(problems.slice(0, 3).join(", ") || "the items listed above")}.</span>`;
+        }
+        const btnClass = available ? "btn btn-primary" : "btn btn-secondary tune-this-caution";
+        const panelClass = available ? "tune-this" : "tune-this tune-this--caution";
 
-        el.innerHTML = `<div class="tune-this">
+        el.innerHTML = `<div class="${panelClass}">
             <div class="tune-this-head">
-                <span class="tune-this-title">⚙ Tune This</span>
+                <span class="tune-this-title">⚙ Tune This${available ? "" : " <span class=\"tune-this-badge\">not certifiable</span>"}</span>
                 <span class="tune-this-sub muted small">Carries this result into Optimize, ready to review. Nothing is run until you press Start.</span>
             </div>
             <div class="tune-this-body">
@@ -171,7 +198,7 @@
                 </ul>
                 <p class="tune-this-hint">${hint}</p>
                 <p class="tune-this-id muted small">Result ID (this session): <code>${esc(prefill.resultId)}</code></p>
-                <button class="btn btn-primary" id="tuneThisBtn">⚙ Open in Optimize →</button>
+                <button class="${btnClass}" id="tuneThisBtn">⚙ Open in Optimize →</button>
             </div>
         </div>`;
 
@@ -185,6 +212,7 @@
         buildPrefill,
         walkForwardFor,
         mintResultId,
+        buttonState,
         go(prefill) {
             if (!prefill) return;
             SessionState.optimizePrefill = prefill;

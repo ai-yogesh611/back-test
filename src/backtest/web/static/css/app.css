@@ -1909,3 +1909,55 @@ select.input option.sym-no-data:disabled { cursor: not-allowed; }
 .opt-chain-note { font-size: .68rem; color: #64748b; }
 .opt-chain-missing code, .opt-chain-missing .opt-chain-label { color: #e0938f; }
 .opt-chain-arrow { color: #475569; font-size: .9rem; }
+
+/* ---- §6 two-state Tune This button -------------------------------------
+   The button is never disabled — a weak backtest is the main reason to tune
+   it — so the only way to signal "not yet certifiable" is to look different.
+   Primary stays primary; everything else is visibly demoted. */
+.tune-this--caution {
+    border-color: rgba(245, 158, 11, .45);
+    background: linear-gradient(180deg, rgba(245, 158, 11, .07), transparent 60%);
+}
+.tune-this-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 7px;
+    border: 1px solid rgba(245, 158, 11, .5);
+    border-radius: 999px;
+    background: rgba(245, 158, 11, .14);
+    color: #fbbf24;
+    font-size: .64rem;
+    font-weight: 600;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    vertical-align: middle;
+}
+.tune-this-caution {
+    border-color: rgba(148, 163, 184, .5);
+    background: transparent;
+    color: #cbd5e1;
+    font-weight: 500;
+}
+.tune-this-caution:hover { border-color: var(--text, #e2e8f0); color: var(--text, #e2e8f0); }
+
+/* ---- Data-source gate ---------------------------------------------------
+   Two states only: allowed (one quiet line) and blocked (loud, with the
+   reason). There is no "warning" state — a source is either permitted to
+   produce results or it is not. */
+.dsg { margin-bottom: 12px; font-size: .8rem; line-height: 1.55; }
+.dsg--ok {
+    padding: 6px 10px;
+    border: 1px solid rgba(148, 163, 184, .28);
+    border-radius: 6px;
+    background: rgba(148, 163, 184, .06);
+}
+.dsg--blocked {
+    padding: 10px 12px;
+    border: 1px solid rgba(239, 68, 68, .55);
+    border-radius: 6px;
+    background: rgba(239, 68, 68, .09);
+}
+.dsg-title { font-weight: 600; color: #f87171; margin-bottom: 4px; }
+.dsg-body { margin: 0 0 6px; color: var(--text, #e2e8f0); }
+.dsg-hint { margin: 0; }
+.dsg-disabled { opacity: .45; cursor: not-allowed; }

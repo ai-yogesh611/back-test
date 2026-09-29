@@ -46,6 +46,16 @@
     }
 
     async function init() {
+        // Same gate as Backtest: a disabled source must not offer to start a
+        // search. optStart manages its own disabled state, so the gate's
+        // save/restore has to run before anything else touches it.
+        if (window.DataSourceGate) {
+            DataSourceGate.mount('dataSourceGate', {
+                status: $('dataSourceGate').dataset.status,
+                blockIds: ['optStart'],
+            });
+        }
+
         $('optFrom').value = isoDaysAgo(3 * 365);
         $('optTo').value = isoDaysAgo(1);
 

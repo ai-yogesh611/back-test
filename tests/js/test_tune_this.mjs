@@ -46,7 +46,7 @@ const RUN = (over = {}) => ({
             params: { fast: 10, slow: 30 },
         },
         provenance: { data_source: "db" },
-        readiness: { all_green: true, red_flags: [], unproven: [] },
+        readiness: { all_green: true, tune_this_available: true, red_flags: [], unproven: [] },
         ...over.result,
     },
     ...over.run,
@@ -183,27 +183,70 @@ function renderWith(run) {
     return el.innerHTML;
 }
 
-test("the button is shown for an all-green result", () => {
+test("an all-green result gets the primary button", () => {
     const html = renderWith(RUN());
     assert.match(html, /tuneThisBtn/);
     assert.match(html, /All eight readiness checks passed/);
+    assert.match(html, /class="btn btn-primary" id="tuneThisBtn"/);
+    assert.doesNotMatch(html, /tune-this--caution/);
 });
 
-test("a NOT-certifiable result still gets the button", () => {
+test("a NOT-certifiable result still gets a clickable button", () => {
     /**
-     * §5 lists the button under "if all green", which reads like a gate. It is
-     * not used as one: the ordinary reason to open Optimize is that the result
-     * is weak, so hiding the button would block the workflow it exists for.
+     * §5 gates the §6 button on `tune_this_available`, which reads like a
+     * hard gate. It is not used as one: the ordinary reason to open Optimize
+     * is that the result is weak, so disabling the button would block the
+     * workflow it exists for.
      */
     const run = RUN();
     run.result.readiness = {
         all_green: false,
+        tune_this_available: false,
         red_flags: ["Data source", "Trade count (8)"],
         unproven: ["Cost shock (2x)"],
     };
     const html = renderWith(run);
     assert.match(html, /tuneThisBtn/, "the button must still be there");
     assert.match(html, /not<\/strong> certifiable/);
+});
+
+test("a weak result is demoted, not hidden", () => {
+    /**
+     * The two states are what makes "not a gate" legible. A button styled
+     * identically in both cases cannot warn that the result is not
+     * certifiable; a disabled one cannot be clicked at all.
+     */
+    const run = RUN();
+    run.result.readiness = {
+        all_green: false, tune_this_available: false,
+        red_flags: ["Data source"], unproven: [],
+    };
+    const html = renderWith(run);
+    assert.match(html, /tune-this--caution/);
+    assert.match(html, /class="btn btn-secondary tune-this-caution" id="tuneThisBtn"/);
+    assert.doesNotMatch(html, /disabled/);
+    assert.match(html, /tune-this-badge/);
+});
+
+test("the §5 flag decides the state, not the button's own opinion", () => {
+    /** §5 publishes `tune_this_available`; §6 renders it. Disagreement is
+     *  resolved in §5's favour so a future gate has a real switch to flip. */
+    const run = RUN();
+    run.result.readiness = { all_green: true, tune_this_available: false, red_flags: [] };
+    assert.match(renderWith(run), /tune-this--caution/);
+    run.result.readiness = { all_green: false, tune_this_available: true };
+    assert.doesNotMatch(renderWith(run), /tune-this--caution/);
+});
+
+test("a missing readiness assessment is demoted, not assumed green", () => {
+    /** No payload means nobody ran the checks. Claiming eight green checks
+     *  that were never made is worse than a cautious button. */
+    const run = RUN();
+    delete run.result.readiness;
+    const html = renderWith(run);
+    assert.match(html, /tune-this--caution/);
+    assert.match(html, /no readiness assessment/);
+    assert.doesNotMatch(html, /All eight readiness checks passed/);
 });
 
 test("a weak result says Optimize will not repair it", () => {

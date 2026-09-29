@@ -50,6 +50,7 @@ from backtest.engine.cost_shock import run_cost_shock
 from backtest.engine.monte_carlo import monte_carlo_trade_order
 from backtest.engine.readiness import build_readiness
 from backtest.logging_config import get_logger, timed
+from backtest.api.data_guard import guard_source
 from backtest.runner import build_source
 from backtest.strategy.registry import get_strategy
 
@@ -277,6 +278,9 @@ def _cost_shock(
 
 @backtest_bp.post("/api/backtest/run")
 def run_backtest_endpoint() -> tuple:
+    _refused = guard_source()
+    if _refused:
+        return _refused
     data = request.get_json(silent=True) or {}
 
     strategy = data.get("strategy")
@@ -555,6 +559,9 @@ def _comparison_block(
 
 @backtest_bp.post("/api/backtest/run-many")
 def run_many() -> tuple:
+    _refused = guard_source()
+    if _refused:
+        return _refused
     data = request.get_json(silent=True) or {}
     shared = data.get("shared", {}) or {}
     slots = data.get("slots", []) or []

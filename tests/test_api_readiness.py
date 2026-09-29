@@ -208,6 +208,14 @@ class TestTuneThisWiring:
         html = client.get("/optimize").get_data(as_text=True)
         assert 'id="optPrefillNotice"' in html
 
+    def test_the_pages_ship_the_data_source_gate(self, client):
+        """The gate is only useful if it is on the page that starts runs."""
+        for path in ("/backtest", "/optimize"):
+            html = client.get(path).get_data(as_text=True)
+            assert 'id="dataSourceGate"' in html, path
+            assert "js/components/data_source_gate.js" in html, path
+        assert client.get("/static/js/components/data_source_gate.js").status_code == 200
+
     def test_the_run_page_ships_the_audit_chain(self, client):
         html = client.get("/optimize/runs/00000000-0000-0000-0000-000000000000").get_data(
             as_text=True

@@ -34,6 +34,7 @@ from backtest.api import (
     settings_bp,
     strategies_bp,
 )
+from backtest.api.data_guard import data_source_status
 from backtest.api.optimize import optimize_bp
 from backtest.api.playbooks import playbooks_bp
 from backtest.api.segments import segments_bp
@@ -41,6 +42,7 @@ from backtest.api.portfolio import list_instances
 from backtest.api.symbols import symbols_bp
 from backtest.brokers.session_manager import get_session_manager
 from backtest.data.source_tags import SOURCE_TAG_VALUES
+from backtest.data.sources_policy import build_policy
 from backtest.logging_config import (
     bind_request_id,
     configure_logging,
@@ -248,6 +250,22 @@ def _portfolio_buckets() -> dict[str, dict[str, Any]]:
     return buckets
 
 
+def _warn_if_source_disabled(policy: Any, source: str) -> None:
+    """Say it at startup, not at the first failed request.
+
+    A deployment that boots onto a disabled source is misconfigured; the app
+    still serves pages and the refusal explains itself, but nobody should have
+    to run a backtest to discover it.
+    """
+    if not policy.is_enabled(source):
+        logger.error(
+            "[data-policy] source=%s is DISABLED — backtests and optimizations will be "
+            "refused with 409. %s",
+            source,
+            policy.refusal_for(source),
+        )
+
+
 def create_app(
     source: str = "synthetic",
     *,
@@ -296,6 +314,10 @@ def create_app(
         static_folder=_STATIC_DIR,
     )
     app.config["BACKTEST_SOURCE"] = source
+    # Resolved once here so a test can substitute a policy without touching the
+    # module-level cache, and so the refusal message is identical everywhere.
+    app.config["DATA_SOURCE_POLICY"] = build_policy()
+    _warn_if_source_disabled(app.config["DATA_SOURCE_POLICY"], source)
     money = _resolve_currency(currency)
     app.config["CURRENCY"] = money["code"]
     app.config["CURRENCY_SYMBOL"] = money["symbol"]
@@ -416,6 +438,7 @@ def create_app(
             "backtest.html",
             active="backtest",
             source=app.config.get("BACKTEST_SOURCE", "synthetic"),
+            data_sources=data_source_status(),
         )
 
     @app.get("/backtest")
@@ -424,7 +447,13 @@ def create_app(
             "backtest.html",
             active="backtest",
             source=app.config.get("BACKTEST_SOURCE", "synthetic"),
+            data_sources=data_source_status(),
         )
+
+    @app.get("/api/data-sources")
+    def data_sources() -> Any:
+        """Which sources this deployment may run on, and why not the others."""
+        return jsonify(data_source_status())
 
     @app.get("/compare")
     def compare_page() -> Any:
@@ -443,6 +472,7 @@ def create_app(
             active="optimize",
             selected_strategy=request.args.get("strategy") or "",
             source=app.config.get("BACKTEST_SOURCE", "synthetic"),
+            data_sources=data_source_status(),
         )
 
     @app.get("/optimize/runs/<run_id>")

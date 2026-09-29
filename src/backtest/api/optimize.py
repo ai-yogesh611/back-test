@@ -51,6 +51,8 @@ from backtest.optimization.config import (
 from backtest.optimization.scoring import OBJECTIVE_LABELS
 from backtest.optimization.store import RESULT_METRIC_COLUMNS, SORTABLE, clean_json
 
+from backtest.api.data_guard import guard_source  # noqa: E402  (cycle-free sibling)
+
 optimize_bp = Blueprint("optimize_api", __name__)
 log = get_logger(__name__)
 
@@ -221,6 +223,9 @@ def list_runners() -> Tuple[Response, int]:
 @optimize_bp.post("/api/optimize/estimate")
 @_handle
 def estimate() -> Tuple[Response, int]:
+    _refused = guard_source()
+    if _refused:
+        return _refused  # type: ignore[return-value]
     svc = _service()
     cfg = svc.parse(request.get_json(silent=True) or {})
     return _ok({"estimate": svc.estimate(cfg), "config": cfg.to_dict()})
@@ -234,6 +239,9 @@ def estimate() -> Tuple[Response, int]:
 @optimize_bp.post("/api/optimize/runs")
 @_handle
 def create_run() -> Tuple[Response, int]:
+    _refused = guard_source()
+    if _refused:
+        return _refused  # type: ignore[return-value]
     svc = _service()
     doc = request.get_json(silent=True) or {}
     start = bool(doc.pop("start", True)) if isinstance(doc, dict) else True
