@@ -36,6 +36,10 @@ from typing import Any, Callable, Iterable, Sequence
 import numpy as np
 import pandas as pd
 
+# Imported under an alias: ``standardize_metrics`` below has a
+# ``periods_per_year`` PARAMETER of the same name, and shadowing it would make
+# the derived value unreachable inside its own default.
+from backtest.data.base import periods_per_year as annualisation_factor
 from backtest.engine.backtester import BacktestConfig, BacktestResult
 from backtest.engine.metrics import compute_metrics
 from backtest.engine.trades import walk_trades
@@ -150,13 +154,21 @@ def standardize_metrics(
     returns: pd.Series,
     *,
     timeframe: str = "1day",
-    periods_per_year: int = 252,
+    periods_per_year: int | None = None,
 ) -> dict[str, Any]:
     """Map engine metrics onto the ``optimization_results`` column set.
 
     ``pnls`` are CLOSED-trade P&Ls (currency). ``base`` is a
     ``compute_metrics`` dict (or the options driver's equivalent).
+
+    ``periods_per_year`` is DERIVED from ``timeframe`` unless a caller passes
+    one explicitly (PRD backTest-enhance §1.4): an intraday run scored with
+    the daily factor reports a Sharpe that is wrong by the square root of the
+    ratio, which is exactly the kind of "confidently wrong" number the PRD is
+    about.
     """
+    if periods_per_year is None:
+        periods_per_year = annualisation_factor(timeframe)
     wins = [p for p in pnls if p > 0]
     losses = [p for p in pnls if p < 0]
     gross_profit = float(sum(wins))
@@ -248,11 +260,14 @@ def _run_equity_engine(
         frame = candles
     if frame.empty:
         raise ValueError("no bars in the evaluation window")
+    timeframe = str(settings.get("timeframe") or "1day")
     if settings.get("engine") == "quick_screen":
         start = window.start if window else frame.index[0].strftime("%Y-%m-%d")
         end = window.end if window else frame.index[-1].strftime("%Y-%m-%d")
-        return run_quick_screen(frame, strategy, sparams, symbol, capital, start, end)
-    result = run_backtest(frame, strategy, sparams, symbol, capital)
+        return run_quick_screen(
+            frame, strategy, sparams, symbol, capital, start, end, timeframe
+        )
+    result = run_backtest(frame, strategy, sparams, symbol, capital, timeframe=timeframe)
     if window is not None and window.warmup_from and window.warmup_from < window.start:
         result = _trim(result, window.start, window.end, capital)
     return result
@@ -358,7 +373,11 @@ def evaluate(
             dummy = BacktestResult(
                 equity=equity, returns=returns,
                 position=pd.Series(0.0, index=equity.index),
-                candles=None, config=BacktestConfig(initial_capital=float(settings["capital"])),
+                candles=None,
+                config=BacktestConfig(
+                    initial_capital=float(settings["capital"]),
+                    periods_per_year=annualisation_factor(timeframe),
+                ),
                 metrics={},
             )
             base = compute_metrics(dummy)
@@ -369,7 +388,10 @@ def evaluate(
             base = result.metrics or compute_metrics(result)
             trades = walk_trades(equity, result.position.fillna(0)) if len(equity) else []
             pnls = [float(t.pnl) for t in trades if not t.is_open]
-        metrics = standardize_metrics(base, pnls, equity, returns, timeframe=timeframe)
+        metrics = standardize_metrics(
+            base, pnls, equity, returns, timeframe=timeframe,
+            periods_per_year=annualisation_factor(timeframe),
+        )
         payload: dict[str, Any] = {"params": params, "metrics": metrics, "error": None}
         if keep_curve:
             payload["curve"] = downsample_curve(equity)

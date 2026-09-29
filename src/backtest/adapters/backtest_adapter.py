@@ -92,6 +92,35 @@ class BacktestAdapter:
             "exposure_pct": _f(m.get("exposure", 0.0) * 100, 2),
             "initial_capital": _f(self._capital, 2),
             "bars": int(m.get("bars", len(self._equity))),
+            # --- PRD §2.1 risk & tail ----------------------------------
+            "omega": _f(m.get("omega", 0.0), 4),
+            "skewness": _f(m.get("skewness", 0.0), 4),
+            "kurtosis": _f(m.get("kurtosis", 0.0), 4),  # excess / Fisher
+            "ulcer_index": _f(m.get("ulcer_index", 0.0), 4),
+            "cvar_95_pct": _f(m.get("cvar_95", 0.0) * 100, 4),
+            "var_95_inr": _f(m.get("var_95_inr", 0.0), 2),
+            "cvar_95_inr": _f(m.get("cvar_95_inr", 0.0), 2),
+            # --- PRD §2.1 drawdown detail ------------------------------
+            "max_drawdown_duration_days": int(m.get("max_drawdown_duration_days", 0)),
+            "max_drawdown_recovery_days": int(m.get("max_drawdown_recovery_days", 0)),
+            "max_drawdown_recovered": bool(m.get("max_drawdown_recovered", True)),
+            "time_in_drawdown_pct": _f(m.get("time_in_drawdown_pct", 0.0), 2),
+            "drawdowns_over_10pct": int(m.get("drawdowns_over_10pct", 0)),
+            "drawdown_episodes": int(m.get("drawdown_episodes", 0)),
+            # --- PRD §2.1 trade quality --------------------------------
+            "expectancy_inr": _f(m.get("expectancy_inr", m.get("expectancy", 0.0)), 2),
+            "payoff_ratio": _f(m.get("payoff_ratio", 0.0), 4),
+            "max_consecutive_wins": int(m.get("max_consecutive_wins", 0)),
+            "avg_trade_duration_bars": _f(m.get("avg_trade_duration_bars", 0.0), 2),
+            "median_trade_duration_bars": _f(m.get("median_trade_duration_bars", 0.0), 2),
+            # --- PRD §2.1 statistical confidence ------------------------
+            # Shipped as a STRING on purpose: the UI branches on it to raise the
+            # "fewer than 20 closed trades" banner, and a truthy/falsy boolean
+            # would lose the `warn` middle state the PRD defines.
+            "trade_count_flag": str(m.get("trade_count_flag", "insufficient")),
+            "sharpe_std_error": _f(m.get("sharpe_std_error", 0.0), 4),
+            "sharpe_ci_low": _f(m.get("sharpe_ci_low", 0.0), 2),
+            "sharpe_ci_high": _f(m.get("sharpe_ci_high", 0.0), 2),
         }
 
     # ------------------------------------------------------------------

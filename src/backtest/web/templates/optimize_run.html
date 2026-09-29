@@ -23,6 +23,9 @@
 
     <div id="runError" class="warning-banner" hidden></div>
 
+    <!-- Engine + data the run was produced from (PRD backTest-enhance §1.2) -->
+    <div id="runProvenance" class="prov-strip"></div>
+
     <!-- ============================ LIVE PROGRESS ============================ -->
     <section class="card" id="progressCard" hidden>
         <div class="card-head">
@@ -282,5 +285,6 @@
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/optimize_common.js') }}"></script>
+<script src="{{ url_for('static', filename='js/components/provenance.js') }}"></script>
 <script src="{{ url_for('static', filename='js/optimize_run.js') }}"></script>
 {% endblock %}

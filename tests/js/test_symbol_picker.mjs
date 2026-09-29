@@ -1,0 +1,282 @@
+/**
+ * Symbol picker + timeframe vocabulary — behaviour tests
+ * (PRD backTest-enhance §1.3 + §1.4).
+ *
+ * What is pinned here:
+ *  - a symbol with no cached bars is LISTED, disabled, and carries the
+ *    server's fetch hint as its title (the §1.3 bug: it silently vanished)
+ *  - the filter tabs exist and re-query with the right `types`
+ *  - the timeframe dropdown only ever offers granularities the server says
+ *    exist, and never empties
+ *  - periodsPerYear is the number the engine uses, so an intraday run is not
+ *    annualised with a daily factor
+ *
+ * Usage: node tests/js/test_symbol_picker.mjs
+ */
+
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+import vm from "node:vm";
+import assert from "node:assert/strict";
+
+const root = fileURLToPath(new URL("../../", import.meta.url));
+const read = (p) => readFileSync(path.join(root, p), "utf8");
+const pickerCode = read("src/backtest/web/static/js/components/symbol_picker.js");
+const tfCode = read("src/backtest/web/static/js/components/timeframes.js");
+
+// ------------------------------------------------------------------ tiny DOM
+function makeOption(text, value) {
+    return { textContent: "", value: "", disabled: false, className: "", title: "", text };
+}
+function makeEl(id) {
+    const el = {
+        id, value: "", textContent: "", options: [],
+        _children: [], className: "", dataset: {},
+        appendChild(child) { this._children.push(child); if (child.value !== "") this.options.push(child); },
+        insertBefore(child) { this._children.unshift(child); this.options.unshift(child); },
+        addEventListener() {},
+        querySelectorAll() { return []; },
+        get firstChild() { return this._children[0] || null; },
+    };
+    // innerHTML assignment is how the modules render, so the stub mirrors the
+    // DOM's one observable side effect: the <option> list it implies.
+    let html = "";
+    Object.defineProperty(el, "innerHTML", {
+        get() { return html; },
+        set(v) {
+            html = String(v);
+            this.options = [...html.matchAll(/<option value="([^"]*)"/g)]
+                .map((m) => ({ value: m[1], textContent: m[1] }));
+        },
+    });
+    Object.defineProperty(el, "children", { get: () => el._children });
+    return el;
+}
+
+const elements = {};
+const el = (id) => (elements[id] = elements[id] || makeEl(id));
+
+/** Server response for the seeded coverage fixture. */
+const COVERAGE = {
+    instruments: [
+        { symbol: "RELIANCE", name: "Reliance Industries Ltd.", instrument_type: "equity",
+          data_available: true, bars_count: 1247, from_date: "2020-01-01", to_date: "2024-12-31",
+          timeframes_available: ["1min", "1day"] },
+        { symbol: "NIFTY", name: "NIFTY 50", instrument_type: "index",
+          data_available: true, bars_count: 1247, from_date: "2020-01-01", to_date: "2024-12-31",
+          timeframes_available: ["1day"] },
+        { symbol: "TCS", name: "Tata Consultancy Services", instrument_type: "equity",
+          data_available: false, bars_count: 0, from_date: null, to_date: null,
+          timeframes_available: [], hint: "No data loaded. Go to Data tab → fetch data for this symbol." },
+    ],
+    total: 3, returned: 3, known_total: 206, available_total: 2,
+    db_available: true, catalogue_source: "market_data_cache",
+    instrument_types: ["equity", "index", "futures", "options"],
+    hint: "No data loaded. Go to Data tab → fetch data for this symbol.",
+    generated_at: "2026-09-29",
+};
+
+const calls = [];
+const sandbox = {
+    console,
+    document: {
+        getElementById: el,
+        createElement: () => makeOption(),
+        addEventListener() {},
+    },
+    fetch: (url) => {
+        calls.push(url);
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(COVERAGE) });
+    },
+    URLSearchParams, Object, Array, JSON, Number, String, Promise, setTimeout, clearTimeout,
+};
+sandbox.globalThis = sandbox;
+vm.createContext(sandbox);
+vm.runInContext(tfCode, sandbox, { filename: "timeframes.js" });
+vm.runInContext(pickerCode, sandbox, { filename: "symbol_picker.js" });
+
+const { Timeframes, SymbolPicker } = sandbox;
+
+let passed = 0;
+/** Cross-realm arrays (created inside the VM) fail deepStrictEqual; compare by value. */
+const eqList = (actual, expected) =>
+    assert.deepEqual(JSON.parse(JSON.stringify(actual)), expected);
+const tick = () => new Promise((r) => setImmediate(r));
+async function test(name, fn) {
+    await fn();
+    passed += 1;
+    console.log(`  ✓ ${name}`);
+}
+function assertNoThrow(fn) { assert.doesNotThrow(fn); }
+
+// ------------------------------------------------------------- timeframes
+await test("canonical names round-trip through UI labels", () => {
+    assert.equal(Timeframes.toCanonical("1D"), "1day");
+    assert.equal(Timeframes.toCanonical("1d"), "1day");
+    assert.equal(Timeframes.toCanonical("day"), "1day");
+    assert.equal(Timeframes.toCanonical("1H"), "1hour");
+    assert.equal(Timeframes.toCanonical("60min"), "1hour");
+    assert.equal(Timeframes.toCanonical("1W"), "1week");
+    assert.equal(Timeframes.labelFor("15min"), "15m");
+    assert.equal(Timeframes.labelFor("1hour"), "1H");
+});
+
+await test("an unrecognised timeframe is reported, not guessed at", () => {
+    assert.equal(Timeframes.toCanonical("bogus"), null);
+    assert.equal(Timeframes.toCanonical(""), null);
+    assert.equal(Timeframes.toCanonical(null), null);
+});
+
+await test("periods_per_year matches the PRD's annualisation table", () => {
+    // 252 trading days x NSE session minutes, weekly = 52 weeks.
+    assert.equal(Timeframes.periodsPerYear("1min"), 252 * 375);
+    assert.equal(Timeframes.periodsPerYear("5min"), 252 * 75);
+    assert.equal(Timeframes.periodsPerYear("15min"), 252 * 25);
+    assert.equal(Timeframes.periodsPerYear("1hour"), 252 * 6);
+    assert.equal(Timeframes.periodsPerYear("1day"), 252);
+    assert.equal(Timeframes.periodsPerYear("1week"), 52);
+});
+
+await test("periods_per_year falls back to daily rather than raising", () => {
+    assert.equal(Timeframes.periodsPerYear("bogus"), 252);
+    assert.equal(Timeframes.periodsPerYear(null), 252);
+});
+
+await test("coarser bars annualise strictly less often", () => {
+    let prev = Infinity;
+    ["1min", "5min", "15min", "1hour", "4hour", "1day", "1week"].forEach((tf) => {
+        const ppy = Timeframes.periodsPerYear(tf);
+        assert.ok(ppy < prev, `${tf} must annualise less often than the next finer one`);
+        prev = ppy;
+    });
+    // and the whole ladder stays above daily except at/below it
+    assert.ok(Timeframes.periodsPerYear("1hour") > Timeframes.periodsPerYear("1day"));
+});
+
+await test("the timeframe dropdown offers ONLY what the symbol has", () => {
+    const sel = makeEl("tf-daily-only");
+    const offered = Timeframes.applyTo(sel, ["1day"]);
+    eqList(offered, ["1day"]);
+    assert.equal(sel.options.length, 1);
+    assert.match(sel.innerHTML, /<option value="1day">1D<\/option>/);
+    assert.ok(!sel.innerHTML.includes("1min"), "a phantom intraday option is exactly the bug");
+});
+
+await test("a symbol with 1min+1day offers both, coarsest last-selected by default", () => {
+    const sel = makeEl("tf-both");
+    const offered = Timeframes.applyTo(sel, ["1min", "1day"]);
+    eqList(offered, ["1min", "1day"]);
+    assert.equal(sel.value, "1day");
+});
+
+await test("a still-valid selection survives a coverage refresh", () => {
+    const sel = makeEl("tf-keep");
+    Timeframes.applyTo(sel, ["1min", "1day"]);
+    sel.value = "1min";
+    Timeframes.applyTo(sel, ["1min", "1day"]);
+    assert.equal(sel.value, "1min");
+});
+
+await test("a selection that is no longer available falls back, never blanks", () => {
+    const sel = makeEl("tf-fallback");
+    Timeframes.applyTo(sel, ["1min", "1day"]);
+    sel.value = "1min";
+    Timeframes.applyTo(sel, ["1day"]);
+    assert.equal(sel.value, "1day");
+});
+
+await test("unknown coverage leaves the full list (absence is not evidence)", () => {
+    const sel = makeEl("tf-unknown");
+    assert.equal(Timeframes.applyTo(sel, null).length, Timeframes.TIMEFRAMES.length);
+    assert.equal(Timeframes.applyTo(sel, []).length, Timeframes.TIMEFRAMES.length);
+});
+
+// ------------------------------------------------------------ symbol picker
+await test("mounting renders the coverage the server sent", async () => {
+    calls.length = 0;
+    const picker = SymbolPicker.mount({ select: "p1", search: "p1s", tabs: "p1t", summary: "p1sum" });
+    await tick();
+    const sel = el("p1");
+    const values = sel.options.map((o) => o.value);
+    assert.ok(values.includes("RELIANCE"));
+    assert.ok(values.includes("NIFTY"));
+    assert.ok(values.includes("TCS"));
+    assert.ok(calls[0].startsWith("/api/data/coverage"));
+});
+
+await test("a symbol with NO data is listed, disabled, and explains itself", async () => {
+    const picker = SymbolPicker.mount({ select: "p2", search: "p2s", tabs: "p2t", summary: "p2sum" });
+    await tick();
+    const tcs = el("p2").options.find((o) => o.value === "TCS");
+    assert.ok(tcs, "TCS must still be listed — hiding it was the §1.3 bug");
+    assert.equal(tcs.disabled, true);
+    assert.match(tcs.title, /No data loaded/);
+    assert.match(tcs.title, /Data tab/);
+    assert.equal(tcs.className, "sym-no-data");
+});
+
+await test("a symbol WITH data is selectable and labelled with its coverage", async () => {
+    SymbolPicker.mount({ select: "p3", search: "p3s", tabs: "p3t", summary: "p3sum" });
+    await tick();
+    const rel = el("p3").options.find((o) => o.value === "RELIANCE");
+    assert.equal(rel.disabled, false);
+    assert.match(rel.textContent, /RELIANCE/);
+    assert.match(rel.textContent, /1min\/1day/);
+    assert.match(rel.textContent, /1,247 bars/);
+    assert.match(rel.title, /Reliance Industries/);
+});
+
+await test("the All/Equity/Index/F&O tabs are rendered", async () => {
+    SymbolPicker.mount({ select: "p4", search: "p4s", tabs: "p4t", summary: "p4sum" });
+    await tick();
+    const html = el("p4t").innerHTML;
+    for (const label of ["All", "Equity", "Index", "F&O"]) {
+        assert.ok(html.includes(label), `missing tab ${label}`);
+    }
+    eqList(SymbolPicker.TABS.map((t) => t.id), ["", "equity", "index", "fno"]);
+});
+
+await test("the summary separates known symbols from runnable ones", async () => {
+    SymbolPicker.mount({ select: "p5", search: "p5s", tabs: "p5t", summary: "p5sum" });
+    await tick();
+    assert.match(el("p5sum").textContent, /2 with data/);
+    assert.match(el("p5sum").textContent, /206 known/);
+});
+
+await test("timeframesFor answers from the loaded coverage", async () => {
+    const picker = SymbolPicker.mount({ select: "p6", search: "p6s", tabs: "p6t", summary: "p6sum" });
+    await tick();
+    eqList(picker.timeframesFor("RELIANCE"), ["1min", "1day"]);
+    eqList(picker.timeframesFor("NIFTY"), ["1day"]);
+    eqList(picker.timeframesFor("TCS"), []);
+    eqList(picker.timeframesFor("UNKNOWN"), []);
+});
+
+await test("setValue injects a symbol the coverage page did not carry", async () => {
+    const picker = SymbolPicker.mount({ select: "p7", search: "p7s", tabs: "p7t", summary: "p7sum" });
+    await tick();
+    picker.setValue("SOMEOTHER");
+    assert.equal(el("p7").value, "SOMEOTHER");
+    assertNoThrow(() => picker.setValue(""));
+});
+
+await test("a failed load says so instead of showing an empty picker", async () => {
+    const failing = {
+        console,
+        document: { getElementById: el, createElement: () => makeOption(), addEventListener() {} },
+        fetch: () => Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({ error: "no database" }) }),
+        URLSearchParams, Object, Array, JSON, Number, String, Promise, setTimeout, clearTimeout,
+    };
+    failing.globalThis = failing;
+    vm.createContext(failing);
+    vm.runInContext(pickerCode, failing, { filename: "symbol_picker.js" });
+    const picker = failing.SymbolPicker.mount({ select: "p8", search: "p8s", tabs: "p8t", summary: "p8sum" });
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    assert.match(el("p8sum").textContent, /Could not load symbols/);
+    assert.match(el("p8sum").textContent, /no database/);
+    assert.equal(picker.state.rows.length, 0);
+});
+
+console.log(`\nsymbol picker + timeframes: ${passed} tests passed`);

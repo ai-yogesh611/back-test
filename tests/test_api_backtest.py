@@ -25,7 +25,7 @@ _VALID = {
     "params": {"fast": 10, "slow": 30},
 }
 
-_FULL_SHAPE = {"config", "metrics", "equity", "drawdown", "trades", "signals"}
+_FULL_SHAPE = {"config", "metrics", "equity", "drawdown", "trades", "signals", "provenance"}
 
 
 # --- single backtest (canonical: BacktestDriver) ----------------------------

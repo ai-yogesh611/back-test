@@ -33,6 +33,7 @@ from typing import Any
 import pandas as pd
 
 from backtest.data.base import CANONICAL_TIMEFRAMES as SUPPORTED_TIMEFRAMES
+from backtest.data.base import normalize_timeframe, periods_per_year
 from backtest.data.frame_source import FrameSource
 from backtest.engine.backtest_driver import BacktestDriver
 from backtest.engine.backtester import BacktestConfig, BacktestResult
@@ -179,6 +180,7 @@ def run_backtest(
     symbol: str,
     initial_capital: float,
     broker: str | None = None,
+    timeframe: str | None = None,
 ) -> BacktestResult:
     """Run the CANONICAL engine: ``BacktestDriver`` over simulator/.
 
@@ -190,6 +192,11 @@ def run_backtest(
     are wall-clock, not bar time, so they must not be used for this).
     Metrics and trades come from the same ``engine/metrics`` +
     ``engine/trades`` code the vectorized path uses.
+
+    ``timeframe``: the granularity these bars actually are. Drives
+    ``periods_per_year``, so a 1-minute run reports an annual Sharpe instead of
+    one scaled by a daily factor (PRD backTest-enhance §1.4). ``None`` keeps
+    the daily default.
 
     ``broker``: name of a broker preset (``mstock``, ``zerodha``, ...) or
     ``None`` (default). ``None`` keeps the historical zero-cost executor
@@ -247,11 +254,15 @@ def run_backtest(
         returns=equity.pct_change(),
         position=holding,
         candles=candles,
-        config=BacktestConfig(initial_capital=initial_capital),
+        config=BacktestConfig(
+            initial_capital=initial_capital,
+            periods_per_year=periods_per_year(timeframe),
+        ),
         metrics={},
     )
     result.metrics = compute_metrics(result)
     result.metrics["strategy"] = strategy
+    result.metrics["timeframe"] = normalize_timeframe(timeframe)
     result.metrics["strategy_params"] = params
     result.metrics["symbol"] = symbol
     result.metrics["stop_loss"] = result.config.stop_loss
@@ -270,6 +281,7 @@ def run_quick_screen(
     initial_capital: float,
     from_date: str,
     to_date: str,
+    timeframe: str | None = None,
 ) -> BacktestResult:
     """Legacy vectorized quick filter: :func:`runner.run_on_candles` + trim.
 
@@ -282,6 +294,9 @@ def run_quick_screen(
         strategy,
         params,
         symbol,
-        BacktestConfig(initial_capital=initial_capital),
+        BacktestConfig(
+            initial_capital=initial_capital,
+            periods_per_year=periods_per_year(timeframe),
+        ),
     )
     return trim_to_range(result, from_date, to_date)

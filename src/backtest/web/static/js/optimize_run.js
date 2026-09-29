@@ -77,6 +77,10 @@
         $('btnExport').href = `${base}/export.csv`;
         $('btnPreset').hidden = !(done && r.best_params);
         $('btnApply').hidden = !(done && r.best_params);
+        // Engine + data this run was produced from, read back from the run
+        // record itself (PRD backTest-enhance §1.2) — never from whatever the
+        // app happens to be configured with now.
+        if (typeof Provenance !== 'undefined') Provenance.render($('runProvenance'), r.provenance);
         if (r.status === 'failed') showError(`Run failed: ${r.error_message || 'unknown error'}`);
         else if (r.status === 'cancelled' && r.error_message) showError(`${r.error_message} — partial results below.`);
         else showError('');

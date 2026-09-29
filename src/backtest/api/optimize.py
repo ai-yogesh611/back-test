@@ -81,7 +81,39 @@ def _service():
 
 def _ok(payload: dict | list, status: int = 200) -> Tuple[Response, int]:
     body = payload if isinstance(payload, dict) else {"items": payload}
+    if isinstance(body.get("run"), dict):
+        # Every run payload carries its own provenance stamp (PRD
+        # backTest-enhance §1.2) so the results page never has to guess which
+        # engine and which data produced the numbers.
+        body = {**body, "run": {**body["run"], "provenance": _run_provenance(body["run"])}}
     return jsonify(clean_json({"success": True, **body})), status
+
+
+def _run_provenance(run: dict) -> dict:
+    """Derive the provenance block for a stored optimize run.
+
+    Read back from the run row itself — ``backtest_config`` (what the run was
+    asked to use) and ``analysis.stats`` (what it actually loaded) — so the
+    stamp describes THIS run, not whatever source the app happens to be
+    started with when the page is opened. Built from columns that already
+    exist, so §1.2 costs no migration; Part 2 §2's first-class attestation
+    columns are the follow-up.
+    """
+    from backtest.data.provenance import build_provenance
+
+    bt = dict(run.get("backtest_config") or {})
+    stats = dict((run.get("analysis") or {}).get("stats") or {})
+    return build_provenance(
+        source=bt.get("source") or "synthetic",
+        engine=bt.get("engine") or "driver",
+        symbol=bt.get("symbol") or "",
+        timeframe=bt.get("timeframe") or "",
+        start_date=bt.get("startDate") or bt.get("start_date"),
+        end_date=bt.get("endDate") or bt.get("end_date"),
+        bars=stats.get("bars"),
+        data_from=stats.get("data_from"),
+        data_to=stats.get("data_to"),
+    )
 
 
 def _error(message: str, status: int = 400, **extra: Any) -> Tuple[Response, int]:

@@ -40,6 +40,7 @@ from typing import Any
 from flask import Blueprint, current_app, jsonify, request
 
 from backtest.adapters.backtest_adapter import BacktestAdapter
+from backtest.data.provenance import ENGINE_FILL_EXACT, ENGINE_MIXED
 from backtest.engine.backtest_runner import resolve_interval, resolve_warmup_start
 from backtest.engine.backtest_runner import run_backtest as _run_driver
 from backtest.engine.backtest_runner import run_quick_screen
@@ -64,8 +65,48 @@ def _source() -> Any:
 
 
 def _candles(symbol: str, from_date: str, to_date: str, interval: str):
-    """Fetch candles for a symbol at an already-resolved ``interval``."""
-    return _source().get_candles(symbol, from_date, to_date, interval)
+    """Fetch candles for a symbol at an already-resolved ``interval``.
+
+    Returns ``(source, candles)`` — the source object rides along because the
+    provenance stamp may need to ask it when the data was last fetched
+    (PRD backTest-enhance §1.2); building a second source to ask would open
+    a second connection for one number.
+    """
+    source = _source()
+    return source, source.get_candles(symbol, from_date, to_date, interval)
+
+
+def _provenance(
+    candles,
+    *,
+    source_name: str,
+    engine: str,
+    symbol: str,
+    timeframe: str,
+    from_date: str,
+    to_date: str,
+    source_obj: Any = None,
+) -> dict[str, Any]:
+    """Provenance block for one result (engine + data + coverage)."""
+    from backtest.data.provenance import build_provenance
+
+    first = last = None
+    if candles is not None and len(candles):
+        first, last = candles.index[0], candles.index[-1]
+    return build_provenance(
+        source=source_name,
+        engine=engine,
+        symbol=symbol,
+        timeframe=timeframe,
+        start_date=from_date,
+        end_date=to_date,
+        # None (not 0) when there are no candles of their own — a Compare
+        # shared block describes conditions, not a run.
+        bars=len(candles) if candles is not None else None,
+        data_from=first,
+        data_to=last,
+        source_obj=source_obj,
+    )
 
 
 def _check_params(strategy_cls: Any, params: dict, where: str) -> list[str]:
@@ -125,6 +166,31 @@ def _resolve_strategy(name: str):
         return get_strategy(name)
     except KeyError as exc:
         return str(exc)
+
+
+def _provenance_log(prov: dict, label: str) -> None:
+    """One INFO line naming the engine + data behind a result (PRD §1.1/§1.2).
+
+    A number and its provenance belong in the SAME log line: grepping the log
+    for a run has to answer "which engine, which data" without a second query
+    against the run record.
+    """
+    log.info(
+        "[prov] %s engine=%s (%s) data=%s (%s) symbol=%s tf=%s %s..%s bars=%s fetched=%s",
+        label,
+        prov.get("engine_used"),
+        prov.get("engine_label"),
+        prov.get("data_source"),
+        prov.get("data_source_label"),
+        prov.get("symbol"),
+        prov.get("timeframe"),
+        prov.get("data_from"),
+        prov.get("data_to"),
+        prov.get("bars_count"),
+        prov.get("data_fetch_date"),
+    )
+    for warning in prov.get("warnings") or []:
+        log.warning("[prov] %s %s: %s", label, warning.get("level"), warning.get("message"))
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +264,7 @@ def run_backtest_endpoint() -> tuple:
 
     try:
         with timed(log, f"[data] fetch {symbol} {warmup_start}..{to_date}", logging.DEBUG) as t:
-            candles_full = _candles(symbol, warmup_start, to_date, interval)
+            source, candles_full = _candles(symbol, warmup_start, to_date, interval)
     except Exception as exc:  # noqa: BLE001
         log.warning("[run] data error for %s: %s", symbol, exc)
         return jsonify({"error": f"data error: {exc}"}), 400
@@ -216,13 +282,16 @@ def run_backtest_endpoint() -> tuple:
                     capital,
                     from_date,
                     to_date,
+                    timeframe,
                 )
             engine = "quick_screen"
         else:
             # Canonical: BacktestDriver over simulator/ (next-bar-open fills).
             # It runs exactly the fetched range (WARMUP_BARS=0), so no trim.
             with timed(log, f"[run] {strategy} on {symbol} (driver)", logging.DEBUG):
-                result = _run_driver(candles_full, strategy, params, symbol, capital)
+                result = _run_driver(
+                    candles_full, strategy, params, symbol, capital, timeframe=timeframe
+                )
             engine = "backtest_driver"
     except ValueError as exc:
         log.warning("[run] %s rejected input: %s", strategy, exc)
@@ -235,6 +304,17 @@ def run_backtest_endpoint() -> tuple:
     payload["config"].update(
         {"timeframe": timeframe, "from_date": from_date, "to_date": to_date, "engine": engine}
     )
+    payload["provenance"] = _provenance(
+        candles_full,
+        source_name=current_app.config.get("BACKTEST_SOURCE", "synthetic"),
+        engine=engine,
+        symbol=symbol,
+        timeframe=timeframe,
+        from_date=from_date,
+        to_date=to_date,
+        source_obj=source,
+    )
+    _provenance_log(payload["provenance"], f"run/{strategy}")
     _summarise(payload, f"run/{strategy}", params)
     return jsonify(payload), 200
 
@@ -345,7 +425,26 @@ def run_many() -> tuple:
         f" (slots {', '.join(failed)})" if failed else "",
     )
 
-    return jsonify({"results": results}), 200
+    # One provenance block for the conditions every slot SHARES, so a
+    # comparison page can badge the run without re-deriving the source from
+    # four payloads. Per-slot engines are compared here: slots that disagree
+    # are stamped "mixed" and warned about, because their numbers are not
+    # like-for-like (PRD §1.1 / §4.1).
+    slot_engines = {str(job.get("mode", "")).strip().lower() or ENGINE_FILL_EXACT for job in jobs}
+    shared_engine = next(iter(slot_engines)) if len(slot_engines) == 1 else ENGINE_MIXED
+    shared_provenance = _provenance(
+        None,
+        source_name=source_name,
+        engine=shared_engine,
+        symbol=symbol,
+        timeframe=",".join(sorted({str(job.get("timeframe", "1D")) for job in jobs})),
+        from_date=from_date,
+        to_date=to_date,
+    )
+    shared_provenance["engines_used"] = sorted(slot_engines)
+    _provenance_log(shared_provenance, "run-many")
+
+    return jsonify({"results": results, "provenance": shared_provenance}), 200
 
 
 # ---------------------------------------------------------------------------
@@ -410,10 +509,13 @@ def run_single_backtest(params: dict) -> dict:
                 capital,
                 from_date,
                 to_date,
+                timeframe,
             )
             engine = "quick_screen"
         else:
-            result = _run_driver(candles_full, strategy, slot_params, symbol, capital)
+            result = _run_driver(
+                candles_full, strategy, slot_params, symbol, capital, timeframe=timeframe
+            )
             engine = "backtest_driver"
 
         payload = BacktestAdapter(result).to_all()
@@ -428,6 +530,17 @@ def run_single_backtest(params: dict) -> dict:
                 "worker_pid": os.getpid(),
             }
         )
+        payload["provenance"] = _provenance(
+            candles_full,
+            source_name=str(params.get("source_name", "synthetic")),
+            engine=engine,
+            symbol=symbol,
+            timeframe=timeframe,
+            from_date=from_date,
+            to_date=to_date,
+            source_obj=source,
+        )
+        _provenance_log(payload["provenance"], f"slot {sid}")
         # NOTE: the [result]/[slot ...] INFO lines are emitted by the ENDPOINT
         # (web process) after the pool returns — worker-process log records
         # do not surface in the web process's log capture.

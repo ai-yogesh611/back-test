@@ -7,6 +7,10 @@ Runs fetch jobs as background threads with progress tracking.
 * GET  /api/data/status       — Get current fetch job status + progress
 * POST /api/data/stop         — Stop the current fetch job
 * GET  /api/data/inventory    — Show what data is available in DB per symbol
+* GET  /api/data/coverage     — Every KNOWN instrument + whether it has bars
+                               (PRD backTest-enhance §1.3) — the one endpoint
+                               the Backtest, Compare and Optimize symbol
+                               pickers read.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from flask import Blueprint, jsonify, request
 from sqlalchemy import create_engine, text
 
 from backtest.data.base import MSTOCK_INTERVAL_MAP
+from backtest.data.coverage import INSTRUMENT_TYPES, NO_DATA_HINT
 from backtest.db.config import get_db_url
 from backtest.logging_config import get_logger
 
@@ -236,8 +241,159 @@ def inventory() -> tuple:
 
 
 # -----------------------------------------------------------------------
-# Background fetch job
 # -----------------------------------------------------------------------
+# Coverage (PRD backTest-enhance §1.3)
+# ---------------------------------------------------------------------------
+
+#: Process-level cache of the coverage report. The bar aggregate is one
+#: grouped scan over market_data_cache, and three pages mount a picker at
+#: once, so without this one page load costs three identical scans. Short TTL
+#: because the whole point of the endpoint is that it changes when a fetch
+#: job finishes.
+_COVERAGE_TTL_SECONDS = 60.0
+_coverage_lock = threading.Lock()
+_coverage_cache: dict[str, Any] = {"at": 0.0, "report": None}
+
+
+def invalidate_coverage_cache() -> None:
+    """Drop the cached report (a fetch job just wrote new bars)."""
+    with _coverage_lock:
+        _coverage_cache["at"] = 0.0
+        _coverage_cache["report"] = None
+
+
+def _coverage_report(refresh: bool = False):
+    """Build (or reuse) the coverage report. Never raises.
+
+    Degradation ladder: cached report -> database (bars + catalogue) ->
+    shipped universe only. A picker with no database still lists the indices
+    and the NIFTY 200, every one of them marked as having no data, which is
+    the honest answer rather than an empty dropdown.
+    """
+    now = time.time()
+    with _coverage_lock:
+        cached = _coverage_cache["report"]
+        fresh = cached is not None and (now - _coverage_cache["at"]) < _COVERAGE_TTL_SECONDS
+    if fresh and not refresh:
+        return cached
+
+    from backtest.data.coverage import (
+        build_coverage,
+        load_bar_coverage,
+        load_catalogue,
+        load_equity_universe,
+    )
+
+    bars: dict = {}
+    catalogue: list = []
+    db_available = False
+    warnings: list[str] = []
+    engine = None
+    try:
+        engine = create_engine(DB_URL, echo=False)
+    except Exception as exc:  # noqa: BLE001 — no database at all
+        warnings.append(f"no database: {exc.__class__.__name__}")
+        log.info("[coverage] database unavailable (%s) — serving the shipped universe",
+                 exc.__class__.__name__)
+    else:
+        try:
+            bars = load_bar_coverage(engine)
+            db_available = True
+        except Exception as exc:  # noqa: BLE001 — no cache table is survivable
+            warnings.append(f"no cached bars: {exc.__class__.__name__}")
+            log.info("[coverage] market_data_cache unavailable: %s", exc.__class__.__name__)
+        catalogue = load_catalogue(engine)
+        engine.dispose()
+
+    report = build_coverage(
+        bars=bars,
+        catalogue=catalogue,
+        universe=load_equity_universe(),
+        db_available=db_available,
+    )
+    if catalogue:
+        report.catalogue_source = "instruments"
+    elif bars:
+        report.catalogue_source = "market_data_cache"
+    else:
+        report.catalogue_source = "builtin"
+    report.warnings = warnings
+    log.info(
+        "[coverage] %d instruments (%d with data) from %s",
+        report.total,
+        sum(1 for r in report.instruments if r["data_available"]),
+        report.catalogue_source,
+    )
+    with _coverage_lock:
+        _coverage_cache["report"] = report
+        _coverage_cache["at"] = now
+    return report
+
+
+@data_bp.get("/api/data/coverage")
+def coverage() -> tuple:
+    """Every known instrument, and whether choosing it would produce bars.
+
+    Query params:
+      * ``q``          - substring match on symbol or name
+      * ``types``      - comma list of ``equity``/``index``/``futures``/
+                         ``options``/``fno`` (the All/Equity/Index/F&O tabs)
+      * ``available``  - ``1`` to list only symbols that have bars
+      * ``limit``      - page size (default 500, ``0`` = no paging)
+      * ``offset``     - page offset
+      * ``refresh``    - ``1`` to bypass the short-lived cache
+
+    Rows carry ``data_available``, ``bars_count``, ``from_date``,
+    ``to_date`` and ``timeframes_available``; a symbol with no bars carries
+    ``hint`` telling the user where to get it (PRD §1.3).
+    """
+    from backtest.data.coverage import filter_coverage
+
+    report = _coverage_report(refresh=request.args.get("refresh") in ("1", "true", "yes"))
+    types = [t for t in (request.args.get("types") or "").split(",") if t.strip()]
+    raw_limit = request.args.get("limit", "500")
+    try:
+        limit = max(0, int(raw_limit))
+    except (TypeError, ValueError):
+        return jsonify({"error": f"limit must be a number, got {raw_limit!r}"}), 400
+    try:
+        offset = max(0, int(request.args.get("offset", "0") or 0))
+    except (TypeError, ValueError):
+        return jsonify({"error": "offset must be a number"}), 400
+
+    rows, total = filter_coverage(
+        report,
+        query=request.args.get("q", ""),
+        types=types or None,
+        available_only=request.args.get("available") in ("1", "true", "yes"),
+        limit=limit or None,
+        offset=offset,
+    )
+    available = sum(1 for r in report.instruments if r["data_available"])
+    return (
+        jsonify(
+            {
+                "instruments": rows,
+                "total": total,
+                "returned": len(rows),
+                "offset": offset,
+                "limit": limit or None,
+                "known_total": report.total,
+                "available_total": available,
+                "db_available": report.db_available,
+                "catalogue_source": report.catalogue_source,
+                "sources": report.sources,
+                "instrument_types": list(INSTRUMENT_TYPES),
+                "hint": NO_DATA_HINT,
+                "generated_at": report.generated_at,
+                "warnings": report.warnings,
+            }
+        ),
+        200,
+    )
+
+# -----------------------------------------------------------------------
+# Background fetch job# -----------------------------------------------------------------------
 
 
 def _run_fetch_job(
@@ -350,6 +506,9 @@ def _run_fetch_job(
             _job["bars_total"],
         )
 
+    # The bars just written are exactly what /api/data/coverage reports, so the
+    # next page load must not serve the pre-fetch answer for a minute.
+    invalidate_coverage_cache()
     engine.dispose()
 
 

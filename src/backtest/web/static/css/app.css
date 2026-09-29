@@ -1533,3 +1533,93 @@ body.has-alert-widget .toast-stack { bottom: 76px; }
 .xb-bar.is-good > span { background: var(--success); }
 .xb-bar.is-bad  > span { background: var(--danger); }
 .xb-empty { color: var(--muted); font-size: .85rem; padding: 12px 0; }
+
+/* ------------------------------------------------------------------
+ * Provenance badges (PRD backTest-enhance §1.1 + §1.2).
+ * Permanent, non-dismissable: which ENGINE and which DATA produced the
+ * numbers below them. Severity is carried by the wording on the badge
+ * and the server-stamped banner, not by colour alone.
+ * ------------------------------------------------------------------ */
+.prov-strip { margin-bottom: 14px; }
+.prov-strip:empty { display: none; }
+.prov-badges { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.prov-badge {
+    display: inline-block; padding: 3px 10px; border-radius: 999px;
+    font-size: .74rem; font-weight: 600; border: 1px solid transparent;
+    white-space: nowrap; cursor: help;
+}
+.prov-badge-plain {
+    background: var(--surface-2); color: var(--muted);
+    border-color: var(--border); font-weight: 500;
+}
+.prov-badge-ok { background: var(--success-tint); color: var(--success-text); border-color: var(--success-shade); }
+.prov-badge-info { background: rgba(59,130,246,.18); color: #93c5fd; border-color: rgba(59,130,246,.35); }
+.prov-badge-warn { background: var(--warning-tint); color: var(--warning-text); border-color: var(--warning-shade); }
+.prov-badge-error { background: var(--danger-tint); color: var(--danger-text); border-color: var(--danger-shade); }
+
+.prov-banner {
+    margin-top: 10px; border-radius: var(--radius); padding: 10px 14px;
+    font-size: .86rem; border: 1px solid transparent;
+}
+.prov-banner-error { background: var(--danger-tint); border-color: var(--danger-shade); color: var(--danger-text); }
+.prov-banner-warn { background: var(--warning-tint); border-color: var(--warning-shade); color: var(--warning-text); }
+.prov-banner-info { background: rgba(59,130,246,.10); border-color: rgba(59,130,246,.30); color: #93c5fd; }
+
+/* ------------------------------------------------------------------
+ * Symbol picker (PRD backTest-enhance §1.3) + timeframe note (§1.4).
+ * A symbol with no cached bars is LISTED and greyed out, never hidden —
+ * a missing option reads as "this does not exist", which was the bug.
+ * ------------------------------------------------------------------ */
+.sym-tabs { display: inline-flex; gap: 2px; margin-bottom: 6px; flex-wrap: wrap; }
+.sym-tab {
+    background: var(--surface-2); border: 1px solid var(--border); color: var(--muted);
+    border-radius: 6px; padding: 3px 10px; font-size: .74rem; cursor: pointer;
+}
+.sym-tab:hover { color: var(--text); border-color: var(--primary); }
+.sym-tab.active { background: rgba(59,130,246,.18); color: #93c5fd; border-color: rgba(59,130,246,.4); font-weight: 600; }
+.sym-no-data { color: var(--muted); opacity: .62; font-style: italic; }
+select.input option.sym-no-data:disabled { cursor: not-allowed; }
+
+/* ------------------------------------------------------------------
+ * Richer metric sections (PRD backTest-enhance §2.2).
+ * Four labelled <details> blocks below the existing metrics grid. The
+ * banner is the loud one: below 20 closed trades every number on the
+ * page is a point estimate with an interval wider than the value.
+ * ------------------------------------------------------------------ */
+#metricSections { margin-bottom: 16px; }
+.metric-section {
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: var(--radius); margin-bottom: 8px; overflow: hidden;
+}
+.metric-section-head {
+    cursor: pointer; padding: 10px 14px; font-weight: 600; font-size: .88rem;
+    list-style: none; user-select: none;
+}
+.metric-section-head::-webkit-details-marker { display: none; }
+.metric-section-head::before { content: "▸ "; color: var(--muted); }
+.metric-section[open] > .metric-section-head::before { content: "▾ "; }
+.metric-section[open] > .metric-section-head { border-bottom: 1px solid var(--border); }
+.metric-section-head:hover { color: var(--primary); }
+.metric-section-note { margin: 0; padding: 8px 14px 0; font-size: .78rem; color: var(--muted); }
+.metric-section-body { padding: 6px 14px 12px; }
+.metric-row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    gap: 16px; padding: 5px 0; border-bottom: 1px solid var(--border);
+    font-size: .84rem;
+}
+.metric-row:last-child { border-bottom: none; }
+.metric-row-label { color: var(--muted); }
+.metric-row-value { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.metric-confidence-banner {
+    background: var(--warning-tint); border: 1px solid var(--warning-shade);
+    color: var(--warning-text); border-radius: var(--radius);
+    padding: 12px 16px; margin-bottom: 10px; font-size: .86rem; font-weight: 500;
+}
+.metric-confidence-flag {
+    display: inline-block; font-size: .74rem; border-radius: 999px;
+    padding: 2px 10px; margin-bottom: 8px; border: 1px solid transparent;
+}
+.metric-confidence-ok { background: var(--success-tint); color: var(--success-text); border-color: var(--success-shade); }
+.metric-confidence-warn { background: var(--warning-tint); color: var(--warning-text); border-color: var(--warning-shade); }
+.metric-confidence-insufficient { background: var(--danger-tint); color: var(--danger-text); border-color: var(--danger-shade); }

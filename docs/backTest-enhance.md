@@ -1,3 +1,27 @@
+# PRD — Backtest & Compare / Optimize Enhancements
+
+> **Implementation status** (updated 2026-09-29). Implemented one section at a
+> time, "bugs first" as §1 asks.
+>
+> | Section | Status |
+> |---|---|
+> | Part 1 §1.1 Engine consistency | ✅ Done — driver stays the default, `quick_screen` is an explicit **Fast Preview** opt-in, permanent Engine badge, yellow approximate warning, `mixed` stamp when Compare slots disagree |
+> | Part 1 §1.2 Data source visibility | ✅ Done — permanent Data badge, red non-real-data banner, `provenance` record on every backtest / compare-slot / optimize-run payload |
+> | Part 1 §1.3 Symbol picker + coverage | ✅ Done — `GET /api/data/coverage`, shared picker on all three pages, no-data rows listed-and-explained, All/Equity/Index/F&O tabs |
+> | Part 1 §1.4 Timeframe reality + `periods_per_year` | ✅ Done — `data.base.periods_per_year()` (252 × bars/day, weekly 52) reaches the engine, the optimizer and the UI; dropdowns offer only real granularities |
+> | Part 1 §2 Richer metrics | ✅ Done — `engine/metrics_risk.py` (Omega, skew, excess kurtosis, CVaR, Ulcer, drawdown episodes, streaks, Sharpe SE), `Trade.bars_held` for real durations, `trade_count_flag` ok/warn/insufficient, four collapsible sections + the insufficient-sample banner on the Backtest result page, all keys in `BacktestAdapter.to_all()` |
+> | Part 1 §3 Benchmark / cost shock / Monte Carlo | ⬜ Not started |
+> | Part 1 §4 Compare enhancements | ⬜ Not started (Compare already applies one shared engine — see §1.1) |
+> | Part 1 §5 Certification readiness | ⬜ Not started (depends on §2/§3) |
+> | Part 1 §6 "Tune This" | ⬜ Not started |
+> | Part 2 §1–§6 Optimize | ⬜ Not started (§1.2 provenance already lands on the Optimize results page) |
+>
+> Implementation notes live in `PROJECT-CONTEXT.md` under "Backtest & Compare —
+> Engine & Data Provenance". Deviations from the letter of the PRD are recorded
+> there and in the git history.
+
+---
+
 Let me check the "Optimize from Backtest" flow and data source question first, then I'll draft the PRD.
 
 ---

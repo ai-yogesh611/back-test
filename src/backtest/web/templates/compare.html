@@ -16,11 +16,16 @@
 <div class="card shared-config">
     <div class="shared-grid">
         <div class="form-row">
+            <label for="symbol-search">Search symbol</label>
+            <input type="search" id="symbol-search" class="input" placeholder="NIFTY, RELIANCE…">
+        </div>
+        <div class="form-row">
             <label for="symbol">Symbol</label>
+            <div id="symbol-tabs" class="sym-tabs"></div>
             <select id="symbol" class="input">
-                <option>NIFTY</option><option>BANKNIFTY</option><option>DEMO</option>
-                <option>INFY</option><option>BTCUSD</option><option>ETHUSD</option>
+                <option>Loading…</option>
             </select>
+            <small id="symbol-status" class="text-muted"></small>
         </div>
         <div class="form-row">
             <label for="fromDate">From</label>
@@ -33,6 +38,11 @@
         <div class="form-row">
             <label for="capital">Capital ({{ currency_symbol }})</label>
             <input type="number" id="capital" class="input" value="10000" min="1">
+        </div>
+        <div class="form-row">
+            <label class="small" title="Applies to EVERY slot. Vectorized screen: previous-close fills and an approximate cost model — faster, but not what a paper or live run reproduces.">
+                <input type="checkbox" id="fastPreview"> Fast Preview <span class="muted">(approximate engine, all slots)</span>
+            </label>
         </div>
     </div>
 </div>
@@ -49,6 +59,7 @@
 
 <!-- ================= RESULTS ================= -->
 <section id="results" class="results-panel" hidden>
+    <div id="compareProvenance" class="prov-strip"></div>
     <div class="card">
         <div class="tabs">
             <button class="tab active" data-tab="metrics">Metrics Table</button>
@@ -72,6 +83,9 @@
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/components/params_form.js') }}"></script>
+<script src="{{ url_for('static', filename='js/components/provenance.js') }}"></script>
+<script src="{{ url_for('static', filename='js/components/symbol_picker.js') }}"></script>
+<script src="{{ url_for('static', filename='js/components/timeframes.js') }}"></script>
 <script src="{{ url_for('static', filename='js/compare/metrics_table.js') }}"></script>
 <script src="{{ url_for('static', filename='js/compare/equity_compare_chart.js') }}"></script>
 <script src="{{ url_for('static', filename='js/compare/drawdown_compare_chart.js') }}"></script>

@@ -78,6 +78,12 @@ backtest papertrade --mode walkforward --strategies X --from D1 --to D2  # Paper
 | optimization/ | Parameter optimization engine: config → search (grid/random/Bayesian/GA) → sensitivity → walk-forward → analysis → store; apply-to-runner + rollback | ✅ New — docs/OPTIMIZATION-ENGINE.md, migrations 009–013 |
 | api/optimize.py | `/api/optimize/*` REST (503 without a DB) | ✅ New |
 | forward/portfolio_manager.py | Command center: runners/buckets/breakers + positions/orders read + manual position actions | ✅ LOM (2026-09-23) |
+| data/provenance.py | Engine + data-source labels, warnings and the `provenance` record stamped on every result | ✅ New (PRD §1.1/§1.2) |
+| web/static/js/components/provenance.js | Renders the Engine/Data badges + non-dismissable banners on a result page | ✅ New (PRD §1.1/§1.2) |
+| data/coverage.py | The union of known instruments + what has bars, behind `GET /api/data/coverage` | ✅ New (PRD §1.3) |
+| data/base.periods_per_year() | Timeframe → annualisation factor (252 × bars/day; weekly 52) | ✅ New (PRD §1.4) |
+| web/static/js/components/symbol_picker.js | The one instrument picker (search + All/Equity/Index/F&O) used by 3 pages | ✅ New (PRD §1.3) |
+| web/static/js/components/timeframes.js | UI timeframe vocabulary + "only what this symbol has" dropdown | ✅ New (PRD §1.4) |
 | web/static/js/components/position_actions.js | Positions-table action buttons + their modals | ✅ LOM (2026-09-23) |
 | web/static/js/components/orders_tab.js | Orders tab: ledger rows, slippage, cancel, badge, amend + aging (Phase 3) | ✅ LOM (2026-09-23) |
 
@@ -164,3 +170,177 @@ Python 3.10+, pandas, numpy, requests, python-dotenv, matplotlib, pytest
 - Default commission: 0.03%
 - Default slippage: 0.05%
 - Walk-forward equity tolerance: 1e-5 (reconciliation)
+
+## Backtest & Compare — Engine & Data Provenance (PRD §1.1 + §1.2, 2026-09-29)
+Implements **Part 1 §1.1/§1.2** of `docs/backTest-enhance.md` — the "bugs first"
+slice. Later PRD sections are still open.
+
+- **Single authority:** `data/provenance.py` owns the engine and data-source
+  vocabulary, the badge labels, the advisory warnings and the `provenance`
+  record. Nothing in the API, the templates or the JS re-declares a label.
+  `data/source_tags.py` (the 3-way run taxonomy) is unchanged and still owns
+  state-file tags.
+- **Stamped on every result:** `/api/backtest/run`, each `/api/backtest/run-many`
+  slot, the run-many shared block, and every `/api/optimize/runs*` payload
+  (`run.provenance`). Fields: `data_source`, `data_source_label`,
+  `data_source_real`, `data_fetch_date`, `symbol`, `timeframe`, `date_range`,
+  `data_from`/`data_to` (what the candles **actually** covered), `bars_count`,
+  `engine_used`, `engine_label`, `engine_canonical`, `engine_tier`, `warnings`.
+- **Engine naming:** the record speaks one vocabulary — `backtest_driver` (fill-exact
+  canonical), `quick_screen` (approximate), `options` (multi-leg), `mixed`
+  (Compare slots that disagree). `backtestConfig.engine: "driver"` is the
+  *same* engine as `backtest_driver` and is aliased, not renamed.
+- **Quick-Screen is opt-in:** the default path was already the driver; §1.1 adds
+  the explicit **Fast Preview** toggle on Backtest and Compare (Compare applies
+  it to *every* slot — engine is a shared condition, never per-slot) and the
+  approximate-results warning. Slots that disagree are stamped `mixed`.
+- **Banners:** non-real data (synthetic/CSV, and anything unrecognised — fail
+  closed) → red "Real-data certification required before paper testing";
+  quick-screen → yellow approximate warning. Advisory only: no hard block.
+- **Optimize needs no migration:** the run's stamp is derived from the columns
+  that already exist (`backtest_config` + `analysis.stats`), so it describes the
+  run rather than the app's current config. Part 2 §2's first-class attestation
+  columns are still to come.
+- **Fetch date:** `DbSource.last_ingested_at()` reads `MAX(ingested_at)`; a
+  cached-feed result with no answer falls back to its newest bar. Synthetic
+  data reports no fetch date rather than inventing one.
+- **Tests:** `tests/test_provenance.py` (31), `tests/test_api_backtest_provenance.py`
+  (13), `tests/js/test_provenance.mjs` (13, via `tests/test_web_components.py`),
+  plus the optimize-API cases in `tests/optimization/test_api.py`.
+
+## Symbol Coverage & Timeframes (PRD §1.3 + §1.4, 2026-09-29)
+The second "bugs first" slice. Part 1 §1 is now complete.
+
+### `GET /api/data/coverage` — one instrument list for three pages
+- `data/coverage.py` merges three sources and returns the **union**: a symbol is
+  listed if ANY source knows it. This is the fix — a missing `<option>` reads as
+  "this does not exist", which was the reported bug.
+  1. `market_data_cache` — bars, coverage dates, and the timeframes really stored
+  2. the `instruments` catalogue (mStock scriptmaster, ~154k rows) — optional;
+     that table comes from a broker ingest, not a migration, so its absence is normal
+  3. `stock-list/nse_ind_nifty200list.csv` + the built-in index universe — a
+     version-controlled floor, so the picker is never empty with no database
+- **154k rows is not a payload.** The catalogue is reduced server-side to tradable
+  symbols: an F&O contract contributes its *underlying* (and creates it, since the
+  exchange listing a TCS future is itself the claim that TCS trades). Contracts keep
+  their own row only if they have their own cached bars.
+- `instrument_type` stays exactly `equity | index | futures | options`; the F&O tab is
+  a filter over `has_futures` / `has_options`, not a fifth type.
+- Rows carry `data_available`, `bars_count`, `from_date`, `to_date`,
+  `timeframes_available[]` and — when there are no bars — `hint`. Contract shapes are
+  matched conservatively (optional `\d{1,2}[A-Z]{3}` expiry token, strike,
+  `CE/PE/FUT` suffix); an unrecognised symbol falls back to `equity`, never to a guess.
+- Degrades rather than fails: unreachable DB -> shipped universe, every row marked
+  no-data, `warnings` populated. A 60s process cache keeps three pages mounting a
+  picker from costing three identical scans; a finished fetch job invalidates it.
+- Query params: `q`, `types` (incl. `fno`), `available`, `limit`, `offset`, `refresh`.
+
+### `periods_per_year` — the annualisation factor
+- `data/base.periods_per_year(timeframe)` is the single authority: `252 x bars per
+  NSE day` (375 minutes), weekly = **52**, not 252/5. `normalize_timeframe()` accepts
+  `1D`/`day`/`1day`/`60min` so three layers can speak three spellings.
+- Reaches `BacktestConfig.periods_per_year` via `run_backtest`/`run_quick_screen`
+  (`timeframe=` kwarg) -> `engine/metrics.py` (Sharpe, Sortino, CAGR, volatility) and
+  `optimization/evaluator.py::standardize_metrics` (imported there as
+  `annualisation_factor`, because the function's own parameter shadows the name).
+- UI mirrors it in `components/timeframes.js`; `applyTo()` replaces a `<select>`'s
+  options with only the granularities the chosen symbol has, keeps a still-valid
+  selection, and never empties the control. Unknown coverage leaves the full list —
+  absence of information is not evidence of absence.
+- `timeframes.js` is also where the UI's `1D/1H/4H/1W` -> canonical spelling lives;
+  Backtest and Compare slot dropdowns are now filled from real coverage instead of a
+  hard-coded list.
+
+### Shared picker
+- `components/symbol_picker.js` replaces the three hand-maintained `<option>` lists.
+  No-data symbols are rendered `disabled` with the server's hint as their `title`
+  rather than omitted. A failed load says so in the summary line instead of
+  presenting an empty picker as "no symbols exist".
+- Backtest, Compare (one picker; slot timeframes follow the shared symbol) and
+  Optimize all mount it. The Forward page still uses `/api/symbols` — out of scope.
+
+### Tests
+`tests/test_data_coverage.py` (46), `tests/test_api_data_coverage.py` (15),
+`tests/test_timeframe_periods.py` (31), `tests/js/test_symbol_picker.mjs` (18, via
+`tests/test_web_components.py`).
+
+---
+
+## Richer Metrics (PRD §2, 2026-09-29)
+
+Implements **Part 1 §2** of `docs/backTest-enhance.md` — the richer metric
+families. Part 1 §1 was the "bugs first" slice; §3–§6 and all of Part 2 remain open.
+
+### Where the maths lives
+`engine/metrics_risk.py` holds every §2 estimator as a pure function over an
+equity curve, a return series or a list of trade P&Ls. `engine/metrics.py` stays
+the orchestrator, so Backtest, Compare and Optimize all pick the metrics up from
+one place, as §2 asks.
+
+### Decisions worth knowing
+
+- **CVaR 95% is an alias of ES 95%, not a second computation.** They are the
+  same number under two names. The local `_var_es()` that used to live in
+  `metrics.py` was deleted in favour of `metrics_risk.var_es`, so there is one
+  definition of the quantile rather than two that can drift.
+- **Sharpe standard error is Lo's (2002) `sqrt((1 + S²/2)/N)`**, not `1/sqrt(N)`.
+  The simpler form understates the error exactly when the Sharpe looks good.
+  `metrics_sections` also ships a 95% interval around the reported Sharpe.
+- **Max drawdown duration runs peak → recovery, not trough → recovery**, and an
+  unrecovered episode is measured to the end of the run *and flagged*
+  (`max_drawdown_recovered: false`) rather than given a duration that implies a
+  recovery that never happened.
+- **Omega is capped at 100**, not `inf`. A curve with no losing bar has an
+  undefined Omega, and `Infinity` does not survive JSON.
+- **`kurtosis` is EXCESS (Fisher) kurtosis** — a normal distribution reads 0.00,
+  not 3.0. The PRD's key name is kept; the convention is in the docstring.
+- **`trade_count_flag` counts CLOSED trades** and ships as a **string**
+  (`ok` / `warn` / `insufficient`) so the UI can distinguish the `warn` middle
+  state. An open trade is not a result yet.
+- **Drawdown/expectancy/duration families skip censored data**: `cvar_95`,
+  `payoff_ratio`, the streaks and `avg/median_trade_duration_bars` are computed
+  over closed trades only.
+
+### `Trade.bars_held` — why it had to be added
+§2 wants a real average/median trade duration. The walk in `engine/trades.py` is
+the only place that knows the entry and exit bar positions, so it records the
+count there and everything downstream reads it.
+
+Two things that were wrong in the obvious implementation and are pinned by test:
+1. A trade that exits on a **flat** bar books its exit cost on that bar, but it
+   was **not held** on it. `exit_i - entry_i + 1` credits it with a bar it was
+   flat for, which inflates every holding period on the page. Both closed-exit
+   paths pass `bars` explicitly; only the still-open trade adds the inclusive 1.
+2. An **open** trade is right-censored — held *at least* N bars — so it is
+   excluded from the duration averages rather than averaged in.
+
+Note that the pre-existing `avg_holding_bars` (`exposure x bars / num_trades`) is
+**algebraically the same as the measured mean** whenever the trade spans tile the
+curve, which they do by construction. It was never obviously wrong. The actual
+gain from `bars_held` is the **median**, which that estimate cannot produce at
+all — and the fact that the new number is a measurement rather than an inference
+that happens to agree. `avg_holding_bars` is kept for the surfaces already
+reading it.
+
+### UI
+`web/static/js/components/metric_sections.js` renders four `<details>` sections
+below the existing metrics grid on the Backtest result page (Wireframe 1):
+Risk & Tail, Drawdown Detail, Trade Quality, Statistical Confidence. Per §2.2 the
+existing card grid is untouched — this component never writes to `#metricsCards`.
+
+The `insufficient` banner is the one piece of state that changes how a reader
+should read everything else, so it renders first, `role="alert"`, and has no
+close control. `ok` and `warn` render a small flag chip and no banner.
+
+Every row formatter returns `null` for a missing value so the row is **omitted**
+rather than printed as a confident `0.00`; a section with nothing in it does not
+render. Non-numeric values are coerced when possible and otherwise escaped
+rather than dropped, because a row that silently disappears hides a number the
+operator asked to see.
+
+### Tests
+`tests/test_metrics_risk.py` (59, one estimator at a time),
+`tests/test_metrics_sections.py` (37, end-to-end through `compute_metrics` and
+`BacktestAdapter.to_all()`), `tests/js/test_metric_sections.mjs` (19, via
+`tests/test_web_components.py`), plus `bars_held` cases in
+`tests/test_engine_trades.py`.

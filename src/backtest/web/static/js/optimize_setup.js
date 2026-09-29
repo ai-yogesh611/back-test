@@ -24,6 +24,8 @@
         estimating: 0,
     };
 
+    let symbolPicker = null;   // components/symbol_picker.js handle
+
     const CONSTRAINT_LABELS = {
         max_drawdown: 'Max drawdown (%)', min_trades: 'Trades', win_rate: 'Win rate (%)',
         sharpe: 'Sharpe', profit_factor: 'Profit factor', total_return: 'Total return (%)',
@@ -39,6 +41,16 @@
     async function init() {
         $('optFrom').value = isoDaysAgo(3 * 365);
         $('optTo').value = isoDaysAgo(1);
+
+        // §1.3/§1.4 — the same picker and timeframe rules as Backtest/Compare:
+        // a symbol with no cached bars is listed but not selectable, and the
+        // timeframe list is only what the chosen symbol really has.
+        symbolPicker = SymbolPicker.mount({
+            select: 'optSymbol', search: 'optSymbolSearch', tabs: 'optSymbolTabs',
+            summary: 'optSymbolStatus',
+            onChange: () => Timeframes.applyTo($('optTimeframe'), symbolPicker.timeframesFor($('optSymbol').value)),
+        });
+        Timeframes.applyTo($('optTimeframe'), null);
         try {
             const meta = await C.api('/api/optimize/meta');
             $('optObjective').innerHTML = meta.objectives
@@ -93,9 +105,13 @@
         }
         state.params = state.space.parameters.map((p) => ({ ...p }));
         $('optStrategyDesc').textContent = state.space.description || '';
+        // Option strategies need an index; equity strategies need a share. The
+        // suggestion is only applied when the picker actually offers it, so a
+        // missing symbol never leaves the form pointing at nothing.
         const sym = $('optSymbol');
-        if (state.space.is_option && !['NIFTY', 'BANKNIFTY'].includes(sym.value.toUpperCase())) sym.value = 'NIFTY';
-        if (!state.space.is_option && ['NIFTY', 'BANKNIFTY'].includes(sym.value.toUpperCase())) sym.value = state.space.default_symbol;
+        const setSymbol = (value) => { if (symbolPicker) symbolPicker.setValue(value); else sym.value = value; };
+        if (state.space.is_option && !['NIFTY', 'BANKNIFTY'].includes(sym.value.toUpperCase())) setSymbol('NIFTY');
+        if (!state.space.is_option && ['NIFTY', 'BANKNIFTY'].includes(sym.value.toUpperCase())) setSymbol(state.space.default_symbol);
         $('optSelectorRow').hidden = !state.space.is_option;
         const obj = $('optObjective');
         if (state.space.is_option && obj.value === 'sharpe') obj.value = 'total_return';

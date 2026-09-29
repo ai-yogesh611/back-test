@@ -4,12 +4,15 @@
  * /api/backtest/run-many, render 3 views, per-slot Open-in-Backtest / Promote.
  */
 const PALETTE = ["#3b82f6", "#d4b26a", "#7fc8a0", "#e0938f"]; // blue, orange, green, red
-const TF_OPTIONS = ["1D", "1H", "4H", "1W"].map((t) => `<option>${t}</option>`).join("");
+// Slot timeframes are filled per-slot from the shared symbol's real coverage
+// (§1.4) — see applyTimeframesToSlots(). No static list of phantom options.
 
 let strategies = [];          // [{name,...}]
 let slots = [];               // [{id, color, card, strategy, timeframe, runConfig, result, label}]
 let nextId = 1;
 let lastResults = null;       // successful slots from last run (for tab charts)
+let lastProvenance = null;    // provenance of the SHARED conditions (engine + data)
+let symbolPicker = null;      // components/symbol_picker.js handle
 
 const $ = (id) => document.getElementById(id);
 /** Server errors carry a request_id that also appears in the app log — quoting it
@@ -55,14 +58,18 @@ function addSlot(prefill) {
             <button class="btn-icon remove-slot" title="Remove">✕</button>
         </div>
         <div class="form-row"><label>Strategy</label><select class="slot-strategy input"></select></div>
-        <div class="form-row"><label>Timeframe</label><select class="slot-tf input">${TF_OPTIONS}</select></div>
+        <div class="form-row"><label>Timeframe</label><select class="slot-tf input"></select></div>
         <div class="slot-params"></div>
         <div class="slot-status muted small"></div>`;
     $("slotsRow").appendChild(card);
 
-    const slot = { id, color, card, strategy: "", timeframe: "1D", runConfig: null, result: null, label: "" };
     const stratSel = card.querySelector(".slot-strategy");
     const tfSel = card.querySelector(".slot-tf");
+    // §1.4: a new slot offers what the shared symbol actually has, not a
+    // fixed list of granularities that may not exist.
+    const offered = Timeframes.applyTo(tfSel, symbolPicker ? symbolPicker.timeframesFor($("symbol").value) : null);
+    const slot = { id, color, card, strategy: "", timeframe: tfSel.value || (offered.length ? offered[offered.length - 1] : "1day"),
+                   runConfig: null, result: null, label: "" };
     stratSel.addEventListener("change", () => onStrategyChange(slot, stratSel.value));
     tfSel.addEventListener("change", () => { slot.timeframe = tfSel.value; updateLabel(slot); });
     card.querySelector(".remove-slot").addEventListener("click", () => removeSlot(slot));
@@ -73,7 +80,13 @@ function addSlot(prefill) {
     if (cfg && cfg.strategy) {
         stratSel.innerHTML = strategiesOptions(cfg.strategy);
         slot.strategy = cfg.strategy;
-        if (cfg.timeframe) { tfSel.value = cfg.timeframe; slot.timeframe = cfg.timeframe; }
+        if (cfg.timeframe) {
+            const want = Timeframes.toCanonical(cfg.timeframe);
+            if (want && [...tfSel.options].some((o) => o.value === want)) {
+                tfSel.value = want;
+                slot.timeframe = want;
+            }
+        }
         onStrategyChange(slot, cfg.strategy, cfg.params);
     } else if (strategies.length) {
         stratSel.innerHTML = strategiesOptions(strategies[0].name);
@@ -129,7 +142,17 @@ function sharedConfig() {
     return {
         symbol: $("symbol").value, from_date: $("fromDate").value,
         to_date: $("toDate").value, capital: Number($("capital").value) || 0,
+        // Engine is a SHARED condition, not a per-slot one: comparing a
+        // fill-exact slot against a quick-screen slot produces two numbers
+        // that cannot be read side by side. Applied to every slot below.
+        mode: engineMode(),
     };
+}
+
+/** Requested engine mode: "" (full engine) or "quick_screen" (fast preview). */
+function engineMode() {
+    const box = $("fastPreview");
+    return box && box.checked ? "quick_screen" : "";
 }
 
 function slotConfig(slot) {
@@ -149,6 +172,7 @@ async function runAll() {
     const payload = {
         shared: sharedConfig(),
         slots: slots.map((s) => ({ id: s.id, strategy: s.strategy, timeframe: s.timeframe,
+                                    mode: engineMode(),
                                     params: collectParamsFrom(s.card.querySelector(".slot-params")) })),
     };
 
@@ -176,6 +200,7 @@ async function runAll() {
         document.getElementById("compareTable").innerHTML = "";   // clear loader
         if (!ok.length) { showToast("All slots failed", "error"); $("results").hidden = true; $("emptyState").hidden = false; return; }
         lastResults = ok;
+        lastProvenance = data.provenance || null;
         renderResults(ok);
         showToast(`Compared ${ok.length} slot${ok.length > 1 ? "s" : ""}`, "success");
     } catch (err) {
@@ -187,6 +212,10 @@ async function runAll() {
 }
 
 function renderResults(okSlots) {
+    // Engine + data provenance for the SHARED conditions every slot ran under
+    // (PRD backTest-enhance §1.1/§1.2). Slots that disagreed on the engine are
+    // stamped "mixed" and the server's warning is shown alongside.
+    if (typeof Provenance !== "undefined") Provenance.renderInto("compareProvenance", lastProvenance);
     renderCompareTable("compareTable", okSlots, onSlotAction);
     renderChartForPane(document.querySelector(".tab.active")?.dataset.tab || "metrics");
 }
@@ -231,10 +260,32 @@ function wireTabs() {
     });
 }
 
+/**
+ * Give every slot the timeframes the shared symbol REALLY has (§1.4).
+ * Slots are compared against each other, so they may legitimately differ in
+ * timeframe — but no slot may offer a granularity with no bars behind it.
+ * `applyTo` keeps a still-valid selection and otherwise falls back to the
+ * coarsest one the symbol has, so a slot is never left pointing at nothing.
+ */
+function applyTimeframesToSlots() {
+    const available = symbolPicker ? symbolPicker.timeframesFor($("symbol").value) : null;
+    slots.forEach((s) => {
+        const sel = s.card.querySelector(".slot-tf");
+        const offered = Timeframes.applyTo(sel, available);
+        s.timeframe = sel.value || (offered.length ? offered[offered.length - 1] : "1day");
+    });
+}
+
 async function init() {
     wireTabs();
     $("addSlotBtn").addEventListener("click", () => addSlot());
     $("runAllBtn").addEventListener("click", runAll);
+
+    // §1.3/§1.4 — one picker for the page; the slot timeframes follow it.
+    symbolPicker = SymbolPicker.mount({
+        select: "symbol", search: "symbol-search", tabs: "symbol-tabs", summary: "symbol-status",
+        onChange: applyTimeframesToSlots,
+    });
 
     try {
         strategies = await fetchJSON("/api/strategies");

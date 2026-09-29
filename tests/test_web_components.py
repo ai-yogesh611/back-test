@@ -80,6 +80,69 @@ def test_live_order_management_components(harness, expected):
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_provenance_badges_behaviour():
+    """PRD backTest-enhance §1.1/§1.2: the engine + data badges a result page
+    shows above its numbers, and the banners it may never hide."""
+    result = subprocess.run(
+        ["node", str(_REPO_ROOT / "tests" / "js" / "test_provenance.mjs")],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert (
+        result.returncode == 0
+    ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "13 tests passed" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_symbol_picker_and_timeframes_behaviour():
+    """PRD backTest-enhance §1.3/§1.4: the shared instrument list and the
+    timeframe vocabulary behind it.
+
+    Pins the two defects the PRD names: a symbol with no cached bars silently
+    disappearing from the picker, and a timeframe dropdown offering
+    granularities that produce no bars (and annualising them with a daily
+    factor when they do).
+    """
+    result = subprocess.run(
+        ["node", str(_REPO_ROOT / "tests" / "js" / "test_symbol_picker.mjs")],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert (
+        result.returncode == 0
+    ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "18 tests passed" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_richer_metric_sections_behaviour():
+    """PRD backTest-enhance §2.2: the four expandable metric sections and the
+    insufficient-trade-count banner.
+
+    Pins the two things a screenshot cannot: that a metric the server did not
+    send renders as NOTHING rather than as a confident 0.00, and that the
+    "fewer than 20 closed trades" banner actually appears — and stays away when
+    the sample is fine.
+    """
+    result = subprocess.run(
+        ["node", str(_REPO_ROOT / "tests" / "js" / "test_metric_sections.mjs")],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert (
+        result.returncode == 0
+    ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "19 tests passed" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
 def test_cross_broker_analytics_ui_behaviour():
     """PRD-003: the By Broker / Execution Quality sections and their modals.
 
