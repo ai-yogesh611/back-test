@@ -1972,3 +1972,25 @@ select.input option.sym-no-data:disabled { cursor: not-allowed; }
 .opt-dsr-vs strong { color: var(--text, #e2e8f0); font-weight: 600; }
 .opt-dsr-verdict { font-size: .8rem; margin-bottom: 8px; }
 .opt-dsr-reason { margin: 8px 0 0; line-height: 1.5; }
+
+/* ---- Monte Carlo on the winner (PRD Part 2 §4) ------------------------- */
+.opt-mc-box { margin-bottom: 16px; }
+.opt-mc-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 10px; margin: 12px 0;
+}
+.opt-mc-stat { display: flex; flex-direction: column; gap: 2px; }
+.opt-mc-num { font-size: 1.25rem; font-weight: 600; color: var(--text, #e2e8f0); }
+.opt-mc-label { font-size: .72rem; color: #94a3b8; line-height: 1.4; }
+.opt-mc-note { margin: 8px 0 0; }
+.opt-mc-banner {
+    margin-top: 8px; padding: 7px 10px; border-radius: 5px; font-size: .8rem; line-height: 1.5;
+    border: 1px solid rgba(148, 163, 184, .3);
+}
+.opt-mc-warn { border-color: rgba(245, 158, 11, .5); background: rgba(245, 158, 11, .09); }
+.opt-mc-warn-error { border-color: rgba(239, 68, 68, .5); background: rgba(239, 68, 68, .09); }
+.opt-mc-info { background: rgba(148, 163, 184, .07); }
+.opt-mc-gate {
+    margin-bottom: 12px; padding: 9px 11px; border-radius: 6px;
+    border: 1px solid rgba(245, 158, 11, .5); background: rgba(245, 158, 11, .09);
+}

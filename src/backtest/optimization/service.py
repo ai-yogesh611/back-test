@@ -43,6 +43,7 @@ from backtest.optimization.config import (
     parse_config,
 )
 from backtest.data.base import periods_per_year as annualisation_factor
+from backtest.engine.monte_carlo import DEFAULT_SIMULATIONS, monte_carlo_trade_order
 from backtest.optimization.deflation import deflated_sharpe, deflation_warning
 from backtest.optimization.evaluator import (
     Cancelled,
@@ -427,6 +428,61 @@ class OptimizationService:
 
     def config_from_run(self, run: dict) -> OptimizationConfig:
         return self.parse(self.config_doc_from_run(run))
+
+    def monte_carlo_best(
+        self, run_id: str, *, simulations: int = DEFAULT_SIMULATIONS
+    ) -> dict[str, Any]:
+        """PRD Part 2 §4 — Monte Carlo on the single best result.
+
+        Not on all 50,000 candidates: the winner is the one that would be
+        applied to paper, and the question is whether *its* trade sequence is a
+        lucky ordering. Walk-forward already asked whether the parameters
+        generalise across time; this asks whether the order of the trades that
+        produced them was luck. Different questions, and together they are the
+        strongest check available without real trading.
+
+        This re-runs the winner once over the run's own candles and its own
+        config, then calls the same
+        :func:`~backtest.engine.monte_carlo.monte_carlo_trade_order` the
+        Backtest page uses — so the two paths cannot drift. One extra backtest
+        per click is the price, and it is a price worth paying: a stored copy
+        of every candidate's trade list would be tens of thousands of rows per
+        run to answer a question asked once.
+        """
+        run = self.store.get_run(run_id)
+        if not run:
+            raise OptimizationError("run not found", 404)
+        if run.get("status") != "completed":
+            raise OptimizationError(
+                "Monte Carlo runs on a completed run — this one has not finished", 409
+            )
+        params = run.get("best_params")
+        if not params:
+            raise OptimizationError("This run has no valid result to test.", 409)
+
+        cfg = self.config_from_run(run)
+        candles = self.loader(cfg)
+        if candles is None or len(candles) == 0:
+            raise OptimizationError(
+                f"no candles for {cfg.backtest.symbol} "
+                f"{cfg.backtest.start_date}→{cfg.backtest.end_date}", 404
+            )
+        settings = {
+            "capital": cfg.backtest.initial_capital,
+            "symbol": cfg.backtest.symbol,
+            "engine": cfg.backtest.engine,
+            "timeframe": cfg.backtest.timeframe,
+            "selector_type": cfg.backtest.selector_type,
+        }
+        from backtest.optimization.evaluator import evaluate  # local: avoids a cycle
+
+        result = evaluate(candles, settings, cfg.strategy_id, dict(params), keep_pnls=True)
+        pnls = result.get("trade_pnls") or []
+        mc = monte_carlo_trade_order(pnls, cfg.backtest.initial_capital,
+                                     simulations=simulations)
+        mc["params"] = dict(params)
+        mc["run_id"] = run_id
+        return mc
 
     def heatmap(
         self,
@@ -938,6 +994,8 @@ class OptimizationService:
         ip_address: str | None = None,
         user_agent: str | None = None,
         notes: str | None = None,
+        monte_carlo_acknowledged: bool = False,
+        monte_carlo_profit_probability: float | None = None,
     ) -> dict[str, Any]:
         """Apply the best (or given) params. See module docstring for gates."""
         run = self._require(run_id)
@@ -981,6 +1039,14 @@ class OptimizationService:
         # opened is worse than one that admits it was a handle.
         origin = (run.get("backtest_config") or {}).get("sourceBacktestId") or None
         details: dict[str, Any] = {"target": target, "notes": notes}
+        # PRD Part 2 §4's gate is a flag, not a block — the browser requires
+        # the acknowledgement. Recording both the fact and the number means the
+        # audit trail can show later that the check WAS run and what it said,
+        # rather than only that someone said they had read it.
+        details["monte_carlo"] = {
+            "acknowledged": bool(monte_carlo_acknowledged),
+            "profit_probability_pct": monte_carlo_profit_probability,
+        }
         mode = {"paper": "paper", "live": "live", "ab_test": "paper"}.get(target)
         if target != "none":
             manager = self._manager()

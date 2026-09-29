@@ -216,6 +216,15 @@ class TestTuneThisWiring:
             assert "js/components/data_source_gate.js" in html, path
         assert client.get("/static/js/components/data_source_gate.js").status_code == 200
 
+    def test_the_run_page_ships_the_monte_carlo_controls(self, client):
+        """PRD Part 2 §4: the button next to Apply, and the gate in the modal."""
+        html = client.get("/optimize/runs/00000000-0000-0000-0000-000000000000").get_data(
+            as_text=True
+        )
+        assert 'id="btnMonteCarlo"' in html
+        assert 'id="monteCarloBox"' in html
+        assert 'id="applyMcGate"' in html
+
     def test_the_run_page_ships_the_audit_chain(self, client):
         html = client.get("/optimize/runs/00000000-0000-0000-0000-000000000000").get_data(
             as_text=True

@@ -53,7 +53,11 @@ import numpy as np
 
 logger = logging.getLogger("backtest.engine.monte_carlo")
 
-__all__ = ["DEFAULT_SIMULATIONS", "monte_carlo_trade_order"]
+__all__ = [
+    "DEFAULT_SIMULATIONS",
+    "FAN_PERCENTILES",
+    "monte_carlo_trade_order",
+]
 
 #: The PRD's 1,000. On even a few hundred trades this is well under a second.
 DEFAULT_SIMULATIONS = 1000
@@ -110,6 +114,47 @@ def _actual_percentile(finals: np.ndarray, actual: float) -> float:
     if finals.size == 0:
         return 50.0
     return round(float((finals <= actual).mean()) * 100, 1)
+
+
+#: Quantile paths returned in ``fan``. 5/25/50/75/95 is enough to see the shape
+#: of the spread; more bands just overlap into a grey smear.
+FAN_PERCENTILES = (5, 25, 50, 75, 95)
+
+#: Above this many trades the quantile paths are downsampled. A 2,000-trade
+#: result would otherwise ship 2,000 points per band to draw a chart a few
+#: hundred pixels wide — the resolution is invisible and the payload is not.
+FAN_MAX_POINTS = 400
+
+
+def _fan(pnls: np.ndarray, start: float) -> dict[str, Any]:
+    """Quantile paths across the resampled sequences — the fan chart's data.
+
+    ``pnls`` is the ``(n_sims, n_trades)`` P&L matrix; the equity path is
+    derived here so a caller cannot pass the wrong one. Only the percentiles
+    survive, not the individual paths: a fan chart shows the envelope of the
+    distribution, and shipping every simulation to draw five lines would send
+    200x the data for the same picture.
+    """
+    if pnls.size == 0:
+        return {"points": 0, "start": round(float(start), 2), "bands": {}}
+    curves = float(start) + np.cumsum(pnls, axis=1)  # (n_sims, n_trades)
+    # One opening point per simulation, prepended so the fan starts at the
+    # account's real starting capital rather than at the first trade boundary.
+    opening = np.full((curves.shape[0], 1), float(start))
+    with_start = np.concatenate([opening, curves], axis=1)  # (n_sims, n_trades + 1)
+    bands = {
+        str(p): [round(float(v), 2) for v in np.percentile(with_start, p, axis=0)]
+        for p in FAN_PERCENTILES
+    }
+    total = with_start.shape[1]  # points per path, not the simulation count
+    if total > FAN_MAX_POINTS:
+        step = int(np.ceil(total / FAN_MAX_POINTS))
+        keep = list(range(0, total, step))
+        if keep[-1] != total - 1:
+            keep.append(total - 1)  # always end on the real final equity
+        bands = {k: [v[i] for i in keep] for k, v in bands.items()}
+        total = len(keep)
+    return {"points": total, "start": round(float(start), 2), "bands": bands}
 
 
 def trade_concentration(trade_pnls: Sequence[float]) -> dict[str, Any]:
@@ -269,5 +314,9 @@ def monte_carlo_trade_order(
         "concentration": concentration,
         "reorder": {**reorder, "actual_percentile": reorder_percentile},
         "bootstrap": {**bootstrap, "actual_percentile": bootstrap_percentile},
+        # The fan is drawn from the bootstrap band: under a pure reorder every
+        # path ends at the same equity, so its "fan" would be a flat wedge and
+        # would read as certainty where none exists.
+        "fan": _fan(boot_pnls, start),
         "warnings": warnings,
     }

@@ -17,6 +17,8 @@
             <button class="btn btn-ghost" id="btnRerun" hidden>↻ Re-run</button>
             <a class="btn btn-ghost" id="btnExport" hidden>⬇ CSV</a>
             <button class="btn" id="btnPreset" hidden>★ Save preset</button>
+            <button class="btn" id="btnMonteCarlo" hidden title="Resample the winning result's trade sequence">
+                🎲 Monte Carlo on best</button>
             <button class="btn btn-primary" id="btnApply" hidden>Apply parameters…</button>
         </div>
     </div>
@@ -81,6 +83,10 @@
 
         <!-- Overview -->
         <div class="tab-pane active" data-pane="overview">
+            <!-- PRD Part 2 §4. On the winner only, on demand: the engine
+                 re-runs the best parameters once and resamples that result's
+                 trade sequence. -->
+            <div id="monteCarloBox" class="card opt-mc-box" hidden></div>
             <div class="opt-overview-grid">
                 <div class="card opt-robust-card">
                     <h2 class="card-title">Robustness</h2>
@@ -249,6 +255,9 @@
         <div class="modal-body">
             <!-- PRD §6 reverse flow: where these parameters came from. -->
             <div id="applyChain" class="opt-chain"></div>
+            <!-- PRD Part 2 §4's gate. Appears only once Monte Carlo has been
+                 run; a flag that must be acknowledged, not a hard block. -->
+            <div id="applyMcGate" class="opt-mc-gate" hidden></div>
             <div id="applyParams" class="opt-apply-params"></div>
             <div class="form-row">
                 <label>Target</label>

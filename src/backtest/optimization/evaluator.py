@@ -357,6 +357,7 @@ def evaluate(
     params: dict[str, Any],
     window: EvalWindow | None = None,
     keep_curve: bool = False,
+    keep_pnls: bool = False,
 ) -> dict[str, Any]:
     """Run ONE backtest; never raises (errors come back in the payload)."""
     t0 = time.perf_counter()
@@ -395,6 +396,11 @@ def evaluate(
         payload: dict[str, Any] = {"params": params, "metrics": metrics, "error": None}
         if keep_curve:
             payload["curve"] = downsample_curve(equity)
+        if keep_pnls:
+            # Only the winner needs these (PRD Part 2 §4's Monte Carlo). Keeping
+            # them for every candidate would mean a trade list per combination
+            # across the whole search.
+            payload["trade_pnls"] = [float(p) for p in pnls]
     except Exception as exc:  # noqa: BLE001 - one bad combination must not kill the run
         payload = {
             "params": params,

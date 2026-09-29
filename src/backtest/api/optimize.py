@@ -52,6 +52,7 @@ from backtest.optimization.scoring import OBJECTIVE_LABELS
 from backtest.optimization.store import RESULT_METRIC_COLUMNS, SORTABLE, clean_json
 
 from backtest.api.data_guard import guard_source  # noqa: E402  (cycle-free sibling)
+from backtest.engine.monte_carlo import DEFAULT_SIMULATIONS
 
 optimize_bp = Blueprint("optimize_api", __name__)
 log = get_logger(__name__)
@@ -274,6 +275,31 @@ def delete_run(run_id: str) -> Tuple[Response, int]:
     return _ok({"deleted": run_id})
 
 
+@optimize_bp.post("/api/optimize/runs/<run_id>/monte-carlo")
+@_handle
+def monte_carlo(run_id: str) -> Tuple[Response, int]:
+    """PRD Part 2 §4 — Monte Carlo on the winning result.
+
+    On the best result only, not on every candidate: the winner is the one
+    that would go to paper, and the question is whether *its* trade sequence
+    is a lucky ordering. Walk-forward already asked whether the parameters
+    generalise across time; this asks a different question about the same run.
+
+    Explicitly **not** guarded by the data-source policy: the candles were
+    already read to produce this run, and the resampling is arithmetic on
+    trades that exist. Refusing it would remove a check on a result the user
+    can already see.
+    """
+    doc = request.get_json(silent=True) or {}
+    try:
+        simulations = int(doc.get("simulations", DEFAULT_SIMULATIONS))
+    except (TypeError, ValueError):
+        return _error("simulations must be an integer", 400)
+    if simulations < 2 or simulations > 50_000:
+        return _error("simulations must be between 2 and 50000", 400)
+    return _ok({"monte_carlo": _service().monte_carlo_best(run_id, simulations=simulations)})
+
+
 @optimize_bp.post("/api/optimize/runs/<run_id>/<action>")
 @_handle
 def run_action(run_id: str, action: str) -> Tuple[Response, int]:
@@ -319,6 +345,8 @@ def _apply(run_id: str) -> Tuple[Response, int]:
         ip_address=request.headers.get("X-Forwarded-For", request.remote_addr),
         user_agent=request.headers.get("User-Agent"),
         notes=body.get("notes"),
+        monte_carlo_acknowledged=bool(body.get("monte_carlo_acknowledged")),
+        monte_carlo_profit_probability=body.get("monte_carlo_profit_probability"),
     )
     return _ok(result)
 

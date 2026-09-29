@@ -703,6 +703,49 @@ class TestMonteCarlo:
         text = json.dumps(mc)
         assert "NaN" not in text and "Infinity" not in text
 
+    # ------------------------------------------------------------------ fan
+
+    def test_the_fan_has_five_ordered_bands(self):
+        """p5 <= p25 <= p50 <= p75 <= p95 at every point, or the chart lies."""
+        mc = monte_carlo_trade_order([100.0, -50.0, 200.0, 30.0] * 5, 100_000.0, simulations=200)
+        bands = mc["fan"]["bands"]
+        assert set(bands) == {"5", "25", "50", "75", "95"}
+        order = ["5", "25", "50", "75", "95"]
+        for i in range(mc["fan"]["points"]):
+            values = [bands[k][i] for k in order]
+            assert values == sorted(values), f"bands cross at point {i}"
+
+    def test_the_fan_starts_at_the_starting_capital(self):
+        """The opening balance is a real point on the path, not an implied one."""
+        mc = monte_carlo_trade_order([100.0, -50.0] * 8, 250_000.0, simulations=200)
+        for band in mc["fan"]["bands"].values():
+            assert band[0] == pytest.approx(250_000.0, abs=0.01)
+
+    def test_the_fan_has_one_point_per_trade_plus_the_start(self):
+        mc = monte_carlo_trade_order([100.0, -50.0, 20.0, 5.0] * 2, 100_000.0, simulations=100)
+        assert mc["fan"]["points"] == 9  # 8 trades + the opening point
+
+    def test_a_very_long_run_is_downsampled(self):
+        """2,000 points per band to draw a few hundred pixels is waste."""
+        pnls = [float(v) for v in np.random.default_rng(2).normal(0, 500, 2000)]
+        fan = monte_carlo_trade_order(pnls, 100_000.0, simulations=100)["fan"]
+        assert fan["points"] <= 401
+        lengths = {len(v) for v in fan["bands"].values()}
+        assert lengths == {fan["points"]}, "every band must be downsampled identically"
+
+    def test_the_downsampled_fan_still_ends_on_the_real_equity(self):
+        """The last point of every band is the end of the path, not a step short."""
+        pnls = [float(v) for v in np.random.default_rng(4).normal(0, 500, 1500)]
+        mc = monte_carlo_trade_order(pnls, 100_000.0, simulations=100)
+        assert mc["fan"]["bands"]["50"][-1] == pytest.approx(
+            mc["bootstrap"]["median_final_equity"], abs=1.0
+        )
+
+    def test_the_fan_is_absent_when_the_block_is_not(self):
+        """A two-trade result is unavailable; it must not carry a fan."""
+        mc = monte_carlo_trade_order([100.0], 100_000.0)
+        assert "fan" not in mc
+
     def test_it_is_fast_enough_to_run_inside_a_request(self):
         import time
 

@@ -883,3 +883,68 @@ mirror. The two reporting views project their columns explicitly and
 35 on the statistic (quantiles against published values, E[max Z] exact at
 N=2, annualisation invariance, raw-vs-excess kurtosis, every degraded path),
 8 on the wiring through a real service run, 11 on the card.
+
+---
+
+## Monte Carlo on the winner (PRD Part 2 §4, 2026-09-29)
+
+A "Run Monte Carlo on best result" button beside Apply to Paper. On the
+**winner only** — not all 50,000 candidates. The winner is the one that would
+be applied, and the question is whether *its* trade sequence is a lucky
+ordering.
+
+Walk-forward and this answer different questions, which is why both are worth
+having: walk-forward asks whether the **parameters** generalise across time;
+Monte Carlo asks whether the **order of the trades** that produced them was
+luck.
+
+### On demand, not precomputed
+
+`service.monte_carlo_best()` re-runs the best parameters once over the run's
+own candles and its own config, then calls the same
+`monte_carlo_trade_order()` the Backtest page uses — so the two paths cannot
+drift. One extra backtest per click buys not storing a trade list for every
+candidate across every run, which would be tens of thousands of rows to answer
+a question asked once.
+
+`evaluate()` grew a `keep_pnls` flag. It is off for the whole search; only
+this one call turns it on.
+
+### The fan chart
+
+The engine now returns quantile paths (5/25/50/75/95) as `fan`. Only the
+percentiles ship, not the individual paths: a fan chart shows the envelope of
+the distribution, and sending 1,000 simulations to draw five lines is 200× the
+data for the same picture.
+
+Drawn from the **bootstrap** band, not the reorder. Under a pure reorder every
+path ends at the same equity, so its "fan" would be a flat wedge — and a flat
+wedge drawn to look like certainty is worse than no chart.
+
+Long runs are downsampled to ~400 points per band, always ending on the real
+final equity rather than a step short of it.
+
+### The gate is a flag, not a block
+
+P(profit) < 60% adds a checkbox to the Apply modal that must be ticked. **Not**
+a hard block, deliberately: Monte Carlo is opt-in, so a hard gate would make
+Apply depend on a check that may never have been run. A browser-only
+requirement would be a rule that exists only in one place, so the server
+records both the acknowledgement *and* the number — the audit trail can then
+show that the check was run and what it said, not merely that someone claimed
+to have read it.
+
+An unrun check is recorded as `acknowledged: false`, which is distinguishable
+from never having looked.
+
+### Not blocked by the data-source policy
+
+The candle policy (§ above) guards the four routes that consume candles. This
+is not one of them: the candles were already read to produce this run, and the
+resampling is arithmetic on trades that exist. Refusing it would remove a
+check on a result the user can already see.
+
+### Tests
+22 on the service, endpoint and gate; 7 new on the fan's shape (band ordering
+at every point, opening balance, downsample bounds, ending on the real
+equity). Suite 4206 passed.
