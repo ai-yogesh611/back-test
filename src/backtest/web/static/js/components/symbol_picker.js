@@ -171,6 +171,15 @@
                 const row = state.rows.find((r) => r.symbol === symbol);
                 return row && row.timeframes_available ? row.timeframes_available.slice() : [];
             },
+            /**
+             * Symbols currently loaded, for the Test Generalization slot
+             * pickers (PRD §4.2). Returns the loaded page only — callers that
+             * need a different symbol should use `setValue` first so the server
+             * has a chance to inject it.
+             */
+            symbols() {
+                return state.rows.map((r) => r.symbol).filter(Boolean);
+            },
         };
 
         render();

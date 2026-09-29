@@ -1689,3 +1689,113 @@ select.input option.sym-no-data:disabled { cursor: not-allowed; }
 .runcheck-no { color: var(--danger-text); font-weight: 600; }
 .runcheck-table td.pos { color: var(--success-text); }
 .runcheck-table td.neg { color: var(--danger-text); }
+
+/* ==========================================================================
+   Compare Tab — §4 (shared conditions, generalization mode, comparison panels)
+   ========================================================================== */
+
+/* --- §4.2 mode toggle ---------------------------------------------------- */
+.mode-bar { margin-bottom: 16px; }
+.mode-toggle { display: flex; gap: 10px; flex-wrap: wrap; }
+.mode-btn {
+    flex: 1 1 240px;
+    display: flex; flex-direction: column; gap: 2px; align-items: flex-start;
+    text-align: left;
+    padding: 10px 14px;
+    background: var(--panel-2, #111827);
+    border: 1px solid var(--border, #1f2937);
+    border-radius: 8px;
+    color: var(--text-dim, #94a3b8);
+    cursor: pointer;
+    transition: border-color .12s, background .12s;
+}
+.mode-btn strong { color: var(--text, #e2e8f0); font-size: .92rem; }
+.mode-btn:hover { border-color: #3b82f6; }
+.mode-btn.active {
+    border-color: #3b82f6;
+    background: rgba(59, 130, 246, .10);
+    box-shadow: inset 0 0 0 1px rgba(59, 130, 246, .35);
+}
+.mode-note { margin: 10px 0 0; line-height: 1.5; }
+
+/* --- §4.2 generalization setup ------------------------------------------- */
+.generalization-setup { margin-bottom: 16px; }
+.generalization-setup[hidden] { display: none; }
+.generalization-setup p { margin: 0 0 12px; line-height: 1.5; max-width: 68ch; }
+.gen-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
+.gen-params { display: contents; }
+.gen-params:empty { display: none; }
+
+.slots-row[data-mode="generalization"] { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.slot-params-note { margin-top: 6px; font-size: .78rem; }
+
+/* --- §4.5 equity index note --------------------------------------------- */
+.pane-note { margin: 0 0 10px; line-height: 1.5; max-width: 80ch; }
+
+/* --- §4.1 failed slot columns -------------------------------------------- */
+.col-head-failed { opacity: .65; }
+.metric-cell-void { color: #64748b; text-align: center; }
+.metric-status { font-size: .78rem; max-width: 26ch; }
+.metric-status-text {
+    display: block; max-width: 26ch; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* --- §4.3 / §4.4 comparison panels --------------------------------------- */
+.cmp-panels { display: flex; flex-direction: column; gap: 12px; }
+.cmp-panel {
+    border: 1px solid var(--border, #1f2937);
+    border-radius: 8px;
+    background: var(--panel-2, #111827);
+    padding: 0;
+}
+.cmp-head {
+    padding: 10px 14px;
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--text, #e2e8f0);
+    list-style: none;
+}
+.cmp-head::-webkit-details-marker { display: none; }
+.cmp-head::before { content: "▸ "; color: #64748b; }
+.cmp-panel[open] > .cmp-head::before { content: "▾ "; }
+.cmp-body { padding: 0 14px 14px; }
+
+.cmp-verdict { margin: 0 0 12px; padding: 8px 12px; border-radius: 6px; font-size: .85rem; }
+.cmp-ok { color: #7fc8a0; background: rgba(127, 200, 160, .10); }
+.cmp-warn { color: #e0938f; background: rgba(224, 147, 143, .10); }
+.cmp-muted { color: #94a3b8; }
+
+.cmp-banner { margin: 0 0 10px; padding: 8px 12px; border-radius: 6px; font-size: .84rem; }
+.cmp-banner-warn { color: #d4b26a; background: rgba(212, 178, 106, .10); }
+.cmp-banner-error { color: #e0938f; background: rgba(224, 147, 143, .10); }
+.cmp-banner-info { color: #94a3b8; background: rgba(148, 163, 184, .08); }
+.cmp-unavailable { color: #64748b; font-style: italic; margin: 0; }
+
+/* Heatmap: green = diversifying, red = redundant. */
+.cmp-heatmap, .cmp-sig { width: 100%; border-collapse: collapse; font-size: .82rem; }
+.cmp-heatmap th, .cmp-heatmap td, .cmp-sig th, .cmp-sig td {
+    padding: 6px 8px; text-align: center; border: 1px solid var(--border, #1f2937);
+}
+.cmp-heatmap .cmp-ax, .cmp-sig th {
+    background: rgba(148, 163, 184, .06);
+    color: var(--text-dim, #94a3b8);
+    font-weight: 600;
+    max-width: 16ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cmp-sig td.cmp-pair { text-align: left; max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmp-sig .num { font-variant-numeric: tabular-nums; }
+.cmp-cell-cool { background: rgba(63, 185, 118, .55); }
+.cmp-cell-mild { background: rgba(212, 178, 106, .45); }
+.cmp-cell-warm { background: rgba(212, 140, 106, .45); }
+.cmp-cell-hot  { background: rgba(224, 93, 93, .60); }
+.cmp-cell-flat { background: rgba(100, 116, 139, .25); color: #64748b; }
+.cmp-cell-self { background: rgba(148, 163, 184, .10); color: #64748b; }
+.cmp-cell { font-variant-numeric: tabular-nums; }
+
+.cmp-footnote { margin: 10px 0 0; font-size: .78rem; line-height: 1.55; color: #94a3b8; }
+.cmp-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.cmp-dot-a { background: #3b82f6; }
+.cmp-dot-b { background: #d4b26a; }
+.cmp-excluded .cmp-row { display: flex; gap: 10px; justify-content: space-between; padding: 4px 0; font-size: .84rem; }
+.cmp-excluded .cmp-bad { color: #e0938f; text-align: right; }

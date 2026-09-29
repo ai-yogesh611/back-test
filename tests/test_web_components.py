@@ -223,3 +223,47 @@ console.log(JSON.stringify({ a: count(els["a"].querySelector("tbody").innerHTML)
         "a": 3,
         "b": 7,
     }, f"containers must render independently: {result.stdout}{result.stderr}"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_compare_analytics_panels_behaviour():
+    """PRD backTest-enhance §4.1/§4.3/§4.4/§4.5: the Compare tab's analytics.
+
+    Pins the four claims this tab now makes that a screenshot cannot check: a
+    correlated pair is explained in words, an "n/a" cell is explained rather
+    than left blank, a server verdict of "no significant difference" is not
+    upgraded by the renderer, and every equity curve starts at exactly 100.
+    """
+    result = subprocess.run(
+        ["node", str(_REPO_ROOT / "tests" / "js" / "test_compare_panels.mjs")],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert (
+        result.returncode == 0
+    ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "24 tests passed" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_compare_controller_sends_the_right_request():
+    """PRD backTest-enhance §4.1/§4.2: what the Compare page actually SENDS.
+
+    The API tests prove the server honours a request; these prove the page
+    makes one worth honouring. A controller that quietly re-introduced a
+    per-slot timeframe, or let generalization send four different parameter
+    sets, would leave every server-side test still green.
+    """
+    result = subprocess.run(
+        ["node", str(_REPO_ROOT / "tests" / "js" / "test_compare_controller.mjs")],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert (
+        result.returncode == 0
+    ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "13 tests passed" in result.stdout

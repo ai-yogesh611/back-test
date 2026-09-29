@@ -432,3 +432,115 @@ with all three checks completes in ~0.5 s.
 `tests/js/test_run_checks.mjs` (28, via `tests/test_web_components.py`), plus
 updated shape assertions in `tests/test_api_backtest.py` and
 `tests/test_backtest_adapter.py`.
+
+---
+
+## Compare Tab Enhancements (PRD §4, 2026-09-29)
+
+Implements **Part 1 §4** of `docs/backTest-enhance.md`. Part 1 §1–§4 are now
+complete; §5 and all of Part 2 remain open.
+
+The Compare page previously let each slot pick its own symbol *and* its own
+timeframe, hid the slots that failed, plotted raw equity levels, and answered
+neither "are these four rows four bets?" nor "did the top row actually win?".
+
+### What counts as a shared condition (§4.1)
+
+Dates, capital, engine **and timeframe** are now read once and sent in the
+`shared` block; `run-many` applies them to every slot. Only strategy and
+parameters remain per-slot.
+
+- The per-slot timeframe `<select>` is gone from the slot card and the
+  timeframe moved into the shared config panel. The per-slot `symbol` send was
+  removed too — in Compare Strategies mode the symbol is a shared condition
+  too, and only Test Generalization may vary it.
+- The shared timeframe is filled from the shared symbol's real coverage (§1.4),
+  so it never offers a granularity with no bars behind it.
+- **A failed slot keeps its column.** `renderCompareTable` takes *all* slots,
+  not just the successful ones: the metric cells render `—`, a `Status` row
+  carries the error, and the Backtest/Forward buttons are omitted because there
+  is no result to open. A three-column table after one slot blew up reads as
+  "that is what the comparison was".
+- Slot errors are HTML-escaped before reaching the table. They are
+  server-supplied strings that land in an attribute; an unescaped quote or tag
+  there would break the table or inject markup into the results page.
+
+### Test Generalization (§4.2)
+
+A mode toggle above the shared config. `generalization` keeps **one** strategy
+and **one** parameter set in a shared editor and turns each slot into a symbol
+row, capped at four.
+
+- The server distinguishes the two modes by the *data*, not by a client-sent
+  flag: `provenance.comparison_mode` is `generalization` when the slots
+  disagree on symbol, `strategies` otherwise. Note the key is
+  `comparison_mode`, **not** `mode` — `mode` is the engine tier
+  (fill-exact / quick-screen) read by the provenance badge.
+- `provenance.symbol` lists every symbol when they differ, so a multi-symbol run
+  is never badged with the one symbol that was not used.
+- A slot with no `symbol` of its own falls back to the shared one, so
+  Compare-Strategies requests are byte-identical to before.
+
+### The correlation matrix is aligned, and flat curves are undefined (§4.3)
+
+`engine/comparison.py::correlation_matrix` outer-joins every result's
+per-bar returns and **drops any bar not shared by all** before correlating.
+Pairwise intersections would let one cell be measured over 500 bars and the
+next over 300, and the panel says how many bars it used.
+
+- A zero standard deviation (a strategy that never moved) yields `None`, not
+  `0.0`. A 0.0 would read as "perfectly diversifying" — the opposite of the
+  truth — so those cells render `n/a`, carry a `undefined_correlation`
+  warning naming the flat curves, and are excluded from the >0.8 flags.
+- Pairs above `HIGH_CORRELATION = 0.8` are listed in `high_correlation_pairs`
+  and each gets its own warning. The panel states the count in words, because
+  a red square on its own does not tell a reader whether to do anything.
+- Labels are built as `strategy · SYMBOL (params)` and de-duplicated by slot
+  id, because two slots on the same strategy is how a parameter sweep works and
+  a name-keyed matrix would silently collapse them into one row.
+
+### The significance bootstrap is paired, not independent (§4.4)
+
+`sharpe_significance` draws **one** set of day-indices per simulation and
+applies it to every strategy.
+
+This is the load-bearing decision in the slice. Two strategies in Compare
+Strategies mode traded the same market days, so their daily returns are
+correlated. Resampling each series *independently* would let the shared market
+shocks separate between the two series, manufacturing disagreement the market
+never produced — and the panel would report a confident winner between two
+strategies that in truth took the same bets. Paired resampling keeps
+collinear strategies correctly tied.
+
+- Verdicts are two-sided over `SIGNIFICANCE_LEVELS` (≥95% A better, ≤5% B
+  better, otherwise `no_significant_difference`).
+- If **no** pair differs, the block carries a `no_significant_winner` warning:
+  *"Promoting the top row out of these results is promoting the luckiest, not
+  the best."*
+- Seeded (`seed=42`) so a refresh does not reorder the panel.
+- Sharpes are annualised by the **shared** timeframe, read from the slot
+  payloads, falling back to daily. Never hard-coded to 252.
+- The panel is informational and says so. It gates nothing.
+
+### Equity curves are indexed to 100 (§4.5)
+
+`rebase_to_100` (server) and `indexTo100` (chart) both divide a curve by its
+base at the **first shared date**, not each slot's own first bar — a slot that
+starts later therefore begins above or below 100 instead of being falsely shown
+as a winner that started flat.
+
+- Two identical starting-capital slots that made 40% and 4% produce two lines
+  100 apart and 100.4 apart, so the chart's whole vertical range is spent
+  re-stating the starting capital instead of showing which strategy won.
+- A non-positive or non-finite base is returned **unchanged** rather than
+  divided into, which would fill the curve with infinities and blank the chart.
+  Both implementations carry the same guard.
+
+### Tests
+`tests/test_engine_comparison.py` (25) pins the maths, including the two
+"would mislead a user" cases: two copies of one strategy are never significant,
+and a flat curve is undefined rather than zero. `tests/test_api_backtest_comparison.py`
+(18) pins the wiring — per-slot symbols, provenance, failed-slot exclusion and
+the page markup. `tests/js/test_compare_panels.mjs` (24) pins what the panels
+render, and `tests/js/test_compare_controller.mjs` (13) pins the request the
+page actually sends; both are driven from `tests/test_web_components.py`.

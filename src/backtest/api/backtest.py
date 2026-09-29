@@ -37,6 +37,7 @@ import traceback
 from concurrent.futures import ProcessPoolExecutor
 from typing import Any
 
+import pandas as pd
 from flask import Blueprint, current_app, jsonify, request
 
 from backtest.adapters.backtest_adapter import BacktestAdapter
@@ -44,6 +45,7 @@ from backtest.data.provenance import ENGINE_FILL_EXACT, ENGINE_MIXED
 from backtest.engine.backtest_runner import resolve_interval, resolve_warmup_start
 from backtest.engine.backtest_runner import run_backtest as _run_driver
 from backtest.engine.backtest_runner import run_quick_screen
+from backtest.engine.comparison import correlation_matrix, sharpe_significance
 from backtest.engine.cost_shock import run_cost_shock
 from backtest.engine.monte_carlo import monte_carlo_trade_order
 from backtest.logging_config import get_logger, timed
@@ -442,6 +444,106 @@ def monte_carlo_endpoint() -> tuple:
 
 
 # ---------------------------------------------------------------------------
+# Cross-strategy comparison (PRD §4.3 / §4.4)
+# ---------------------------------------------------------------------------
+
+
+def _slot_label(job: dict, payload: dict) -> str:
+    """A human label that stays unique when slots share a strategy.
+
+    Two slots on the same strategy are common (that is how a parameter sweep
+    works), and a correlation matrix keyed on a duplicated name would silently
+    collapse them into one row.
+    """
+    name = str(job.get("strategy") or "?")
+    symbol = str(job.get("symbol") or "")
+    params = job.get("params") or {}
+    detail = ",".join(f"{k}={v}" for k, v in sorted(params.items())) if params else ""
+    base = f"{name} · {symbol}" if symbol else name
+    return f"{base} ({detail})" if detail else base
+
+
+def _comparison_block(
+    results: dict[str, Any], jobs: list[dict], source_name: str
+) -> dict[str, Any]:
+    """§4.3 correlation heatmap + §4.4 significance, from the slot payloads.
+
+    Reads the per-bar returns each slot already returns, so the matrix is built
+    from the same numbers the table above it is showing. A slot that failed is
+    left out of the maths and named in ``excluded`` — it is not silently
+    dropped, and it is not given a row of zeros either.
+    """
+    from backtest.data.base import periods_per_year as annualisation
+
+    returns: dict[str, pd.Series] = {}
+    excluded: list[dict[str, str]] = []
+    ppy_used = 0.0
+    labels_by_id: dict[str, str] = {}
+
+    for job in jobs:
+        sid = str(job.get("id"))
+        payload = results.get(sid)
+        if not isinstance(payload, dict) or "error" in payload:
+            excluded.append(
+                {
+                    "slot": sid,
+                    "label": _slot_label(job, {}),
+                    "reason": (payload or {}).get("error", "no result"),
+                }
+            )
+            continue
+        equity = payload.get("equity") or {}
+        values = equity.get("values") or []
+        dates = equity.get("dates") or []
+        if not values or len(values) != len(dates):
+            excluded.append(
+                {
+                    "slot": sid,
+                    "label": _slot_label(job, payload),
+                    "reason": "no equity curve",
+                }
+            )
+            continue
+        label = _slot_label(job, payload)
+        # Disambiguate the rare case of two slots producing the same label.
+        if label in returns:
+            label = f"{label} (#{sid})"
+        labels_by_id[sid] = label
+        returns[label] = pd.Series(
+            [float(v) for v in values],
+            index=pd.Index(dates),
+            dtype="float64",
+        ).pct_change()
+        tf = (payload.get("config") or {}).get("timeframe") or ""
+        if tf:
+            try:
+                ppy_used = max(ppy_used, float(annualisation(tf)))
+            except Exception:  # noqa: BLE001 — an unknown timeframe is not fatal
+                pass
+
+    # Daily is the engine's own fallback when a run reports no timeframe.
+    if ppy_used <= 0:
+        ppy_used = float(annualisation("1day"))
+
+    correlation = correlation_matrix(returns)
+    significance = sharpe_significance(returns, ppy_used)
+    log.info(
+        "[run-many] comparison: %d comparable, %d excluded, max |corr|=%s",
+        len(returns),
+        len(excluded),
+        correlation.get("max_correlation"),
+    )
+    return {
+        "labels_by_slot": labels_by_id,
+        "periods_per_year": ppy_used,
+        "source_name": source_name,
+        "correlation": correlation,
+        "significance": significance,
+        "excluded": excluded,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Parallel multi-slot backtest
 # ---------------------------------------------------------------------------
 
@@ -495,6 +597,15 @@ def run_many() -> tuple:
     # so job params must be picklable plain data — no source objects, no
     # closures, no lambdas. Each worker process rebuilds its own source by
     # name (sources are deterministic/plain-constructor, so this is exact).
+    # §4.2 "Test Generalization": one strategy, up to four SYMBOLS. The shared
+    # symbol stays the default for every slot, so the ordinary
+    # "different strategies, same data" mode is byte-identical to before; only
+    # a slot that names its own symbol opts out. Everything else — dates,
+    # capital, engine, timeframe — stays shared, because a comparison across
+    # different date ranges or engines is not a comparison.
+    slot_symbols = {
+        str(slot.get("id")): str(slot.get("symbol") or symbol).strip().upper() for slot in slots
+    }
     jobs = [
         {
             "id": slot.get("id"),
@@ -502,7 +613,7 @@ def run_many() -> tuple:
             "params": slot.get("params") or {},
             "timeframe": slot.get("timeframe", "1D"),
             "mode": str(slot.get("mode", "")).strip().lower(),
-            "symbol": symbol,
+            "symbol": slot_symbols[str(slot.get("id"))],
             "from_date": from_date,
             "to_date": to_date,
             "warmup_start": warmup_start,
@@ -554,19 +665,35 @@ def run_many() -> tuple:
     # like-for-like (PRD §1.1 / §4.1).
     slot_engines = {str(job.get("mode", "")).strip().lower() or ENGINE_FILL_EXACT for job in jobs}
     shared_engine = next(iter(slot_engines)) if len(slot_engines) == 1 else ENGINE_MIXED
+    # In generalization mode the slots deliberately run DIFFERENT symbols, so
+    # the shared badge must name that rather than the (unused) shared symbol.
+    distinct_symbols = sorted({job["symbol"] for job in jobs})
     shared_provenance = _provenance(
         None,
         source_name=source_name,
         engine=shared_engine,
-        symbol=symbol,
+        symbol=symbol if len(distinct_symbols) == 1 else ", ".join(distinct_symbols),
         timeframe=",".join(sorted({str(job.get("timeframe", "1D")) for job in jobs})),
         from_date=from_date,
         to_date=to_date,
     )
     shared_provenance["engines_used"] = sorted(slot_engines)
+    shared_provenance["symbols_used"] = distinct_symbols
+    # NOT "mode": that key is the ENGINE mode (fill-exact / quick_screen) and
+    # is read by the provenance badge. Naming the comparison mode "mode" would
+    # silently relabel every run as a strategy comparison.
+    shared_provenance["comparison_mode"] = (
+        "generalization" if len(distinct_symbols) > 1 else "strategies"
+    )
     _provenance_log(shared_provenance, "run-many")
 
-    return jsonify({"results": results, "provenance": shared_provenance}), 200
+    comparison = _comparison_block(
+        results, jobs, current_app.config.get("BACKTEST_SOURCE", "synthetic")
+    )
+    return (
+        jsonify({"results": results, "provenance": shared_provenance, "comparison": comparison}),
+        200,
+    )
 
 
 # ---------------------------------------------------------------------------
