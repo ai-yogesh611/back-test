@@ -282,3 +282,60 @@ def test_503_when_no_database(monkeypatch):
     r = c.get("/api/optimize/runs")
     assert r.status_code == 503 and "database" in r.get_json()["error"]
     assert c.get("/api/optimize/meta").status_code == 200  # static metadata still works
+
+
+# ---------------------------------------------------------------------------
+# Provenance (PRD backTest-enhance §1.2)
+# ---------------------------------------------------------------------------
+
+
+def test_run_payload_carries_provenance(client, run_id):
+    """An optimize result must say which engine and which data produced it.
+
+    Read back from the run ROW, not from the app's current config — a run
+    finished last week still describes the data it actually used.
+    """
+    prov = client.get(f"/api/optimize/runs/{run_id}").get_json()["run"]["provenance"]
+
+    assert prov["engine_used"] == "backtest_driver"   # config spells it "driver"
+    assert prov["engine_label"] == "Fill-Exact (Canonical)"
+    assert prov["engine_canonical"] is True
+    assert prov["data_source"] == "synthetic"
+    assert prov["data_source_label"] == "Synthetic"
+    assert prov["data_source_real"] is False
+    assert prov["symbol"] == "DEMO"
+    assert prov["date_range"] == {"from": "2021-01-01", "to": "2023-12-31"}
+    assert prov["bars_count"] > 0
+    # data_from/data_to are what the candles ACTUALLY covered, which ends on
+    # the last bar in the frame rather than the requested end date.
+    assert prov["data_from"] == "2021-01-01"
+    assert prov["data_to"] == "2023-12-29"
+    assert prov["data_to"] <= "2023-12-31"
+
+
+def test_provenance_flags_synthetic_data_on_an_optimize_run(client, run_id):
+    warnings = client.get(f"/api/optimize/runs/{run_id}").get_json()["run"]["provenance"]["warnings"]
+    assert [w["code"] for w in warnings] == ["non_real_data"]
+    assert warnings[0]["level"] == "error"
+
+
+def test_provenance_is_on_every_run_payload(client, run_id):
+    """Both payloads the results page reads carry the same stamp: a run that
+    was created and the same run fetched back."""
+    for payload in (client.post("/api/optimize/runs", json={**SMA_DOC, "start": False}).get_json(),
+                    client.get(f"/api/optimize/runs/{run_id}").get_json()):
+        assert "provenance" in payload["run"], payload
+        assert payload["run"]["provenance"]["engine_used"] == "backtest_driver"
+        assert payload["run"]["provenance"]["symbol"] == "DEMO"
+
+
+def test_quick_screen_optimize_run_is_flagged_approximate(client, env):
+    doc = {**SMA_DOC, "backtestConfig": {**SMA_DOC["backtestConfig"], "engine": "quick_screen"}}
+    # start=False: the stamp is derived from the stored config, so there is no
+    # need to burn a full run — and no background worker left racing teardown.
+    r = client.post("/api/optimize/runs", json={**doc, "start": False})
+    assert r.status_code == 201
+    prov = r.get_json()["run"]["provenance"]
+    assert prov["engine_used"] == "quick_screen"
+    assert prov["engine_canonical"] is False
+    assert [w["code"] for w in prov["warnings"]] == ["non_real_data", "approximate_engine"]

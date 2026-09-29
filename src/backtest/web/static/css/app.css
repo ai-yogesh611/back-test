@@ -1533,3 +1533,533 @@ body.has-alert-widget .toast-stack { bottom: 76px; }
 .xb-bar.is-good > span { background: var(--success); }
 .xb-bar.is-bad  > span { background: var(--danger); }
 .xb-empty { color: var(--muted); font-size: .85rem; padding: 12px 0; }
+
+/* ------------------------------------------------------------------
+ * Provenance badges (PRD backTest-enhance §1.1 + §1.2).
+ * Permanent, non-dismissable: which ENGINE and which DATA produced the
+ * numbers below them. Severity is carried by the wording on the badge
+ * and the server-stamped banner, not by colour alone.
+ * ------------------------------------------------------------------ */
+.prov-strip { margin-bottom: 14px; }
+.prov-strip:empty { display: none; }
+.prov-badges { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.prov-badge {
+    display: inline-block; padding: 3px 10px; border-radius: 999px;
+    font-size: .74rem; font-weight: 600; border: 1px solid transparent;
+    white-space: nowrap; cursor: help;
+}
+.prov-badge-plain {
+    background: var(--surface-2); color: var(--muted);
+    border-color: var(--border); font-weight: 500;
+}
+.prov-badge-ok { background: var(--success-tint); color: var(--success-text); border-color: var(--success-shade); }
+.prov-badge-info { background: rgba(59,130,246,.18); color: #93c5fd; border-color: rgba(59,130,246,.35); }
+.prov-badge-warn { background: var(--warning-tint); color: var(--warning-text); border-color: var(--warning-shade); }
+.prov-badge-error { background: var(--danger-tint); color: var(--danger-text); border-color: var(--danger-shade); }
+
+.prov-banner {
+    margin-top: 10px; border-radius: var(--radius); padding: 10px 14px;
+    font-size: .86rem; border: 1px solid transparent;
+}
+.prov-banner-error { background: var(--danger-tint); border-color: var(--danger-shade); color: var(--danger-text); }
+.prov-banner-warn { background: var(--warning-tint); border-color: var(--warning-shade); color: var(--warning-text); }
+.prov-banner-info { background: rgba(59,130,246,.10); border-color: rgba(59,130,246,.30); color: #93c5fd; }
+
+/* ------------------------------------------------------------------
+ * Symbol picker (PRD backTest-enhance §1.3) + timeframe note (§1.4).
+ * A symbol with no cached bars is LISTED and greyed out, never hidden —
+ * a missing option reads as "this does not exist", which was the bug.
+ * ------------------------------------------------------------------ */
+.sym-tabs { display: inline-flex; gap: 2px; margin-bottom: 6px; flex-wrap: wrap; }
+.sym-tab {
+    background: var(--surface-2); border: 1px solid var(--border); color: var(--muted);
+    border-radius: 6px; padding: 3px 10px; font-size: .74rem; cursor: pointer;
+}
+.sym-tab:hover { color: var(--text); border-color: var(--primary); }
+.sym-tab.active { background: rgba(59,130,246,.18); color: #93c5fd; border-color: rgba(59,130,246,.4); font-weight: 600; }
+.sym-no-data { color: var(--muted); opacity: .62; font-style: italic; }
+select.input option.sym-no-data:disabled { cursor: not-allowed; }
+
+/* ------------------------------------------------------------------
+ * Richer metric sections (PRD backTest-enhance §2.2).
+ * Four labelled <details> blocks below the existing metrics grid. The
+ * banner is the loud one: below 20 closed trades every number on the
+ * page is a point estimate with an interval wider than the value.
+ * ------------------------------------------------------------------ */
+#metricSections { margin-bottom: 16px; }
+.metric-section {
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: var(--radius); margin-bottom: 8px; overflow: hidden;
+}
+.metric-section-head {
+    cursor: pointer; padding: 10px 14px; font-weight: 600; font-size: .88rem;
+    list-style: none; user-select: none;
+}
+.metric-section-head::-webkit-details-marker { display: none; }
+.metric-section-head::before { content: "▸ "; color: var(--muted); }
+.metric-section[open] > .metric-section-head::before { content: "▾ "; }
+.metric-section[open] > .metric-section-head { border-bottom: 1px solid var(--border); }
+.metric-section-head:hover { color: var(--primary); }
+.metric-section-note { margin: 0; padding: 8px 14px 0; font-size: .78rem; color: var(--muted); }
+.metric-section-body { padding: 6px 14px 12px; }
+.metric-row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    gap: 16px; padding: 5px 0; border-bottom: 1px solid var(--border);
+    font-size: .84rem;
+}
+.metric-row:last-child { border-bottom: none; }
+.metric-row-label { color: var(--muted); }
+.metric-row-value { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.metric-confidence-banner {
+    background: var(--warning-tint); border: 1px solid var(--warning-shade);
+    color: var(--warning-text); border-radius: var(--radius);
+    padding: 12px 16px; margin-bottom: 10px; font-size: .86rem; font-weight: 500;
+}
+.metric-confidence-flag {
+    display: inline-block; font-size: .74rem; border-radius: 999px;
+    padding: 2px 10px; margin-bottom: 8px; border: 1px solid transparent;
+}
+.metric-confidence-ok { background: var(--success-tint); color: var(--success-text); border-color: var(--success-shade); }
+.metric-confidence-warn { background: var(--warning-tint); color: var(--warning-text); border-color: var(--warning-shade); }
+.metric-confidence-insufficient { background: var(--danger-tint); color: var(--danger-text); border-color: var(--danger-shade); }
+
+/* ------------------------------------------------------------------
+ * Single-run checks (PRD backTest-enhance §3).
+ * Three collapsed panels below the metric sections. They each qualify
+ * the numbers above them, so they are opt-in — but "unavailable" is
+ * always spelled out, never rendered as an absent panel.
+ * ------------------------------------------------------------------ */
+#runChecks { margin-bottom: 18px; }
+.runcheck-panel {
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: var(--radius); margin-bottom: 8px; overflow: hidden;
+}
+.runcheck-head {
+    cursor: pointer; padding: 10px 14px; font-weight: 600; font-size: .88rem;
+    list-style: none; user-select: none;
+}
+.runcheck-head::-webkit-details-marker { display: none; }
+.runcheck-head::before { content: "▸ "; color: var(--muted); }
+.runcheck-panel[open] > .runcheck-head::before { content: "▾ "; }
+.runcheck-panel[open] > .runcheck-head { border-bottom: 1px solid var(--border); }
+.runcheck-head:hover { color: var(--primary); }
+.runcheck-note { margin: 0; padding: 8px 14px 0; font-size: .78rem; color: var(--muted); }
+.runcheck-body { padding: 10px 14px 14px; font-size: .84rem; }
+.runcheck-rows { margin-top: 4px; }
+.runcheck-row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    gap: 16px; padding: 5px 0; border-bottom: 1px solid var(--border);
+}
+.runcheck-row:last-child { border-bottom: none; }
+.runcheck-label { color: var(--muted); }
+.runcheck-value { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.runcheck-section-label {
+    margin: 12px 0 2px; font-size: .74rem; text-transform: uppercase;
+    letter-spacing: .04em; color: var(--muted);
+}
+.runcheck-footnote { margin: 10px 0 0; font-size: .76rem; color: var(--muted); }
+.runcheck-unavailable { margin: 0; font-size: .8rem; color: var(--muted); font-style: italic; }
+.runcheck-caveat-block {
+    margin: 8px 0; padding: 8px 10px; font-size: .78rem; border-radius: 6px;
+    background: rgba(245,158,11,.10); border: 1px solid rgba(245,158,11,.30); color: var(--warning-text);
+}
+.runcheck-caveat { display: block; font-size: .68rem; color: var(--warning-text); font-style: italic; }
+.runcheck-banner {
+    margin: 8px 0; border-radius: 6px; padding: 9px 12px; font-size: .82rem;
+    border: 1px solid transparent;
+}
+.runcheck-subbanner { margin-top: 8px; font-size: .78rem; }
+.runcheck-banner-error, .runcheck-subbanner.runcheck-banner-error { background: var(--danger-tint); border-color: var(--danger-shade); color: var(--danger-text); }
+.runcheck-banner-warn, .runcheck-subbanner.runcheck-banner-warn { background: var(--warning-tint); border-color: var(--warning-shade); color: var(--warning-text); }
+.runcheck-banner-info, .runcheck-subbanner.runcheck-banner-info { background: rgba(59,130,246,.10); border-color: rgba(59,130,246,.30); color: #93c5fd; }
+.runcheck-verdict {
+    display: inline-block; border-radius: 6px; padding: 5px 11px;
+    font-size: .8rem; font-weight: 600; margin-bottom: 4px;
+}
+.runcheck-ok { background: var(--success-tint); color: var(--success-text); border: 1px solid var(--success-shade); }
+.runcheck-warn { background: var(--warning-tint); color: var(--warning-text); border: 1px solid var(--warning-shade); }
+.runcheck-error { background: var(--danger-tint); color: var(--danger-text); border: 1px solid var(--danger-shade); }
+.runcheck-table { width: 100%; border-collapse: collapse; margin: 8px 0 4px; font-size: .82rem; }
+.runcheck-table th, .runcheck-table td { padding: 5px 8px; border-bottom: 1px solid var(--border); text-align: left; }
+.runcheck-table th { font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
+.runcheck-table td.num, .runcheck-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.runcheck-bps { color: var(--muted); font-size: .74rem; }
+.runcheck-yes { color: var(--success-text); font-weight: 600; }
+.runcheck-no { color: var(--danger-text); font-weight: 600; }
+.runcheck-table td.pos { color: var(--success-text); }
+.runcheck-table td.neg { color: var(--danger-text); }
+
+/* ==========================================================================
+   Compare Tab — §4 (shared conditions, generalization mode, comparison panels)
+   ========================================================================== */
+
+/* --- §4.2 mode toggle ---------------------------------------------------- */
+.mode-bar { margin-bottom: 16px; }
+.mode-toggle { display: flex; gap: 10px; flex-wrap: wrap; }
+.mode-btn {
+    flex: 1 1 240px;
+    display: flex; flex-direction: column; gap: 2px; align-items: flex-start;
+    text-align: left;
+    padding: 10px 14px;
+    background: var(--panel-2, #111827);
+    border: 1px solid var(--border, #1f2937);
+    border-radius: 8px;
+    color: var(--text-dim, #94a3b8);
+    cursor: pointer;
+    transition: border-color .12s, background .12s;
+}
+.mode-btn strong { color: var(--text, #e2e8f0); font-size: .92rem; }
+.mode-btn:hover { border-color: #3b82f6; }
+.mode-btn.active {
+    border-color: #3b82f6;
+    background: rgba(59, 130, 246, .10);
+    box-shadow: inset 0 0 0 1px rgba(59, 130, 246, .35);
+}
+.mode-note { margin: 10px 0 0; line-height: 1.5; }
+
+/* --- §4.2 generalization setup ------------------------------------------- */
+.generalization-setup { margin-bottom: 16px; }
+.generalization-setup[hidden] { display: none; }
+.generalization-setup p { margin: 0 0 12px; line-height: 1.5; max-width: 68ch; }
+.gen-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
+.gen-params { display: contents; }
+.gen-params:empty { display: none; }
+
+.slots-row[data-mode="generalization"] { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.slot-params-note { margin-top: 6px; font-size: .78rem; }
+
+/* --- §4.5 equity index note --------------------------------------------- */
+.pane-note { margin: 0 0 10px; line-height: 1.5; max-width: 80ch; }
+
+/* --- §4.1 failed slot columns -------------------------------------------- */
+.col-head-failed { opacity: .65; }
+.metric-cell-void { color: #64748b; text-align: center; }
+.metric-status { font-size: .78rem; max-width: 26ch; }
+.metric-status-text {
+    display: block; max-width: 26ch; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* --- §4.3 / §4.4 comparison panels --------------------------------------- */
+.cmp-panels { display: flex; flex-direction: column; gap: 12px; }
+.cmp-panel {
+    border: 1px solid var(--border, #1f2937);
+    border-radius: 8px;
+    background: var(--panel-2, #111827);
+    padding: 0;
+}
+.cmp-head {
+    padding: 10px 14px;
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--text, #e2e8f0);
+    list-style: none;
+}
+.cmp-head::-webkit-details-marker { display: none; }
+.cmp-head::before { content: "▸ "; color: #64748b; }
+.cmp-panel[open] > .cmp-head::before { content: "▾ "; }
+.cmp-body { padding: 0 14px 14px; }
+
+.cmp-verdict { margin: 0 0 12px; padding: 8px 12px; border-radius: 6px; font-size: .85rem; }
+.cmp-ok { color: #7fc8a0; background: rgba(127, 200, 160, .10); }
+.cmp-warn { color: #e0938f; background: rgba(224, 147, 143, .10); }
+.cmp-muted { color: #94a3b8; }
+
+.cmp-banner { margin: 0 0 10px; padding: 8px 12px; border-radius: 6px; font-size: .84rem; }
+.cmp-banner-warn { color: #d4b26a; background: rgba(212, 178, 106, .10); }
+.cmp-banner-error { color: #e0938f; background: rgba(224, 147, 143, .10); }
+.cmp-banner-info { color: #94a3b8; background: rgba(148, 163, 184, .08); }
+.cmp-unavailable { color: #64748b; font-style: italic; margin: 0; }
+
+/* Heatmap: green = diversifying, red = redundant. */
+.cmp-heatmap, .cmp-sig { width: 100%; border-collapse: collapse; font-size: .82rem; }
+.cmp-heatmap th, .cmp-heatmap td, .cmp-sig th, .cmp-sig td {
+    padding: 6px 8px; text-align: center; border: 1px solid var(--border, #1f2937);
+}
+.cmp-heatmap .cmp-ax, .cmp-sig th {
+    background: rgba(148, 163, 184, .06);
+    color: var(--text-dim, #94a3b8);
+    font-weight: 600;
+    max-width: 16ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cmp-sig td.cmp-pair { text-align: left; max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmp-sig .num { font-variant-numeric: tabular-nums; }
+.cmp-cell-cool { background: rgba(63, 185, 118, .55); }
+.cmp-cell-mild { background: rgba(212, 178, 106, .45); }
+.cmp-cell-warm { background: rgba(212, 140, 106, .45); }
+.cmp-cell-hot  { background: rgba(224, 93, 93, .60); }
+.cmp-cell-flat { background: rgba(100, 116, 139, .25); color: #64748b; }
+.cmp-cell-self { background: rgba(148, 163, 184, .10); color: #64748b; }
+.cmp-cell { font-variant-numeric: tabular-nums; }
+
+.cmp-footnote { margin: 10px 0 0; font-size: .78rem; line-height: 1.55; color: #94a3b8; }
+.cmp-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.cmp-dot-a { background: #3b82f6; }
+.cmp-dot-b { background: #d4b26a; }
+.cmp-excluded .cmp-row { display: flex; gap: 10px; justify-content: space-between; padding: 4px 0; font-size: .84rem; }
+.cmp-excluded .cmp-bad { color: #e0938f; text-align: right; }
+
+/* ==========================================================================
+   Certification readiness (§5) — the advisory traffic light
+   ========================================================================== */
+.cmp-ready {
+    margin-top: 16px;
+    border: 1px solid var(--border, #1f2937);
+    border-radius: 10px;
+    background: var(--panel-2, #111827);
+    padding: 14px 16px 12px;
+}
+.cmp-ready-head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 10px; flex-wrap: wrap;
+    padding-bottom: 8px; margin-bottom: 10px;
+    border-bottom: 1px solid var(--border, #1f2937);
+}
+.cmp-ready-title { font-weight: 600; color: var(--text, #e2e8f0); }
+.cmp-ready-tally { font-size: .8rem; color: #94a3b8; font-variant-numeric: tabular-nums; }
+.cmp-ready-headline { margin: 0 0 12px; font-size: .88rem; font-weight: 600; }
+.cmp-ready-pass { color: #7fc8a0; }
+.cmp-ready-fail { color: #e0938f; }
+.cmp-ready-part { color: #d4b26a; }
+
+.cmp-ready-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 2px 20px; }
+.cmp-ready-row {
+    display: grid; grid-template-columns: 20px 1fr auto;
+    align-items: baseline; gap: 8px;
+    padding: 5px 0;
+    border-bottom: 1px solid rgba(148, 163, 184, .08);
+}
+.cmp-ready-icon { font-size: .82rem; }
+.cmp-ready-label { color: var(--text, #e2e8f0); font-size: .86rem; }
+.cmp-ready-value {
+    color: #94a3b8; font-size: .8rem; text-align: right;
+    font-variant-numeric: tabular-nums; max-width: 22ch;
+}
+.cmp-ready-unknown .cmp-ready-value { color: #64748b; font-style: italic; }
+.cmp-ready-detail {
+    grid-column: 2 / -1;
+    margin: 0 0 6px; font-size: .78rem; line-height: 1.5; color: #94a3b8;
+}
+.cmp-ready-note {
+    margin: 10px 0 0; padding: 8px 12px; border-radius: 6px;
+    background: rgba(148, 163, 184, .08); color: #94a3b8;
+    font-size: .8rem; line-height: 1.5;
+}
+.cmp-ready-summary {
+    margin: 10px 0 0; font-size: .86rem; line-height: 1.55; color: var(--text, #e2e8f0);
+}
+.cmp-ready-advisory { margin: 6px 0 0; font-size: .75rem; color: #64748b; line-height: 1.5; }
+
+/* Per-strategy readiness cell in the Compare table (§5). */
+.cmp-ready-cell { max-width: 26ch; vertical-align: top; }
+.cmp-ready-tally-inline { display: block; font-size: .84rem; letter-spacing: .04em; }
+.cmp-ready-why {
+    display: block; margin-top: 2px; font-size: .72rem; line-height: 1.35; color: #94a3b8;
+    max-height: 2.7em; overflow: hidden;
+}
+
+/* ==========================================================================
+   §6 "Tune This" — Backtest → Optimize hand-off
+   ========================================================================== */
+.tune-this {
+    margin-top: 16px;
+    border: 1px solid rgba(59, 130, 246, .35);
+    border-radius: 10px;
+    background: linear-gradient(180deg, rgba(59, 130, 246, .07), transparent 60%), var(--panel-2, #111827);
+    padding: 14px 16px;
+}
+.tune-this-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 10px; }
+.tune-this-title { font-weight: 600; color: var(--text, #e2e8f0); }
+.tune-this-sub { line-height: 1.5; }
+.tune-this-fields {
+    list-style: none; margin: 0 0 10px; padding: 0;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 4px 16px;
+}
+.tune-this-fields li { display: flex; justify-content: space-between; gap: 10px; font-size: .82rem; }
+.tune-this-fields span { color: #94a3b8; }
+.tune-this-fields strong { color: var(--text, #e2e8f0); font-weight: 500; }
+.tune-this-hint { margin: 0 0 6px; font-size: .8rem; line-height: 1.55; }
+.tune-this-id { margin: 0 0 10px; font-size: .72rem; }
+.tune-this-id code { color: #94a3b8; }
+
+/* §6 notice at the top of the Optimize form. */
+.opt-prefill-notice {
+    margin-bottom: 14px; padding: 10px 14px; border-radius: 8px;
+    border: 1px solid rgba(59, 130, 246, .35);
+    background: rgba(59, 130, 246, .08);
+    color: var(--text, #e2e8f0);
+    font-size: .84rem; line-height: 1.6;
+}
+.opt-prefill-notice[hidden] { display: none; }
+.opt-prefill-warn { border-color: rgba(224, 147, 143, .45); background: rgba(224, 147, 143, .08); }
+.opt-prefill-notice code { color: #7fc8a0; }
+
+/* §6 reverse flow: the three-link audit chain in the apply modal. */
+.opt-chain {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+    padding: 10px 12px; margin-bottom: 14px;
+    border: 1px solid var(--border, #1f2937); border-radius: 8px;
+    background: rgba(148, 163, 184, .05);
+}
+.opt-chain-title { font-size: .72rem; text-transform: uppercase; letter-spacing: .07em; color: #64748b; }
+.opt-chain-link { display: flex; flex-direction: column; gap: 1px; }
+.opt-chain-label { font-size: .72rem; color: #94a3b8; }
+.opt-chain-link code { font-size: .8rem; color: #7fc8a0; }
+.opt-chain-note { font-size: .68rem; color: #64748b; }
+.opt-chain-missing code, .opt-chain-missing .opt-chain-label { color: #e0938f; }
+.opt-chain-arrow { color: #475569; font-size: .9rem; }
+
+/* ---- §6 two-state Tune This button -------------------------------------
+   The button is never disabled — a weak backtest is the main reason to tune
+   it — so the only way to signal "not yet certifiable" is to look different.
+   Primary stays primary; everything else is visibly demoted. */
+.tune-this--caution {
+    border-color: rgba(245, 158, 11, .45);
+    background: linear-gradient(180deg, rgba(245, 158, 11, .07), transparent 60%);
+}
+.tune-this-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 7px;
+    border: 1px solid rgba(245, 158, 11, .5);
+    border-radius: 999px;
+    background: rgba(245, 158, 11, .14);
+    color: #fbbf24;
+    font-size: .64rem;
+    font-weight: 600;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    vertical-align: middle;
+}
+.tune-this-caution {
+    border-color: rgba(148, 163, 184, .5);
+    background: transparent;
+    color: #cbd5e1;
+    font-weight: 500;
+}
+.tune-this-caution:hover { border-color: var(--text, #e2e8f0); color: var(--text, #e2e8f0); }
+
+/* ---- Data-source gate ---------------------------------------------------
+   Two states only: allowed (one quiet line) and blocked (loud, with the
+   reason). There is no "warning" state — a source is either permitted to
+   produce results or it is not. */
+.dsg { margin-bottom: 12px; font-size: .8rem; line-height: 1.55; }
+.dsg--ok {
+    padding: 6px 10px;
+    border: 1px solid rgba(148, 163, 184, .28);
+    border-radius: 6px;
+    background: rgba(148, 163, 184, .06);
+}
+.dsg--blocked {
+    padding: 10px 12px;
+    border: 1px solid rgba(239, 68, 68, .55);
+    border-radius: 6px;
+    background: rgba(239, 68, 68, .09);
+}
+.dsg-title { font-weight: 600; color: #f87171; margin-bottom: 4px; }
+.dsg-body { margin: 0 0 6px; color: var(--text, #e2e8f0); }
+.dsg-hint { margin: 0; }
+.dsg-disabled { opacity: .45; cursor: not-allowed; }
+
+/* ---- Deflated Sharpe card (PRD Part 2 §3) -------------------------------
+   The bar and the observed Sharpe sit side by side because the comparison
+   between them is the finding; the probability is demoted to the facts list
+   because it is a different kind of number. */
+.opt-dsr-main { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+.opt-dsr-value { font-size: 1.8rem; font-weight: 600; color: var(--text, #e2e8f0); }
+.opt-dsr-vs { font-size: .8rem; }
+.opt-dsr-vs strong { color: var(--text, #e2e8f0); font-weight: 600; }
+.opt-dsr-verdict { font-size: .8rem; margin-bottom: 8px; }
+.opt-dsr-reason { margin: 8px 0 0; line-height: 1.5; }
+
+/* ---- Monte Carlo on the winner (PRD Part 2 §4) ------------------------- */
+.opt-mc-box { margin-bottom: 16px; }
+.opt-mc-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 10px; margin: 12px 0;
+}
+.opt-mc-stat { display: flex; flex-direction: column; gap: 2px; }
+.opt-mc-num { font-size: 1.25rem; font-weight: 600; color: var(--text, #e2e8f0); }
+.opt-mc-label { font-size: .72rem; color: #94a3b8; line-height: 1.4; }
+.opt-mc-note { margin: 8px 0 0; }
+.opt-mc-banner {
+    margin-top: 8px; padding: 7px 10px; border-radius: 5px; font-size: .8rem; line-height: 1.5;
+    border: 1px solid rgba(148, 163, 184, .3);
+}
+.opt-mc-warn { border-color: rgba(245, 158, 11, .5); background: rgba(245, 158, 11, .09); }
+.opt-mc-warn-error { border-color: rgba(239, 68, 68, .5); background: rgba(239, 68, 68, .09); }
+.opt-mc-info { background: rgba(148, 163, 184, .07); }
+.opt-mc-gate {
+    margin-bottom: 12px; padding: 9px 11px; border-radius: 6px;
+    border: 1px solid rgba(245, 158, 11, .5); background: rgba(245, 158, 11, .09);
+}
+
+/* ---- Warning panel + regime table (PRD Part 2 §6.2, §6.1) --------------
+   Sticky and undismissable on purpose. A warning you can scroll past, or
+   close with one click, is a warning that will be. */
+.opt-warning-panel {
+    position: sticky; top: 0; z-index: 5;
+    margin-bottom: 16px; padding: 12px 14px;
+    border-radius: 8px; border: 1px solid rgba(245, 158, 11, .55);
+    background: rgba(30, 20, 8, .96);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, .45);
+}
+.opt-warning-panel--danger { border-color: rgba(239, 68, 68, .6); background: rgba(35, 12, 12, .96); }
+.opt-warning-title { font-weight: 600; margin-bottom: 6px; color: #fbbf24; }
+.opt-warning-panel--danger .opt-warning-title { color: #f87171; }
+.opt-warning-list { margin: 0; padding-left: 18px; }
+.opt-warning-list li { font-size: .82rem; line-height: 1.55; margin-bottom: 3px; }
+.opt-warning-list li:last-child { margin-bottom: 0; }
+.opt-warning-info { color: #94a3b8; }
+
+.opt-regime-box { margin-bottom: 16px; }
+.opt-regime-unnamed td { color: #94a3b8; font-style: italic; }
+.opt-regime-note { margin: 8px 0 0; }
+
+/* ---- Data attestation (PRD Part 2 §2) ----------------------------------
+   The box that says which data the run will use, before it runs. */
+.opt-attestation {
+    grid-column: 1 / -1;
+    margin-top: 4px;
+    padding: 12px 14px;
+    border-radius: 8px;
+    border: 1px solid rgba(148, 163, 184, .35);
+    background: rgba(15, 23, 42, .55);
+}
+.opt-attestation--synthetic { border-color: rgba(239, 68, 68, .55); background: rgba(40, 14, 14, .5); }
+.opt-attestation-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; margin-bottom: 10px;
+}
+.opt-attestation-title {
+    font-size: .7rem; letter-spacing: .09em; font-weight: 700;
+    color: #94a3b8; text-transform: uppercase;
+}
+.opt-attestation-source { font-size: .8rem; font-weight: 600; }
+.opt-attestation-grid {
+    display: grid; grid-template-columns: max-content 1fr;
+    gap: 4px 16px; margin: 0; font-size: .8rem;
+}
+.opt-attestation-grid dt { color: #94a3b8; }
+.opt-attestation-grid dd { margin: 0; font-variant-numeric: tabular-nums; }
+.opt-attestation-note { margin: 10px 0 0; font-size: .78rem; line-height: 1.5; }
+.opt-attestation-note--warn { color: #fbbf24; }
+.opt-attestation-note--error { color: #f87171; }
+.opt-attestation-ack {
+    display: flex; align-items: flex-start; gap: 8px;
+    margin-top: 10px; font-size: .8rem; line-height: 1.5; cursor: pointer;
+}
+
+/* ---- Stored attestation, shown on results + audit (§2) ------------------ */
+.opt-attestation-strip {
+    display: flex; flex-wrap: wrap; gap: 6px 18px;
+    padding: 10px 12px; margin-bottom: 14px;
+    border-radius: 6px; font-size: .78rem;
+    background: rgba(15, 23, 42, .5);
+    border: 1px solid rgba(148, 163, 184, .25);
+}
+.opt-attestation-strip--synthetic { border-color: rgba(239, 68, 68, .5); background: rgba(40, 14, 14, .45); }
+.opt-attestation-strip .k { color: #94a3b8; margin-right: 5px; }
+.opt-attestation-strip .v { font-variant-numeric: tabular-nums; }
+.opt-attestation-unrecorded { color: #94a3b8; font-style: italic; }

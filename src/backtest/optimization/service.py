@@ -36,12 +36,22 @@ from typing import Any, Callable
 
 import pandas as pd
 
+from backtest.data.base import periods_per_year as annualisation_factor
+from backtest.engine.monte_carlo import DEFAULT_SIMULATIONS, monte_carlo_trade_order
 from backtest.optimization import analysis as an
+from backtest.optimization.attestation import (
+    SYNTHETIC_ACKNOWLEDGEMENT,
+    attestation_columns,
+    attestation_is_satisfied,
+    attestation_preview,
+    attestation_record,
+)
 from backtest.optimization.config import (
     ConfigValidationError,
     OptimizationConfig,
     parse_config,
 )
+from backtest.optimization.deflation import deflated_sharpe, deflation_warning
 from backtest.optimization.evaluator import (
     Cancelled,
     Evaluator,
@@ -63,8 +73,15 @@ log = logging.getLogger("backtest.optimization.service")
 #: Rough per-bar cost of one backtest by engine (ms) — used by estimates
 #: before any run has been timed on this machine.
 _MS_PER_BAR = {"driver": 0.095, "quick_screen": 0.03, "options": 0.4}
-_BARS_PER_DAY = {"1min": 375, "5min": 75, "15min": 25, "1hour": 7, "4hour": 2,
-                 "1day": 1, "1week": 0.2}
+_BARS_PER_DAY = {
+    "1min": 375,
+    "5min": 75,
+    "15min": 25,
+    "1hour": 7,
+    "4hour": 2,
+    "1day": 1,
+    "1week": 0.2,
+}
 
 DB_FLUSH_SECONDS = 2.0
 HEARTBEAT_SECONDS = 30.0
@@ -77,9 +94,21 @@ APPLY_TARGETS = ("paper", "live", "ab_test", "none")
 class OptimizationError(Exception):
     """User-facing service error (maps to HTTP 4xx)."""
 
-    def __init__(self, message: str, status: int = 400) -> None:
+    def __init__(
+        self,
+        message: str,
+        status: int = 400,
+        *,
+        code: str | None = None,
+        **details: Any,
+    ) -> None:
         super().__init__(message)
         self.status = status
+        #: Machine-readable tag, so the UI can react to *which* refusal this is
+        #: rather than pattern-matching the message text. A refusal whose
+        #: meaning lives in a sentence is a refusal the next reword will break.
+        self.code = code
+        self.details = details
 
 
 def _now() -> datetime:
@@ -154,8 +183,9 @@ class _Job:
                 "errors": self.errors,
                 "evaluations_done": self.done_evals,
                 "evaluations_planned": self.planned_evals,
-                "percent": round(min(100.0, 100.0 * self.done_evals
-                                     / max(self.planned_evals, 1)), 1),
+                "percent": round(
+                    min(100.0, 100.0 * self.done_evals / max(self.planned_evals, 1)), 1
+                ),
                 "elapsed_seconds": round(elapsed, 1),
                 "eta_seconds": None if eta is None else round(eta, 1),
                 "rate_per_second": None if rate is None else round(rate, 2),
@@ -206,8 +236,10 @@ class OptimizationService:
     def estimate(self, cfg: OptimizationConfig) -> dict[str, Any]:
         """Evaluation counts + wall-clock estimate for the setup page."""
         bt = cfg.backtest
-        days = (datetime.strptime(bt.end_date, "%Y-%m-%d")
-                - datetime.strptime(bt.start_date, "%Y-%m-%d")).days + 1
+        days = (
+            datetime.strptime(bt.end_date, "%Y-%m-%d")
+            - datetime.strptime(bt.start_date, "%Y-%m-%d")
+        ).days + 1
         trading_days = days * 252 / 365
         bars = max(1, int(trading_days * _BARS_PER_DAY.get(bt.timeframe, 1)))
         ms_bar = self._timing.get(bt.engine, _MS_PER_BAR.get(bt.engine, 0.1))
@@ -217,8 +249,9 @@ class OptimizationService:
         wf_evals, splits = 0, 0
         if cfg.walk_forward.enabled:
             wf = cfg.walk_forward
-            sp = make_splits(bt.start_date, bt.end_date, wf.train_period_days,
-                             wf.test_period_days, wf.step_days)
+            sp = make_splits(
+                bt.start_date, bt.end_date, wf.train_period_days, wf.test_period_days, wf.step_days
+            )
             splits = len(sp)
             per_split = min(cfg.grid_size(), wf.max_evals_per_split)
             wf_bars_frac = (wf.train_period_days + wf.test_period_days) / max(days, 1)
@@ -246,18 +279,79 @@ class OptimizationService:
     # Lifecycle
     # ------------------------------------------------------------------
 
-    def submit(self, doc: dict, *, created_by: str | None = None,
-               start: bool = True) -> dict[str, Any]:
+    def attestation_for(self, doc: dict, *, candles: Any = None) -> dict[str, Any]:
+        """PRD Part 2 §2 — the data confirmation for a setup document.
+
+        With ``candles`` this is the measured record kept on the run; without
+        it, the preview the setup page shows before anything is fetched.
+        """
+        return self._attestation_from_cfg(self.parse(doc), doc, candles)
+
+    def _attestation_from_cfg(
+        self, cfg: OptimizationConfig, doc: dict | None = None, candles: Any = None
+    ) -> dict[str, Any]:
+        """Build the attestation from an already-parsed config.
+
+        Split out from :meth:`attestation_for` so the run thread can re-measure
+        the record from the config it already holds, instead of re-parsing the
+        document it was never given.
+        """
+        bt = cfg.backtest
+        att = (
+            attestation_record(
+                bt.source,
+                candles,
+                symbol=bt.symbol,
+                timeframe=bt.timeframe,
+                start_date=bt.start_date,
+                end_date=bt.end_date,
+            )
+            if candles is not None
+            else attestation_preview(
+                bt.source,
+                symbol=bt.symbol,
+                timeframe=bt.timeframe,
+                start_date=bt.start_date,
+                end_date=bt.end_date,
+            )
+        )
+        # The operator's tick travels on the document, not on the attestation
+        # we just rebuilt — it is a statement about this submission, and
+        # rebuilding the record must not silently carry it forward.
+        claimed = (doc or {}).get("dataAttestation") or {}
+        if claimed.get("acknowledged") and not att["data_source_real"]:
+            att["acknowledged"] = True
+            att["acknowledged_at"] = claimed.get("acknowledged_at") or _now().isoformat()
+        return att
+
+    def submit(
+        self, doc: dict, *, created_by: str | None = None, start: bool = True
+    ) -> dict[str, Any]:
         cfg = self.parse(doc)
+        # PRD Part 2 §2 — synthetic is the one input that cannot be defended
+        # after the fact, so it carries a real gate. Checked here rather than in
+        # the browser because a gate only the browser enforces is a suggestion.
+        # Everything else in the attestation warns and allows.
+        attestation = self.attestation_for(doc)
+        if not attestation_is_satisfied(attestation):
+            raise OptimizationError(
+                "synthetic data requires an explicit acknowledgement: "
+                f"'{SYNTHETIC_ACKNOWLEDGEMENT}'",
+                409,
+                code="synthetic_data_not_acknowledged",
+                data_source=attestation["data_source"],
+            )
         run_id = self.store.create_run(
             strategy_id=cfg.strategy_id,
             objective=cfg.objective,
             method=cfg.method,
             param_space=[p.to_dict() for p in cfg.parameters],
             constraints=[c.to_dict() for c in cfg.constraints],
-            backtest_config={**cfg.to_dict()["backtestConfig"],
-                             "methodSettings": cfg.method_settings.to_dict(),
-                             "warnings": list(cfg.warnings)},
+            backtest_config={
+                **cfg.to_dict()["backtestConfig"],
+                "methodSettings": cfg.method_settings.to_dict(),
+                "warnings": list(cfg.warnings),
+            },
             walk_forward_enabled=cfg.walk_forward.enabled,
             walk_forward_config=cfg.to_dict()["walkForward"],
             total_combinations=cfg.planned_evaluations(),
@@ -265,9 +359,16 @@ class OptimizationService:
             created_by=created_by,
             status="pending" if start else "draft",
             baseline_params=cfg.baseline_params,
+            **attestation_columns(attestation),
         )
-        log.info("[optimize] run %s created: %s %s over %d combos (%s)", run_id[:8],
-                 cfg.method, cfg.strategy_id, cfg.grid_size(), cfg.objective)
+        log.info(
+            "[optimize] run %s created: %s %s over %d combos (%s)",
+            run_id[:8],
+            cfg.method,
+            cfg.strategy_id,
+            cfg.grid_size(),
+            cfg.objective,
+        )
         if start:
             self._launch(run_id, cfg)
         return self.status(run_id)
@@ -281,8 +382,9 @@ class OptimizationService:
         self._launch(run_id, cfg)
         return self.status(run_id)
 
-    def rerun(self, run_id: str, *, created_by: str | None = None,
-              overrides: dict | None = None) -> dict[str, Any]:
+    def rerun(
+        self, run_id: str, *, created_by: str | None = None, overrides: dict | None = None
+    ) -> dict[str, Any]:
         """New run with the same config (optionally overridden)."""
         run = self._require(run_id)
         doc = self.config_doc_from_run(run)
@@ -297,8 +399,9 @@ class OptimizationService:
         job = _Job(run_id, cfg)
         with self._jobs_lock:
             self._jobs[run_id] = job
-        job.thread = threading.Thread(target=self._run_guarded, args=(job,),
-                                      name=f"optimize-{run_id[:8]}", daemon=True)
+        job.thread = threading.Thread(
+            target=self._run_guarded, args=(job,), name=f"optimize-{run_id[:8]}", daemon=True
+        )
         job.thread.start()
 
     def cancel(self, run_id: str) -> dict[str, Any]:
@@ -399,13 +502,86 @@ class OptimizationService:
                 "seed": method_settings.get("seed"),
             },
             "bucketId": run.get("bucket_id"),
+            # PRD Part 2 §2. Re-running a synthetic run is the same operator
+            # repeating the same decision, so the acknowledgement travels with
+            # the configuration. Without this, "Rerun" on any synthetic run
+            # would be silently impossible — the single most confusing way for
+            # a gate to behave.
+            "dataAttestation": {
+                k: v
+                for k, v in (run.get("data_attestation") or {}).items()
+                if k in ("acknowledged", "acknowledged_at")
+            },
         }
 
     def config_from_run(self, run: dict) -> OptimizationConfig:
         return self.parse(self.config_doc_from_run(run))
 
-    def heatmap(self, run_id: str, x: str, y: str, *, metric: str = "score",
-                agg: str = "max", compliant_only: bool = False) -> dict[str, Any]:
+    def monte_carlo_best(
+        self, run_id: str, *, simulations: int = DEFAULT_SIMULATIONS
+    ) -> dict[str, Any]:
+        """PRD Part 2 §4 — Monte Carlo on the single best result.
+
+        Not on all 50,000 candidates: the winner is the one that would be
+        applied to paper, and the question is whether *its* trade sequence is a
+        lucky ordering. Walk-forward already asked whether the parameters
+        generalise across time; this asks whether the order of the trades that
+        produced them was luck. Different questions, and together they are the
+        strongest check available without real trading.
+
+        This re-runs the winner once over the run's own candles and its own
+        config, then calls the same
+        :func:`~backtest.engine.monte_carlo.monte_carlo_trade_order` the
+        Backtest page uses — so the two paths cannot drift. One extra backtest
+        per click is the price, and it is a price worth paying: a stored copy
+        of every candidate's trade list would be tens of thousands of rows per
+        run to answer a question asked once.
+        """
+        run = self.store.get_run(run_id)
+        if not run:
+            raise OptimizationError("run not found", 404)
+        if run.get("status") != "completed":
+            raise OptimizationError(
+                "Monte Carlo runs on a completed run — this one has not finished", 409
+            )
+        params = run.get("best_params")
+        if not params:
+            raise OptimizationError("This run has no valid result to test.", 409)
+
+        cfg = self.config_from_run(run)
+        candles = self.loader(cfg)
+        if candles is None or len(candles) == 0:
+            raise OptimizationError(
+                f"no candles for {cfg.backtest.symbol} "
+                f"{cfg.backtest.start_date}→{cfg.backtest.end_date}",
+                404,
+            )
+        settings = {
+            "capital": cfg.backtest.initial_capital,
+            "symbol": cfg.backtest.symbol,
+            "engine": cfg.backtest.engine,
+            "timeframe": cfg.backtest.timeframe,
+            "selector_type": cfg.backtest.selector_type,
+        }
+        from backtest.optimization.evaluator import evaluate  # local: avoids a cycle
+
+        result = evaluate(candles, settings, cfg.strategy_id, dict(params), keep_pnls=True)
+        pnls = result.get("trade_pnls") or []
+        mc = monte_carlo_trade_order(pnls, cfg.backtest.initial_capital, simulations=simulations)
+        mc["params"] = dict(params)
+        mc["run_id"] = run_id
+        return mc
+
+    def heatmap(
+        self,
+        run_id: str,
+        x: str,
+        y: str,
+        *,
+        metric: str = "score",
+        agg: str = "max",
+        compliant_only: bool = False,
+    ) -> dict[str, Any]:
         run = self._require(run_id)
         rows = self._rows_for(run_id)
         if not rows:
@@ -415,8 +591,9 @@ class OptimizationService:
         if unknown:
             raise OptimizationError(f"unknown parameter(s): {', '.join(unknown)}")
         anchor = run.get("best_params") if agg == "slice" else None
-        return an.heatmap(rows, x, y, metric=metric, agg=agg, anchor=anchor,
-                          compliant_only=compliant_only)
+        return an.heatmap(
+            rows, x, y, metric=metric, agg=agg, anchor=anchor, compliant_only=compliant_only
+        )
 
     def _rows_for(self, run_id: str) -> list[dict[str, Any]]:
         job = self._jobs.get(run_id)
@@ -445,8 +622,12 @@ class OptimizationService:
 
     def _run_guarded(self, job: _Job) -> None:
         stop = threading.Event()
-        threading.Thread(target=self._heartbeat, args=(job, stop), daemon=True,
-                         name=f"optimize-hb-{job.run_id[:8]}").start()
+        threading.Thread(
+            target=self._heartbeat,
+            args=(job, stop),
+            daemon=True,
+            name=f"optimize-hb-{job.run_id[:8]}",
+        ).start()
         try:
             self._run_slot(job)
         finally:
@@ -468,9 +649,12 @@ class OptimizationService:
                 except Exception:  # noqa: BLE001
                     log.warning("[optimize] could not save partial results", exc_info=True)
                 self.store.update_run(
-                    job.run_id, status="failed", completed_at=_now(),
+                    job.run_id,
+                    status="failed",
+                    completed_at=_now(),
                     error_message=f"{exc.__class__.__name__}: {exc}"[:2000],
-                    tested_combinations=len(job.rows), valid_combinations=job.valid,
+                    tested_combinations=len(job.rows),
+                    valid_combinations=job.valid,
                 )
 
     def _set_phase(self, job: _Job, phase: str, detail: str = "") -> None:
@@ -481,27 +665,84 @@ class OptimizationService:
     def _score_payload(self, job: _Job, payload: dict) -> dict[str, Any]:
         cfg = job.cfg
         if payload.get("error"):
-            return {"params": payload["params"], "metrics": {}, "score": FAILED_SCORE,
-                    "constraints_met": False, "violations": [{"error": payload["error"]}],
-                    "error": payload["error"], "elapsed_ms": payload.get("elapsed_ms")}
+            return {
+                "params": payload["params"],
+                "metrics": {},
+                "score": FAILED_SCORE,
+                "constraints_met": False,
+                "violations": [{"error": payload["error"]}],
+                "error": payload["error"],
+                "elapsed_ms": payload.get("elapsed_ms"),
+            }
         metrics = payload["metrics"]
         violations = check_constraints(metrics, cfg.constraints)
-        return {"params": payload["params"], "metrics": metrics,
-                "score": objective_score(metrics, cfg.objective),
-                "constraints_met": not violations, "violations": violations,
-                "error": None, "elapsed_ms": payload.get("elapsed_ms")}
+        return {
+            "params": payload["params"],
+            "metrics": metrics,
+            "score": objective_score(metrics, cfg.objective),
+            "constraints_met": not violations,
+            "violations": violations,
+            "error": None,
+            "elapsed_ms": payload.get("elapsed_ms"),
+        }
+
+    def _regime_breakdown_for(
+        self, cfg: OptimizationConfig, best: dict[str, Any], candles: Any
+    ) -> dict[str, Any] | None:
+        """PRD Part 2 §6.1 — how the winner behaved in each named period.
+
+        Returns None rather than raising: a run that cannot be split by
+        calendar band still completed, and failing it at the last step would
+        throw away the search that produced a real result.
+        """
+        from backtest.optimization.evaluator import evaluate  # local: avoids a cycle
+
+        settings = {
+            "capital": cfg.backtest.initial_capital,
+            "symbol": cfg.backtest.symbol,
+            "engine": cfg.backtest.engine,
+            "timeframe": cfg.backtest.timeframe,
+            "selector_type": cfg.backtest.selector_type,
+        }
+        try:
+            result = evaluate(
+                candles, settings, cfg.strategy_id, dict(best["params"]), keep_regimes=True
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[regimes] could not split the winner: %s", exc)
+            return None
+        return result.get("regimes")
 
     def _execute(self, job: _Job) -> None:
         cfg = job.cfg
         run_id = job.run_id
-        self.store.update_run(run_id, status="running", started_at=_now(),
-                              error_message=None)
+        self.store.update_run(run_id, status="running", started_at=_now(), error_message=None)
         self._set_phase(job, "loading", f"{cfg.backtest.symbol} {cfg.backtest.timeframe}")
         candles = self.loader(cfg)
+        # PRD Part 2 §2. The preview written at submit time described what was
+        # ASKED for; this is what the search actually got. A symbol with gaps
+        # returns fewer bars and a narrower range, and the record kept on the
+        # run has to be the second one or it is certifying data that was never
+        # there.
+        #
+        # The measured record REPLACES the preview wholesale, so the synthetic
+        # acknowledgement has to be carried across explicitly. It is the one
+        # field not derived from the data — a person ticked it at submit time,
+        # and nothing in the candles can confirm or re-earn it.
+        try:
+            measured = self._attestation_from_cfg(cfg, candles=candles)
+            previous = (self.store.get_run(run_id) or {}).get("data_attestation") or {}
+            if previous.get("acknowledged") and not measured.get("data_source_real"):
+                measured["acknowledged"] = True
+                measured["acknowledged_at"] = previous.get("acknowledged_at")
+            self.store.update_run(run_id, **attestation_columns(measured))
+        except Exception:  # noqa: BLE001
+            log.warning("[attestation] could not record data provenance", exc_info=True)
         if candles is None or len(candles) == 0:
             raise ValueError(
                 f"no candles for {cfg.backtest.symbol} {cfg.backtest.start_date}→"
-                f"{cfg.backtest.end_date} ({cfg.backtest.timeframe})")
+                f"{cfg.backtest.end_date} ({cfg.backtest.timeframe})"
+            )
         settings = {
             "capital": cfg.backtest.initial_capital,
             "symbol": cfg.backtest.symbol,
@@ -514,15 +755,26 @@ class OptimizationService:
         wf_evals = 0
         if cfg.walk_forward.enabled:
             wf = cfg.walk_forward
-            splits = make_splits(cfg.backtest.start_date, cfg.backtest.end_date,
-                                 wf.train_period_days, wf.test_period_days, wf.step_days)
+            splits = make_splits(
+                cfg.backtest.start_date,
+                cfg.backtest.end_date,
+                wf.train_period_days,
+                wf.test_period_days,
+                wf.step_days,
+            )
             wf_evals = len(splits) * (min(space.total, wf.max_evals_per_split) + 1)
         with job.lock:
             job.planned_evals = 1 + cfg.planned_evaluations() + sens_evals + wf_evals
 
         workers = self.workers if cfg.planned_evaluations() > 4 else 1
-        with Evaluator(candles, settings, cfg.strategy_id, workers=workers,
-                       cancel_event=job.cancel, pause_event=job.pause) as ev:
+        with Evaluator(
+            candles,
+            settings,
+            cfg.strategy_id,
+            workers=workers,
+            cancel_event=job.cancel,
+            pause_event=job.pause,
+        ) as ev:
             # -- baseline (current params) ---------------------------------
             self._set_phase(job, "baseline", "current parameters")
             base_payload = ev.evaluate_batch([cfg.baseline_params], keep_curve=True)[0]
@@ -530,8 +782,10 @@ class OptimizationService:
             with job.lock:
                 job.done_evals += 1
             self.store.update_run(
-                run_id, baseline_metrics=baseline["metrics"] or {"error": baseline["error"]},
-                baseline_score=None if baseline["error"] else baseline["score"])
+                run_id,
+                baseline_metrics=baseline["metrics"] or {"error": baseline["error"]},
+                baseline_score=None if baseline["error"] else baseline["score"],
+            )
 
             # -- main search -------------------------------------------------
             self._set_phase(job, "search", cfg.method)
@@ -547,8 +801,9 @@ class OptimizationService:
                     if key not in seen_keys:
                         seen_keys.add(key)
                         self._record_row(job, row)
-                    out.append((p["params"], row["score"] if row["constraints_met"]
-                                else FAILED_SCORE))
+                    out.append(
+                        (p["params"], row["score"] if row["constraints_met"] else FAILED_SCORE)
+                    )
                 self._maybe_flush(job)
                 return out
 
@@ -564,9 +819,12 @@ class OptimizationService:
             rounds = 0
             while best is not None and rounds < SENSITIVITY_ROUNDS:
                 rounds += 1
-                self._set_phase(job, "sensitivity",
-                                "1-D sweeps around the best"
-                                + (f" (refinement {rounds})" if rounds > 1 else ""))
+                self._set_phase(
+                    job,
+                    "sensitivity",
+                    "1-D sweeps around the best"
+                    + (f" (refinement {rounds})" if rounds > 1 else ""),
+                )
                 sensitivity = {}
                 for spec in cfg.optimized:
                     values = an.sweep_values(spec, SENSITIVITY_POINTS)
@@ -585,7 +843,8 @@ class OptimizationService:
                         if rounds == 1:
                             job.done_evals += len(points)
                     sensitivity[spec.name] = an.sensitivity_curve(
-                        values, scores, best["params"][spec.name])
+                        values, scores, best["params"][spec.name]
+                    )
                     self._maybe_flush(job)
                 refined = self._best_row(job)
                 if refined is None or refined["params"] == best["params"]:
@@ -611,8 +870,9 @@ class OptimizationService:
                         job.phase_detail = f"split {n}/{total}"
                     self._maybe_flush(job, force=True)
 
-                wf_report = run_walk_forward(cfg, ev, batch_size=max(1, workers * 2),
-                                             on_split=on_split)
+                wf_report = run_walk_forward(
+                    cfg, ev, batch_size=max(1, workers * 2), on_split=on_split
+                )
                 with job.lock:
                     job.done_evals += ev.evaluations - before
             eval_seconds = ev.eval_seconds
@@ -620,8 +880,18 @@ class OptimizationService:
 
         # -- analysis ------------------------------------------------------------
         self._set_phase(job, "analysis")
-        self._finalize(job, baseline, base_payload.get("curve"), best, best_curve,
-                       sensitivity, wf_report, evaluations, eval_seconds, candles)
+        self._finalize(
+            job,
+            baseline,
+            base_payload.get("curve"),
+            best,
+            best_curve,
+            sensitivity,
+            wf_report,
+            evaluations,
+            eval_seconds,
+            candles,
+        )
 
     def _record_row(self, job: _Job, row: dict, count_eval: bool = True) -> None:
         with job.lock:
@@ -635,19 +905,28 @@ class OptimizationService:
             if row["constraints_met"]:
                 job.valid += 1
                 if job.best is None or row["score"] > job.best["score"]:
-                    job.best = {"params": row["params"], "score": row["score"],
-                                "metrics": row["metrics"], "seq": row["seq"]}
+                    job.best = {
+                        "params": row["params"],
+                        "score": row["score"],
+                        "metrics": row["metrics"],
+                        "seq": row["seq"],
+                    }
             m = row["metrics"]
-            job.recent.appendleft({
-                "seq": row["seq"], "params": row["params"],
-                "score": None if row["error"] else row["score"],
-                "sharpe": m.get("sharpe"), "total_return": m.get("total_return"),
-                "max_drawdown": m.get("max_drawdown"), "total_trades": m.get("total_trades"),
-                "win_rate": m.get("win_rate"),
-                "constraints_met": row["constraints_met"],
-                "violation": row["error"] or violation_label(
-                    [v for v in row["violations"] if "metric" in v]),
-            })
+            job.recent.appendleft(
+                {
+                    "seq": row["seq"],
+                    "params": row["params"],
+                    "score": None if row["error"] else row["score"],
+                    "sharpe": m.get("sharpe"),
+                    "total_return": m.get("total_return"),
+                    "max_drawdown": m.get("max_drawdown"),
+                    "total_trades": m.get("total_trades"),
+                    "win_rate": m.get("win_rate"),
+                    "constraints_met": row["constraints_met"],
+                    "violation": row["error"]
+                    or violation_label([v for v in row["violations"] if "metric" in v]),
+                }
+            )
 
     def _best_row(self, job: _Job) -> dict | None:
         with job.lock:
@@ -668,8 +947,9 @@ class OptimizationService:
             "valid_combinations": snap["valid"],
         }
         if best:
-            fields.update(best_params=best["params"], best_score=best["score"],
-                          best_metrics=best["metrics"])
+            fields.update(
+                best_params=best["params"], best_score=best["score"], best_metrics=best["metrics"]
+            )
         try:
             self.store.update_run(job.run_id, **fields)
         except Exception:  # noqa: BLE001 - progress flush is best-effort
@@ -678,8 +958,9 @@ class OptimizationService:
     def _ranked_rows(self, job: _Job) -> list[dict]:
         with job.lock:
             rows = list(job.rows)
-        compliant = sorted((r for r in rows if r["constraints_met"]),
-                           key=lambda r: r["score"], reverse=True)
+        compliant = sorted(
+            (r for r in rows if r["constraints_met"]), key=lambda r: r["score"], reverse=True
+        )
         for i, r in enumerate(compliant, start=1):
             r["rank"] = i
         for r in rows:
@@ -695,34 +976,74 @@ class OptimizationService:
         n = self._persist_rows(job)
         best = self._best_row(job)
         fields: dict[str, Any] = {
-            "status": "cancelled", "completed_at": _now(),
-            "tested_combinations": len(job.rows), "valid_combinations": job.valid,
+            "status": "cancelled",
+            "completed_at": _now(),
+            "tested_combinations": len(job.rows),
+            "valid_combinations": job.valid,
             "error_message": f"cancelled by user after {len(job.rows)} evaluations",
         }
         if best:
-            fields.update(best_params=best["params"], best_score=best["score"],
-                          best_metrics=best["metrics"])
+            fields.update(
+                best_params=best["params"], best_score=best["score"], best_metrics=best["metrics"]
+            )
         self.store.update_run(job.run_id, **fields)
         log.info("[optimize] run %s cancelled — %d partial results saved", job.run_id[:8], n)
 
-    def _finalize(self, job: _Job, baseline: dict, baseline_curve: list | None,
-                  best: dict | None, best_curve: list | None,
-                  sensitivity: dict, wf_report: dict | None, evaluations: int,
-                  eval_seconds: float, candles: pd.DataFrame) -> None:
+    def _finalize(
+        self,
+        job: _Job,
+        baseline: dict,
+        baseline_curve: list | None,
+        best: dict | None,
+        best_curve: list | None,
+        sensitivity: dict,
+        wf_report: dict | None,
+        evaluations: int,
+        eval_seconds: float,
+        candles: pd.DataFrame,
+    ) -> None:
         cfg = job.cfg
         rows = self._ranked_rows(job)
         cluster = an.top_cluster(rows, cfg.optimized)
-        robust = an.robustness_score(sensitivity, wf_report, cluster,
-                                     best["metrics"] if best else None)
+        robust = an.robustness_score(
+            sensitivity, wf_report, cluster, best["metrics"] if best else None
+        )
+        # PRD Part 2 §3. Every combination tried is a trial, including the
+        # ones that failed constraints or errored — they were chances taken,
+        # and leaving them out flatters the result.
+        deflated = deflated_sharpe(
+            [float(r.get("metrics", {}).get("sharpe") or 0.0) for r in rows],
+            (best or {}).get("metrics", {}).get("sharpe") if best else None,
+            trials=max(len(rows), job.planned_evals) if rows else None,
+            observations=len(candles),
+            periods_per_year=annualisation_factor(cfg.backtest.timeframe),
+        )
+        # PRD Part 2 §6.1 — one extra evaluation of the winner, because the
+        # regime table needs the FULL-resolution equity series. The curve
+        # already in hand is downsampled to 400 points for drawing, and a
+        # per-period Sharpe taken from a sampled curve is a sampling artefact
+        # wearing a number. One backtest against a search of thousands.
+        regimes = self._regime_breakdown_for(cfg, best, candles) if best else None
         warnings = an.warning_signs(cfg, best, sensitivity, wf_report, baseline)
+        gap = deflation_warning(
+            deflated, (best or {}).get("metrics", {}).get("sharpe") if best else None
+        )
+        if gap:
+            warnings.append(gap)
         comparison = None
         if best is not None:
             comparison = {
-                "baseline": {"params": baseline["params"], "metrics": baseline["metrics"],
-                             "score": None if baseline["error"] else baseline["score"],
-                             "error": baseline["error"]},
-                "optimized": {"params": best["params"], "metrics": best["metrics"],
-                              "score": best["score"]},
+                "baseline": {
+                    "params": baseline["params"],
+                    "metrics": baseline["metrics"],
+                    "score": None if baseline["error"] else baseline["score"],
+                    "error": baseline["error"],
+                },
+                "optimized": {
+                    "params": best["params"],
+                    "metrics": best["metrics"],
+                    "score": best["score"],
+                },
                 "params_diff": params_diff(baseline["params"], best["params"]),
             }
         elapsed = time.monotonic() - job.started - job.paused_seconds
@@ -734,6 +1055,8 @@ class OptimizationService:
             "sensitivity": sensitivity,
             "cluster": cluster,
             "robustness": robust,
+            "deflated_sharpe": deflated,
+            "regimes": regimes,
             "warnings": warnings,
             "comparison": comparison,
             "compliance": compliance_report(best["metrics"], cfg.constraints) if best else [],
@@ -762,20 +1085,30 @@ class OptimizationService:
             "valid_combinations": sum(1 for r in rows if r["constraints_met"]),
             "analysis": analysis,
             "robustness_score": robust.get("score"),
+            "deflated_sharpe": deflated.get("deflated_sharpe"),
         }
         if best:
-            fields.update(best_params=best["params"], best_score=best["score"],
-                          best_metrics=best["metrics"])
+            fields.update(
+                best_params=best["params"], best_score=best["score"], best_metrics=best["metrics"]
+            )
         else:
             fields.update(best_params=None, best_score=None, best_metrics=None)
         if wf_report is not None:
-            fields.update(walk_forward_results=wf_report, overfitted=wf_report["overfitted"],
-                          avg_train_score=wf_report["avg_train_score"],
-                          avg_test_score=wf_report["avg_test_score"])
+            fields.update(
+                walk_forward_results=wf_report,
+                overfitted=wf_report["overfitted"],
+                avg_train_score=wf_report["avg_train_score"],
+                avg_test_score=wf_report["avg_test_score"],
+            )
         self.store.update_run(job.run_id, **fields)
-        log.info("[optimize] run %s completed: %d results, %d valid, best=%s (%.1fs)",
-                 job.run_id[:8], len(rows), fields["valid_combinations"],
-                 None if not best else round(best["score"], 4), elapsed)
+        log.info(
+            "[optimize] run %s completed: %d results, %d valid, best=%s (%.1fs)",
+            job.run_id[:8],
+            len(rows),
+            fields["valid_combinations"],
+            None if not best else round(best["score"], 4),
+            elapsed,
+        )
 
     # ------------------------------------------------------------------
     # Apply / rollback / presets
@@ -803,6 +1136,8 @@ class OptimizationService:
         ip_address: str | None = None,
         user_agent: str | None = None,
         notes: str | None = None,
+        monte_carlo_acknowledged: bool = False,
+        monte_carlo_profit_probability: float | None = None,
     ) -> dict[str, Any]:
         """Apply the best (or given) params. See module docstring for gates."""
         run = self._require(run_id)
@@ -823,20 +1158,37 @@ class OptimizationService:
         if target == "live":
             if not confirm_live:
                 raise OptimizationError(
-                    "applying to LIVE requires confirm_live=true (real capital at risk)", 400)
+                    "applying to LIVE requires confirm_live=true (real capital at risk)", 400
+                )
             if run.get("overfitted"):
                 raise OptimizationError(
-                    "walk-forward flagged this run as overfitted — refusing to apply to live",
-                    409)
+                    "walk-forward flagged this run as overfitted — refusing to apply to live", 409
+                )
             if not run.get("walk_forward_enabled") and not allow_unvalidated:
                 raise OptimizationError(
                     "run was not walk-forward validated — enable walk-forward or pass "
-                    "allow_unvalidated=true", 409)
+                    "allow_unvalidated=true",
+                    409,
+                )
 
         manager = None
         old_params: dict | None = None
         runner_restarted = False
+        # PRD §6 reverse flow: the three-link chain, assembled where the
+        # runner id is already known. `origin` is a SESSION handle from the
+        # Backtest page, not a stored backtest record — the UI labels it that
+        # way, because an audit entry pointing at a backtest that cannot be
+        # opened is worse than one that admits it was a handle.
+        origin = (run.get("backtest_config") or {}).get("sourceBacktestId") or None
         details: dict[str, Any] = {"target": target, "notes": notes}
+        # PRD Part 2 §4's gate is a flag, not a block — the browser requires
+        # the acknowledgement. Recording both the fact and the number means the
+        # audit trail can show later that the check WAS run and what it said,
+        # rather than only that someone said they had read it.
+        details["monte_carlo"] = {
+            "acknowledged": bool(monte_carlo_acknowledged),
+            "profit_probability_pct": monte_carlo_profit_probability,
+        }
         mode = {"paper": "paper", "live": "live", "ab_test": "paper"}.get(target)
         if target != "none":
             manager = self._manager()
@@ -848,14 +1200,19 @@ class OptimizationService:
                 if old_cfg.strategy_name != run["strategy_id"]:
                     raise OptimizationError(
                         f"runner {instance_id} runs {old_cfg.strategy_name}, not "
-                        f"{run['strategy_id']}", 409)
+                        f"{run['strategy_id']}",
+                        409,
+                    )
                 if old_cfg.mode != mode:
                     raise OptimizationError(
                         f"runner {instance_id} is a {old_cfg.mode} runner — target {target} "
-                        "does not match", 409)
+                        "does not match",
+                        409,
+                    )
                 old_params = dict(old_cfg.strategy_params or {})
                 new_cfg = dataclasses.replace(
-                    old_cfg, strategy_params=strategy_params, instance_id=None)
+                    old_cfg, strategy_params=strategy_params, instance_id=None
+                )
                 try:
                     manager.control_runner(instance_id, "flatten")
                 except Exception:  # noqa: BLE001 - a flat runner may refuse
@@ -863,12 +1220,14 @@ class OptimizationService:
                 manager.remove_runner(instance_id)
                 new_id = manager.add_runner(new_cfg, start=True)
                 runner_restarted = True
-                details.update(previous_instance_id=instance_id, new_instance_id=new_id,
-                               action="restart")
+                details.update(
+                    previous_instance_id=instance_id, new_instance_id=new_id, action="restart"
+                )
             else:
                 if mode == "live" and not instance_id:
                     raise OptimizationError(
-                        "live apply needs an existing live runner (instance_id)", 400)
+                        "live apply needs an existing live runner (instance_id)", 400
+                    )
                 from backtest.forward.paper_runner import RunnerConfig
 
                 bt = run.get("backtest_config") or {}
@@ -886,24 +1245,32 @@ class OptimizationService:
                     source=str(bt.get("source") or "synthetic"),
                 )
                 new_id = manager.add_runner(new_cfg, start=True)
-                details.update(new_instance_id=new_id, action="spawn",
-                               ab_control_instance_id=instance_id if target == "ab_test"
-                               else None)
+                details.update(
+                    new_instance_id=new_id,
+                    action="spawn",
+                    ab_control_instance_id=instance_id if target == "ab_test" else None,
+                )
             try:
                 manager._audit_log(
-                    f"OPTIMIZE_APPLY {run['strategy_id']}", scope=mode or "paper",
+                    f"OPTIMIZE_APPLY {run['strategy_id']}",
+                    scope=mode or "paper",
                     instance_id=details.get("new_instance_id"),
-                    detail=f"run={run_id} target={target} params={strategy_params}")
+                    detail=f"run={run_id} target={target} "
+                    f"origin_backtest={origin or 'none'} params={strategy_params}",
+                )
             except Exception:  # noqa: BLE001
                 pass
 
         preset = self.store.create_preset(
             strategy_id=run["strategy_id"],
             name=f"Applied {datetime.now(timezone.utc):%Y-%m-%d %H:%M}",
-            params=new_params, source="optimization",
+            params=new_params,
+            source="optimization",
             description=f"Applied from optimization {run_id[:8]} ({target})",
-            optimization_run_id=run_id, backtest_metrics=run.get("best_metrics"),
-            created_by=user_id)
+            optimization_run_id=run_id,
+            backtest_metrics=run.get("best_metrics"),
+            created_by=user_id,
+        )
         self.store.mark_preset_applied(preset["preset_id"])
         details["preset_id"] = preset["preset_id"]
         baseline_metrics = run.get("baseline_metrics") or {}
@@ -912,24 +1279,53 @@ class OptimizationService:
             k: {"before": baseline_metrics.get(k), "after": best_metrics.get(k)}
             for k in ("sharpe", "total_return", "max_drawdown", "win_rate", "total_trades")
         }
+        chain = [
+            {"step": "backtest", "id": origin, "label": "Backtest result"},
+            {"step": "optimize", "id": run_id, "label": "Optimize run"},
+            {
+                "step": "runner",
+                "id": details.get("new_instance_id") or instance_id,
+                "label": "Paper runner" if mode != "live" else "Live runner",
+            },
+        ]
+        details["chain"] = chain
+        # PRD Part 2 §2 — the audit row is the last place a run's data can be
+        # checked, long after the results page has scrolled away. Copied in
+        # rather than re-derived: the attestation is a fact about the candles
+        # the search loaded, and those are not here to measure again.
+        details["data_attestation"] = run.get("data_attestation")
         audit = self.store.add_audit(
-            run_id=run_id, strategy_id=run["strategy_id"], action="apply",
-            action_details=details, old_params=old_params or run.get("baseline_params"),
+            run_id=run_id,
+            strategy_id=run["strategy_id"],
+            action="apply",
+            action_details=details,
+            old_params=old_params or run.get("baseline_params"),
             new_params=new_params,
             params_diff=params_diff(old_params or run.get("baseline_params"), new_params),
             applied_to_bucket=run.get("bucket_id") or (mode if mode else None),
-            applied_to_mode=mode, runner_restarted=runner_restarted,
-            expected_impact=expected, requires_approval=target == "live",
+            applied_to_mode=mode,
+            runner_restarted=runner_restarted,
+            expected_impact=expected,
+            requires_approval=target == "live",
             approved_by=user_id if target == "live" else None,
             approved_at=_now() if target == "live" else None,
-            user_id=user_id, ip_address=ip_address, user_agent=(user_agent or "")[:255],
+            user_id=user_id,
+            ip_address=ip_address,
+            user_agent=(user_agent or "")[:255],
         )
-        log.info("[optimize] applied run %s to %s (audit %s)", run_id[:8], target,
-                 audit["audit_id"][:8])
+        log.info(
+            "[optimize] applied run %s to %s (audit %s)", run_id[:8], target, audit["audit_id"][:8]
+        )
         return {"audit": audit, "preset": preset, "instance_id": details.get("new_instance_id")}
 
-    def rollback(self, audit_id: str, *, user_id: str | None = None,
-                 ip_address: str | None = None, user_agent: str | None = None) -> dict:
+    def rollback(
+        self,
+        audit_id: str,
+        *,
+        user_id: str | None = None,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> dict:
         """Undo an ``apply``: restore old params / remove a spawned runner."""
         entry = self.store.get_audit(audit_id)
         if entry is None:
@@ -949,8 +1345,10 @@ class OptimizationService:
                 raise OptimizationError(f"runner {new_id} no longer exists", 409)
             if action == "restart":
                 old_cfg = dataclasses.replace(
-                    runner.config, strategy_params=dict(entry.get("old_params") or {}),
-                    instance_id=None)
+                    runner.config,
+                    strategy_params=dict(entry.get("old_params") or {}),
+                    instance_id=None,
+                )
                 try:
                     manager.control_runner(new_id, "flatten")
                 except Exception:  # noqa: BLE001
@@ -966,42 +1364,66 @@ class OptimizationService:
                 manager.remove_runner(new_id)
                 result = {"action": "removed", "instance_id": new_id}
             try:
-                manager._audit_log(f"OPTIMIZE_ROLLBACK {entry['strategy_id']}",
-                                   scope=entry.get("applied_to_mode") or "paper",
-                                   instance_id=result.get("instance_id"),
-                                   detail=f"audit={audit_id}")
+                manager._audit_log(
+                    f"OPTIMIZE_ROLLBACK {entry['strategy_id']}",
+                    scope=entry.get("applied_to_mode") or "paper",
+                    instance_id=result.get("instance_id"),
+                    detail=f"audit={audit_id}",
+                )
             except Exception:  # noqa: BLE001
                 pass
-        self.store.update_audit(audit_id, action_details={**details, "rolled_back": True,
-                                                          "rolled_back_at": _now().isoformat()})
+        self.store.update_audit(
+            audit_id,
+            action_details={**details, "rolled_back": True, "rolled_back_at": _now().isoformat()},
+        )
         audit = self.store.add_audit(
-            run_id=entry.get("run_id"), strategy_id=entry["strategy_id"], action="rollback",
+            run_id=entry.get("run_id"),
+            strategy_id=entry["strategy_id"],
+            action="rollback",
             action_details={"rollback_of": audit_id, **result},
-            old_params=entry.get("new_params"), new_params=entry.get("old_params"),
+            old_params=entry.get("new_params"),
+            new_params=entry.get("old_params"),
             params_diff=params_diff(entry.get("new_params"), entry.get("old_params")),
             applied_to_bucket=entry.get("applied_to_bucket"),
             applied_to_mode=entry.get("applied_to_mode"),
             runner_restarted=result["action"] == "restart",
-            user_id=user_id, ip_address=ip_address, user_agent=(user_agent or "")[:255],
+            user_id=user_id,
+            ip_address=ip_address,
+            user_agent=(user_agent or "")[:255],
         )
         return {"audit": audit, **result}
 
-    def save_preset_from_run(self, run_id: str, *, name: str, description: str | None = None,
-                             params: dict | None = None, created_by: str | None = None) -> dict:
+    def save_preset_from_run(
+        self,
+        run_id: str,
+        *,
+        name: str,
+        description: str | None = None,
+        params: dict | None = None,
+        created_by: str | None = None,
+    ) -> dict:
         run = self._require(run_id)
         chosen = params or run.get("best_params")
         if not chosen:
             raise OptimizationError("run has no valid parameter set", 409)
         preset = self.store.create_preset(
-            strategy_id=run["strategy_id"], name=name, params=chosen, source="optimization",
-            description=description, optimization_run_id=run_id,
+            strategy_id=run["strategy_id"],
+            name=name,
+            params=chosen,
+            source="optimization",
+            description=description,
+            optimization_run_id=run_id,
             backtest_metrics=run.get("best_metrics") if params is None else None,
-            created_by=created_by)
-        self.store.add_audit(run_id=run_id, strategy_id=run["strategy_id"],
-                             action="save_preset", new_params=chosen,
-                             action_details={"preset_id": preset["preset_id"],
-                                             "name": preset["name"]},
-                             user_id=created_by)
+            created_by=created_by,
+        )
+        self.store.add_audit(
+            run_id=run_id,
+            strategy_id=run["strategy_id"],
+            action="save_preset",
+            new_params=chosen,
+            action_details={"preset_id": preset["preset_id"], "name": preset["name"]},
+            user_id=created_by,
+        )
         return preset
 
 
@@ -1023,8 +1445,9 @@ def build_default_service(app_config: dict | None = None) -> OptimizationService
         store.ensure_schema()
         source = (app_config or {}).get("BACKTEST_SOURCE", "synthetic")
         service = OptimizationService(store, default_source=source)
-        log.info("[optimize] engine attached (%s, %d workers)", manager.config.safe_url,
-                 service.workers)
+        log.info(
+            "[optimize] engine attached (%s, %d workers)", manager.config.safe_url, service.workers
+        )
         return service
     except Exception:  # noqa: BLE001 - optional feature
         log.warning("[optimize] database unavailable — optimization disabled", exc_info=True)

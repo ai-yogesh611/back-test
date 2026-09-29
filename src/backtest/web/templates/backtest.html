@@ -10,6 +10,10 @@
     <section class="card config-panel">
         <h2 class="card-title">Configuration</h2>
 
+        <!-- Which prices this run is measured on. Blocking state lives here so
+             the reason sits next to the button it disables. -->
+        <div id="dataSourceGate" data-status='{{ data_sources | tojson }}'></div>
+
         <div class="form-row">
             <label for="strategy">Strategy</label>
             <select id="strategy" class="input">
@@ -18,24 +22,23 @@
         </div>
 
         <div class="form-row">
+            <label for="symbol-search">Search symbol</label>
+            <input type="search" id="symbol-search" class="input" placeholder="NIFTY, RELIANCE…">
+        </div>
+
+        <div class="form-row">
             <label for="symbol">Symbol</label>
+            <div id="symbol-tabs" class="sym-tabs"></div>
             <select id="symbol" class="input">
-                <option>RELIANCE</option>
-                <option>HDFCBANK</option>
-                <option>INFY</option>
-                <option>TCS</option>
+                <option>Loading…</option>
             </select>
-            <small id="symbol-status" class="text-muted" style="display:none"></small>
+            <small id="symbol-status" class="text-muted"></small>
         </div>
 
         <div class="form-row">
             <label for="timeframe">Timeframe</label>
-            <select id="timeframe" class="input">
-                <option value="1D">1D</option>
-                <option value="1H">1H</option>
-                <option value="4H">4H</option>
-                <option value="1W">1W</option>
-            </select>
+            <select id="timeframe" class="input"></select>
+            <small class="text-muted">Only granularities actually stored for the selected symbol are offered.</small>
         </div>
 
         <div class="form-row two-col">
@@ -54,6 +57,13 @@
             <input type="number" id="capital" class="input" value="10000" min="1">
         </div>
 
+        <div class="form-row">
+            <label class="small" title="Vectorized screen: previous-close fills and an approximate cost model. Faster, but the numbers are not the ones a paper or live run reproduces.">
+                <input type="checkbox" id="fastPreview"> Fast Preview <span class="muted">(approximate engine)</span>
+            </label>
+            <small class="text-muted">Off by default — the Full Engine is the canonical, fill-exact path.</small>
+        </div>
+
         <fieldset class="params-fieldset">
             <legend>Strategy Params</legend>
             <div id="params-container"><p class="muted small">Select a strategy…</p></div>
@@ -64,7 +74,20 @@
 
     <!-- ================= RESULTS PANEL ================= -->
     <section id="results" class="results-panel" hidden>
+        <div id="resultProvenance" class="prov-strip"></div>
         <div id="metricsCards" class="metrics-grid"></div>
+        <!-- PRD §2.2: the cards above keep their layout; the richer families
+             live in labelled collapsible sections below them. -->
+        <div id="metricSections"></div>
+        <!-- PRD §3: benchmark / cost shock / Monte Carlo. Each qualifies the
+             numbers above it, so they sit below and start collapsed. -->
+        <div id="runChecks"></div>
+        <!-- PRD §5: the advisory traffic light. Below every other block on
+             purpose — it summarises them, so it reads last. -->
+        <div id="certification"></div>
+        <!-- PRD §6: the hand-off to Optimize. Below the readiness panel
+             because its hint quotes that panel. -->
+        <div id="tuneThis"></div>
 
         <div class="card">
             <div class="tabs">
@@ -110,40 +133,16 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
-  const SOURCE = "{{ source }}";
-  document.addEventListener("DOMContentLoaded", function() {
-    if (SOURCE === "db") {
-      const sel = document.getElementById("symbol");
-      const status = document.getElementById("symbol-status");
-      if (!sel || !status) return;
-      sel.innerHTML = '<option disabled selected>Loading symbols…</option>';
-      status.style.display = "inline";
-      status.textContent = "Fetching available symbols from database…";
-      fetch("/api/symbols")
-        .then(r => r.json())
-        .then(data => {
-          if (!data.symbols || data.symbols.length === 0) {
-            sel.innerHTML = '<option disabled selected>No symbols found</option>';
-            status.textContent = "No data in database.";
-            return;
-          }
-          sel.innerHTML = data.symbols.map(s => `<option value="${s}">${s}</option>`).join("");
-          if (data.symbols.includes("RELIANCE")) {
-            sel.value = "RELIANCE";
-          }
-          status.textContent = `${data.count} symbols available`;
-        })
-        .catch(() => {
-          sel.innerHTML = '<option disabled selected>Error loading symbols</option>';
-          status.textContent = "Could not reach database.";
-        });
-    }
-  });
-</script>
-
 <script src="{{ url_for('static', filename='js/components/params_form.js') }}"></script>
+<script src="{{ url_for('static', filename='js/components/provenance.js') }}"></script>
+<script src="{{ url_for('static', filename='js/components/symbol_picker.js') }}"></script>
+<script src="{{ url_for('static', filename='js/components/timeframes.js') }}"></script>
 <script src="{{ url_for('static', filename='js/components/metrics_cards.js') }}"></script>
+<script src="{{ url_for('static', filename='js/components/metric_sections.js') }}"></script>
+<script src="{{ url_for('static', filename='js/components/run_checks.js') }}"></script>
+<script src="{{ url_for('static', filename='js/components/certification.js') }}"></script>
+<script src="{{ url_for('static', filename='js/components/data_source_gate.js') }}"></script>
+<script src="{{ url_for('static', filename='js/components/tune_this.js') }}"></script>
 <script src="{{ url_for('static', filename='js/components/trade_table.js') }}"></script>
 <script src="{{ url_for('static', filename='js/charts/equity_chart.js') }}"></script>
 <script src="{{ url_for('static', filename='js/charts/drawdown_chart.js') }}"></script>

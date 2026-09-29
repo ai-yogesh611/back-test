@@ -38,6 +38,12 @@ from typing import Any, Tuple
 
 from flask import Blueprint, Response, current_app, jsonify, request
 
+from backtest.optimization.attestation import (
+    SYNTHETIC_ACKNOWLEDGEMENT,
+    attestation_is_satisfied,
+    attestation_warnings,
+)
+
 from backtest.logging_config import get_logger
 from backtest.optimization.config import (
     CONSTRAINT_METRICS,
@@ -50,6 +56,9 @@ from backtest.optimization.config import (
 )
 from backtest.optimization.scoring import OBJECTIVE_LABELS
 from backtest.optimization.store import RESULT_METRIC_COLUMNS, SORTABLE, clean_json
+
+from backtest.api.data_guard import guard_source  # noqa: E402  (cycle-free sibling)
+from backtest.engine.monte_carlo import DEFAULT_SIMULATIONS
 
 optimize_bp = Blueprint("optimize_api", __name__)
 log = get_logger(__name__)
@@ -81,7 +90,65 @@ def _service():
 
 def _ok(payload: dict | list, status: int = 200) -> Tuple[Response, int]:
     body = payload if isinstance(payload, dict) else {"items": payload}
+    if isinstance(body.get("run"), dict):
+        # Every run payload carries its own provenance stamp (PRD
+        # backTest-enhance §1.2) so the results page never has to guess which
+        # engine and which data produced the numbers.
+        body = {**body, "run": {**body["run"], "provenance": _run_provenance(body["run"])}}
     return jsonify(clean_json({"success": True, **body})), status
+
+
+def _run_provenance(run: dict) -> dict:
+    """The data provenance block for a stored optimize run.
+
+    Read back from the run row — never from whatever source the app happens to
+    be started with when the page is opened.
+
+    Two paths, in order of honesty:
+
+    1. **The stored attestation** (PRD Part 2 §2, migration 015) — measured on
+       the candles the search actually loaded, recorded at the time.
+    2. **A derived block** for runs predating that migration — rebuilt from
+       ``backtest_config`` (what the run was asked to use) and
+       ``analysis.stats`` (what it loaded).
+
+    The fallback is marked ``derived: true`` so the UI can say "reconstructed"
+    rather than presenting a rebuilt record with the same authority as a
+    measured one. A record that cannot say how it was made is worth less than
+    one that can, and pretending otherwise is the failure mode §2 exists to
+    prevent.
+    """
+    stored = run.get("data_attestation") or {}
+
+    from backtest.data.provenance import build_provenance
+
+    bt = dict(run.get("backtest_config") or {})
+    stats = dict((run.get("analysis") or {}).get("stats") or {})
+    record = build_provenance(
+        source=bt.get("source") or "synthetic",
+        engine=bt.get("engine") or "driver",
+        symbol=bt.get("symbol") or "",
+        timeframe=bt.get("timeframe") or "",
+        start_date=bt.get("startDate") or bt.get("start_date"),
+        end_date=bt.get("endDate") or bt.get("end_date"),
+        bars=stats.get("bars"),
+        data_from=stats.get("data_from"),
+        data_to=stats.get("data_to"),
+    )
+    if not stored:
+        record["derived"] = True
+        return record
+
+    # Merge rather than replace. The stored attestation is the DATA half only —
+    # it is measured on candles. The ENGINE half still comes from
+    # build_provenance, because a run that remembers its data but has lost its
+    # engine label is not more complete, just differently incomplete.
+    merged = {**record, **stored, "derived": False}
+    # The attestation's own naming is authoritative where the two overlap; the
+    # derived block spelled these differently and the page must show one.
+    merged["date_from"] = stored.get("date_from")
+    merged["date_to"] = stored.get("date_to")
+    return merged
 
 
 def _error(message: str, status: int = 400, **extra: Any) -> Tuple[Response, int]:
@@ -89,8 +156,12 @@ def _error(message: str, status: int = 400, **extra: Any) -> Tuple[Response, int
 
 
 def _user() -> str | None:
-    return (request.headers.get("X-User") or request.headers.get("X-Forwarded-User")
-            or (request.get_json(silent=True) or {}).get("user") or None)
+    return (
+        request.headers.get("X-User")
+        or request.headers.get("X-Forwarded-User")
+        or (request.get_json(silent=True) or {}).get("user")
+        or None
+    )
 
 
 def _handle(fn):
@@ -106,15 +177,20 @@ def _handle(fn):
         except _Unavailable:
             return _error(
                 "Optimization needs a database — set FORWARD_TEST_DB_URL (PostgreSQL) "
-                "or run with the dev SQLite profile.", 503)
+                "or run with the dev SQLite profile.",
+                503,
+            )
         except ConfigValidationError as exc:
             return _error("invalid optimization config", 400, errors=exc.errors)
         except OptimizationError as exc:
-            return _error(str(exc), exc.status)
+            # `code` lets the setup page tell "tick the synthetic box" apart
+            # from every other refusal without matching on the wording.
+            return _error(str(exc), exc.status, code=exc.code, **exc.details)
         except KeyError as exc:
             return _error(f"not found: {exc}", 404)
         except (TypeError, ValueError) as exc:
             return _error(f"bad request: {exc}", 400)
+
     return wrapper
 
 
@@ -126,14 +202,16 @@ def _handle(fn):
 @optimize_bp.get("/api/optimize/meta")
 def meta() -> Tuple[Response, int]:
     """Static choices for the setup page (no DB needed)."""
-    return _ok({
-        "objectives": [{"id": o, "label": OBJECTIVE_LABELS[o]} for o in OBJECTIVES],
-        "methods": list(METHODS),
-        "constraint_metrics": list(CONSTRAINT_METRICS),
-        "max_optimized_params": MAX_OPTIMIZED_PARAMS,
-        "sortable": list(SORTABLE),
-        "metrics": list(RESULT_METRIC_COLUMNS),
-    })
+    return _ok(
+        {
+            "objectives": [{"id": o, "label": OBJECTIVE_LABELS[o]} for o in OBJECTIVES],
+            "methods": list(METHODS),
+            "constraint_metrics": list(CONSTRAINT_METRICS),
+            "max_optimized_params": MAX_OPTIMIZED_PARAMS,
+            "sortable": list(SORTABLE),
+            "metrics": list(RESULT_METRIC_COLUMNS),
+        }
+    )
 
 
 @optimize_bp.get("/api/optimize/strategies/<name>/space")
@@ -145,18 +223,28 @@ def strategy_space(name: str) -> Tuple[Response, int]:
     except KeyError:
         return _error(f"unknown strategy: {name}", 404)
     option = is_option_strategy(name)
-    return _ok({
-        "strategy": name,
-        "description": getattr(cls, "description", ""),
-        "engine": "options" if option else "driver",
-        "is_option": option,
-        "parameters": default_space(name),
-        "default_symbol": "NIFTY" if option else "DEMO",
-    })
+    return _ok(
+        {
+            "strategy": name,
+            "description": getattr(cls, "description", ""),
+            "engine": "options" if option else "driver",
+            "is_option": option,
+            "parameters": default_space(name),
+            "default_symbol": "NIFTY" if option else "DEMO",
+        }
+    )
 
 
-_RUNNER_FIELDS = ("instance_id", "name", "mode", "status", "strategy_name", "symbols",
-                  "timeframe", "allocated_capital")
+_RUNNER_FIELDS = (
+    "instance_id",
+    "name",
+    "mode",
+    "status",
+    "strategy_name",
+    "symbols",
+    "timeframe",
+    "allocated_capital",
+)
 
 
 @optimize_bp.get("/api/optimize/runners")
@@ -189,9 +277,37 @@ def list_runners() -> Tuple[Response, int]:
 @optimize_bp.post("/api/optimize/estimate")
 @_handle
 def estimate() -> Tuple[Response, int]:
+    _refused = guard_source()
+    if _refused:
+        return _refused  # type: ignore[return-value]
     svc = _service()
     cfg = svc.parse(request.get_json(silent=True) or {})
     return _ok({"estimate": svc.estimate(cfg), "config": cfg.to_dict()})
+
+
+@optimize_bp.post("/api/optimize/attestation")
+@_handle
+def data_attestation() -> Tuple[Response, int]:
+    """PRD Part 2 §2 — the setup page's data confirmation box.
+
+    A preview only: bar count and actual coverage are not knowable until the
+    candles are fetched, so this reports them as unknown rather than guessing.
+    The run record carries the measured version once the search has loaded them.
+    """
+    _refused = guard_source()
+    if _refused:
+        return _refused  # type: ignore[return-value]
+    svc = _service()
+    doc = request.get_json(silent=True) or {}
+    att = svc.attestation_for(doc)
+    return _ok(
+        {
+            "attestation": att,
+            "warnings": attestation_warnings(att),
+            "satisfied": attestation_is_satisfied(att),
+            "acknowledgement": SYNTHETIC_ACKNOWLEDGEMENT,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +318,9 @@ def estimate() -> Tuple[Response, int]:
 @optimize_bp.post("/api/optimize/runs")
 @_handle
 def create_run() -> Tuple[Response, int]:
+    _refused = guard_source()
+    if _refused:
+        return _refused  # type: ignore[return-value]
     svc = _service()
     doc = request.get_json(silent=True) or {}
     start = bool(doc.pop("start", True)) if isinstance(doc, dict) else True
@@ -215,9 +334,12 @@ def list_runs() -> Tuple[Response, int]:
     svc = _service()
     limit = max(1, min(int(request.args.get("limit", 50)), 200))
     offset = max(0, int(request.args.get("offset", 0)))
-    rows, total = svc.store.list_runs(strategy_id=request.args.get("strategy") or None,
-                                      status=request.args.get("status") or None,
-                                      limit=limit, offset=offset)
+    rows, total = svc.store.list_runs(
+        strategy_id=request.args.get("strategy") or None,
+        status=request.args.get("status") or None,
+        limit=limit,
+        offset=offset,
+    )
     return _ok({"runs": rows, "total": total, "limit": limit, "offset": offset})
 
 
@@ -232,6 +354,31 @@ def get_run(run_id: str) -> Tuple[Response, int]:
 def delete_run(run_id: str) -> Tuple[Response, int]:
     _service().delete(run_id)
     return _ok({"deleted": run_id})
+
+
+@optimize_bp.post("/api/optimize/runs/<run_id>/monte-carlo")
+@_handle
+def monte_carlo(run_id: str) -> Tuple[Response, int]:
+    """PRD Part 2 §4 — Monte Carlo on the winning result.
+
+    On the best result only, not on every candidate: the winner is the one
+    that would go to paper, and the question is whether *its* trade sequence
+    is a lucky ordering. Walk-forward already asked whether the parameters
+    generalise across time; this asks a different question about the same run.
+
+    Explicitly **not** guarded by the data-source policy: the candles were
+    already read to produce this run, and the resampling is arithmetic on
+    trades that exist. Refusing it would remove a check on a result the user
+    can already see.
+    """
+    doc = request.get_json(silent=True) or {}
+    try:
+        simulations = int(doc.get("simulations", DEFAULT_SIMULATIONS))
+    except (TypeError, ValueError):
+        return _error("simulations must be an integer", 400)
+    if simulations < 2 or simulations > 50_000:
+        return _error("simulations must be between 2 and 50000", 400)
+    return _ok({"monte_carlo": _service().monte_carlo_best(run_id, simulations=simulations)})
 
 
 @optimize_bp.post("/api/optimize/runs/<run_id>/<action>")
@@ -257,9 +404,13 @@ def run_action(run_id: str, action: str) -> Tuple[Response, int]:
         name = str(body.get("name") or "").strip()
         if not name:
             return _error("preset name is required")
-        preset = svc.save_preset_from_run(run_id, name=name,
-                                          description=body.get("description"),
-                                          params=body.get("params"), created_by=_user())
+        preset = svc.save_preset_from_run(
+            run_id,
+            name=name,
+            description=body.get("description"),
+            params=body.get("params"),
+            created_by=_user(),
+        )
         return _ok({"preset": preset}, 201)
     return _error(f"unknown action: {action}", 404)
 
@@ -279,6 +430,8 @@ def _apply(run_id: str) -> Tuple[Response, int]:
         ip_address=request.headers.get("X-Forwarded-For", request.remote_addr),
         user_agent=request.headers.get("User-Agent"),
         notes=body.get("notes"),
+        monte_carlo_acknowledged=bool(body.get("monte_carlo_acknowledged")),
+        monte_carlo_profit_probability=body.get("monte_carlo_profit_probability"),
     )
     return _ok(result)
 
@@ -303,18 +456,35 @@ def run_results(run_id: str) -> Tuple[Response, int]:
             return float("-inf") if v is None else float(v)
 
         rows = sorted(rows, key=sort_key, reverse=(order == "desc"))
-        page = [{"params": r["params"], "objective_score": r["score"],
-                 "constraints_met": r["constraints_met"], "rank": None,
-                 "constraint_violations": r["violations"], "error": r["error"],
-                 "origin": r.get("origin", "search"), **{
-                     c: r["metrics"].get(c) for c in RESULT_METRIC_COLUMNS}}
-                for r in rows[offset:offset + limit]]
-        return _ok({"results": page, "total": len(rows), "live": True,
-                    "limit": limit, "offset": offset})
-    rows, total = svc.store.get_results(run_id, sort=sort, order=order, limit=limit,
-                                        offset=offset, compliant_only=compliant)
-    return _ok({"results": rows, "total": total, "live": False, "limit": limit,
-                "offset": offset, "status": run["status"]})
+        page = [
+            {
+                "params": r["params"],
+                "objective_score": r["score"],
+                "constraints_met": r["constraints_met"],
+                "rank": None,
+                "constraint_violations": r["violations"],
+                "error": r["error"],
+                "origin": r.get("origin", "search"),
+                **{c: r["metrics"].get(c) for c in RESULT_METRIC_COLUMNS},
+            }
+            for r in rows[offset : offset + limit]
+        ]
+        return _ok(
+            {"results": page, "total": len(rows), "live": True, "limit": limit, "offset": offset}
+        )
+    rows, total = svc.store.get_results(
+        run_id, sort=sort, order=order, limit=limit, offset=offset, compliant_only=compliant
+    )
+    return _ok(
+        {
+            "results": rows,
+            "total": total,
+            "live": False,
+            "limit": limit,
+            "offset": offset,
+            "status": run["status"],
+        }
+    )
 
 
 @optimize_bp.get("/api/optimize/runs/<run_id>/heatmap")
@@ -339,12 +509,14 @@ def run_heatmap(run_id: str) -> Tuple[Response, int]:
 def run_sensitivity(run_id: str) -> Tuple[Response, int]:
     run = _service().status(run_id)
     analysis = run.get("analysis") or {}
-    return _ok({
-        "sensitivity": analysis.get("sensitivity") or {},
-        "robustness": analysis.get("robustness"),
-        "cluster": analysis.get("cluster"),
-        "warnings": analysis.get("warnings") or [],
-    })
+    return _ok(
+        {
+            "sensitivity": analysis.get("sensitivity") or {},
+            "robustness": analysis.get("robustness"),
+            "cluster": analysis.get("cluster"),
+            "warnings": analysis.get("warnings") or [],
+        }
+    )
 
 
 @optimize_bp.get("/api/optimize/runs/<run_id>/walk-forward")
@@ -369,19 +541,35 @@ def run_export(run_id: str) -> Response:
     buf = io.StringIO()
     writer = csv.writer(buf)
     metric_cols = list(RESULT_METRIC_COLUMNS)
-    writer.writerow(["rank", "objective_score", "constraints_met", "origin", *names,
-                     *metric_cols, "violations"])
+    writer.writerow(
+        ["rank", "objective_score", "constraints_met", "origin", *names, *metric_cols, "violations"]
+    )
     for r in rows:
         viol = "; ".join(
-            f"{v.get('metric')} {v.get('operator')} {v.get('limit')} (got {v.get('actual')})"
-            if "metric" in v else str(v.get("error"))
-            for v in (r.get("constraint_violations") or []))
-        writer.writerow([r.get("rank"), r.get("objective_score"), r.get("constraints_met"),
-                         r.get("origin"), *[(r.get("params") or {}).get(n) for n in names],
-                         *[r.get(c) for c in metric_cols], viol])
+            (
+                f"{v.get('metric')} {v.get('operator')} {v.get('limit')} (got {v.get('actual')})"
+                if "metric" in v
+                else str(v.get("error"))
+            )
+            for v in (r.get("constraint_violations") or [])
+        )
+        writer.writerow(
+            [
+                r.get("rank"),
+                r.get("objective_score"),
+                r.get("constraints_met"),
+                r.get("origin"),
+                *[(r.get("params") or {}).get(n) for n in names],
+                *[r.get(c) for c in metric_cols],
+                viol,
+            ]
+        )
     filename = f"optimization_{run['strategy_id']}_{run_id[:8]}.csv"
-    return Response(buf.getvalue(), mimetype="text/csv",
-                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+    return Response(
+        buf.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -396,7 +584,8 @@ def list_presets() -> Tuple[Response, int]:
     presets = svc.store.list_presets(
         request.args.get("strategy") or None,
         include_defaults=request.args.get("defaults", "1") not in ("0", "false"),
-        active_only=request.args.get("all", "") not in ("1", "true"))
+        active_only=request.args.get("all", "") not in ("1", "true"),
+    )
     return _ok({"presets": presets})
 
 
@@ -410,8 +599,13 @@ def create_preset() -> Tuple[Response, int]:
     if not strategy or not name or not isinstance(params, dict) or not params:
         return _error("strategy_id, name and a non-empty params object are required")
     preset = _service().store.create_preset(
-        strategy_id=strategy, name=name, params=params, source="manual",
-        description=body.get("description"), created_by=_user())
+        strategy_id=strategy,
+        name=name,
+        params=params,
+        source="manual",
+        description=body.get("description"),
+        created_by=_user(),
+    )
     return _ok({"preset": preset}, 201)
 
 
@@ -447,9 +641,11 @@ def delete_preset(preset_id: str) -> Tuple[Response, int]:
 @_handle
 def list_audit() -> Tuple[Response, int]:
     limit = max(1, min(int(request.args.get("limit", 100)), 500))
-    entries = _service().store.list_audit(strategy_id=request.args.get("strategy") or None,
-                                          run_id=request.args.get("run_id") or None,
-                                          limit=limit)
+    entries = _service().store.list_audit(
+        strategy_id=request.args.get("strategy") or None,
+        run_id=request.args.get("run_id") or None,
+        limit=limit,
+    )
     return _ok({"audit": entries})
 
 
@@ -457,7 +653,9 @@ def list_audit() -> Tuple[Response, int]:
 @_handle
 def rollback(audit_id: str) -> Tuple[Response, int]:
     result = _service().rollback(
-        audit_id, user_id=_user(),
+        audit_id,
+        user_id=_user(),
         ip_address=request.headers.get("X-Forwarded-For", request.remote_addr),
-        user_agent=request.headers.get("User-Agent"))
+        user_agent=request.headers.get("User-Agent"),
+    )
     return _ok(result)

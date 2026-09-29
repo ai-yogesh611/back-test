@@ -36,9 +36,14 @@ from typing import Any, Callable, Iterable, Sequence
 import numpy as np
 import pandas as pd
 
+# Imported under an alias: ``standardize_metrics`` below has a
+# ``periods_per_year`` PARAMETER of the same name, and shadowing it would make
+# the derived value unreachable inside its own default.
+from backtest.data.base import periods_per_year as annualisation_factor
 from backtest.engine.backtester import BacktestConfig, BacktestResult
 from backtest.engine.metrics import compute_metrics
 from backtest.engine.trades import walk_trades
+from backtest.optimization.regimes import regime_breakdown
 
 log = logging.getLogger("backtest.optimization.evaluator")
 
@@ -150,13 +155,21 @@ def standardize_metrics(
     returns: pd.Series,
     *,
     timeframe: str = "1day",
-    periods_per_year: int = 252,
+    periods_per_year: int | None = None,
 ) -> dict[str, Any]:
     """Map engine metrics onto the ``optimization_results`` column set.
 
     ``pnls`` are CLOSED-trade P&Ls (currency). ``base`` is a
     ``compute_metrics`` dict (or the options driver's equivalent).
+
+    ``periods_per_year`` is DERIVED from ``timeframe`` unless a caller passes
+    one explicitly (PRD backTest-enhance §1.4): an intraday run scored with
+    the daily factor reports a Sharpe that is wrong by the square root of the
+    ratio, which is exactly the kind of "confidently wrong" number the PRD is
+    about.
     """
+    if periods_per_year is None:
+        periods_per_year = annualisation_factor(timeframe)
     wins = [p for p in pnls if p > 0]
     losses = [p for p in pnls if p < 0]
     gross_profit = float(sum(wins))
@@ -205,6 +218,25 @@ def standardize_metrics(
     }
 
 
+def _trades_by_date(trades: list) -> dict[str, int]:
+    """Closed trades counted by the day they closed.
+
+    The PRD asks for a trade count per period. Inferring a trade from a kink in
+    the equity curve would be a guess with a number attached; the trade list
+    says when each one actually happened.
+    """
+    out: dict[str, int] = {}
+    for t in trades or ():
+        if getattr(t, "is_open", False):
+            continue
+        exit_at = getattr(t, "exit_date", None)
+        if not exit_at:
+            continue
+        day = pd.Timestamp(exit_at).strftime("%Y-%m-%d")
+        out[day] = out.get(day, 0) + 1
+    return out
+
+
 def downsample_curve(equity: pd.Series, max_points: int = 400) -> list[list[Any]]:
     """``[[YYYY-MM-DD, equity], ...]`` with at most ``max_points`` points."""
     if equity is None or equity.empty:
@@ -248,11 +280,14 @@ def _run_equity_engine(
         frame = candles
     if frame.empty:
         raise ValueError("no bars in the evaluation window")
+    timeframe = str(settings.get("timeframe") or "1day")
     if settings.get("engine") == "quick_screen":
         start = window.start if window else frame.index[0].strftime("%Y-%m-%d")
         end = window.end if window else frame.index[-1].strftime("%Y-%m-%d")
-        return run_quick_screen(frame, strategy, sparams, symbol, capital, start, end)
-    result = run_backtest(frame, strategy, sparams, symbol, capital)
+        return run_quick_screen(
+            frame, strategy, sparams, symbol, capital, start, end, timeframe
+        )
+    result = run_backtest(frame, strategy, sparams, symbol, capital, timeframe=timeframe)
     if window is not None and window.warmup_from and window.warmup_from < window.start:
         result = _trim(result, window.start, window.end, capital)
     return result
@@ -342,6 +377,8 @@ def evaluate(
     params: dict[str, Any],
     window: EvalWindow | None = None,
     keep_curve: bool = False,
+    keep_pnls: bool = False,
+    keep_regimes: bool = False,
 ) -> dict[str, Any]:
     """Run ONE backtest; never raises (errors come back in the payload)."""
     t0 = time.perf_counter()
@@ -358,7 +395,11 @@ def evaluate(
             dummy = BacktestResult(
                 equity=equity, returns=returns,
                 position=pd.Series(0.0, index=equity.index),
-                candles=None, config=BacktestConfig(initial_capital=float(settings["capital"])),
+                candles=None,
+                config=BacktestConfig(
+                    initial_capital=float(settings["capital"]),
+                    periods_per_year=annualisation_factor(timeframe),
+                ),
                 metrics={},
             )
             base = compute_metrics(dummy)
@@ -369,10 +410,28 @@ def evaluate(
             base = result.metrics or compute_metrics(result)
             trades = walk_trades(equity, result.position.fillna(0)) if len(equity) else []
             pnls = [float(t.pnl) for t in trades if not t.is_open]
-        metrics = standardize_metrics(base, pnls, equity, returns, timeframe=timeframe)
+        metrics = standardize_metrics(
+            base, pnls, equity, returns, timeframe=timeframe,
+            periods_per_year=annualisation_factor(timeframe),
+        )
         payload: dict[str, Any] = {"params": params, "metrics": metrics, "error": None}
         if keep_curve:
             payload["curve"] = downsample_curve(equity)
+        if keep_pnls:
+            # Only the winner needs these (PRD Part 2 §4's Monte Carlo). Keeping
+            # them for every candidate would mean a trade list per combination
+            # across the whole search.
+            payload["trade_pnls"] = [float(p) for p in pnls]
+        if keep_regimes and equity is not None and len(equity):
+            # PRD Part 2 §6.1. At full resolution, never from the downsampled
+            # curve: sampling every third bar moves a Sharpe enough to reorder
+            # two candidates, and a regime table built on that would be a
+            # table of sampling artefacts.
+            payload["regimes"] = regime_breakdown(
+                [pd.Timestamp(ts).strftime("%Y-%m-%d") for ts in equity.index],
+                [float(v) for v in equity.values],
+                _trades_by_date(trades),
+            )
     except Exception as exc:  # noqa: BLE001 - one bad combination must not kill the run
         payload = {
             "params": params,

@@ -28,11 +28,13 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 import pandas as pd
 
 from backtest.data.base import CANONICAL_TIMEFRAMES as SUPPORTED_TIMEFRAMES
+from backtest.data.base import normalize_timeframe, periods_per_year
 from backtest.data.frame_source import FrameSource
 from backtest.engine.backtest_driver import BacktestDriver
 from backtest.engine.backtester import BacktestConfig, BacktestResult
@@ -40,6 +42,7 @@ from backtest.engine.metrics import compute_metrics
 from backtest.runner import run_on_candles
 from backtest.simulator.bucket_risk import resolve_bucket_risk
 from backtest.simulator.execution import costed_executor, free_executor
+from backtest.simulator.slippage import FixedBpsSlippage, SlippageCalculator, SlippageConfig
 from backtest.simulator.portfolio import Portfolio
 from backtest.simulator.position_sizing import all_in_size
 from backtest.strategy.registry import get_strategy
@@ -179,6 +182,8 @@ def run_backtest(
     symbol: str,
     initial_capital: float,
     broker: str | None = None,
+    timeframe: str | None = None,
+    slippage_bps: float | None = None,
 ) -> BacktestResult:
     """Run the CANONICAL engine: ``BacktestDriver`` over simulator/.
 
@@ -191,6 +196,11 @@ def run_backtest(
     Metrics and trades come from the same ``engine/metrics`` +
     ``engine/trades`` code the vectorized path uses.
 
+    ``timeframe``: the granularity these bars actually are. Drives
+    ``periods_per_year``, so a 1-minute run reports an annual Sharpe instead of
+    one scaled by a daily factor (PRD backTest-enhance §1.4). ``None`` keeps
+    the daily default.
+
     ``broker``: name of a broker preset (``mstock``, ``zerodha``, ...) or
     ``None`` (default). ``None`` keeps the historical zero-cost executor
     (``free_executor``) — results are reproducible and unchanged. A name
@@ -198,6 +208,13 @@ def run_backtest(
     run charges that broker's real statutory stack — the R-E1 cost
     haircut. The chosen broker is stamped into ``result.metrics`` as
     ``broker`` and the fee total as ``fees_paid``.
+
+    ``slippage_bps``: flat per-side haircut in basis points, or ``None``
+    (default) for the historical zero-slippage baseline. This exists for the
+    §3.2 cost-shock table, which re-runs this exact configuration at 1x/2x/3x
+    a slippage level. It is ``None`` rather than ``0`` on purpose: ``0`` and
+    "not asked for" are different states, and §3.2 has to be able to tell a
+    genuinely costless run from a default it should override.
     """
     strategy_instance = get_strategy(strategy)(**(params or {}))
     active = int((strategy_instance.generate_signals(candles).fillna(0) != 0).sum())
@@ -220,10 +237,19 @@ def run_backtest(
     # P&L is unchanged.
     _, paper_bucket = resolve_bucket_risk("paper", "synthetic")
     portfolio.limits = paper_bucket.to_portfolio_limits()
+    # Built ONCE, up front: the executor copies its slippage calculator into
+    # the fill provider in __init__, so slippage set afterwards is ignored.
+    slippage = (
+        SlippageCalculator(
+            config=SlippageConfig(model=FixedBpsSlippage(bps_value=Decimal(str(slippage_bps))))
+        )
+        if slippage_bps is not None and float(slippage_bps) > 0
+        else None
+    )
     if broker:
-        executor = costed_executor(portfolio, broker=broker)
+        executor = costed_executor(portfolio, broker=broker, slippage=slippage)
     else:
-        executor = free_executor(portfolio, max_participation="1")
+        executor = free_executor(portfolio, max_participation="1", slippage=slippage)
     driver = BacktestDriver(
         source=FrameSource(candles),
         strategy=strategy_instance,
@@ -247,11 +273,15 @@ def run_backtest(
         returns=equity.pct_change(),
         position=holding,
         candles=candles,
-        config=BacktestConfig(initial_capital=initial_capital),
+        config=BacktestConfig(
+            initial_capital=initial_capital,
+            periods_per_year=periods_per_year(timeframe),
+        ),
         metrics={},
     )
     result.metrics = compute_metrics(result)
     result.metrics["strategy"] = strategy
+    result.metrics["timeframe"] = normalize_timeframe(timeframe)
     result.metrics["strategy_params"] = params
     result.metrics["symbol"] = symbol
     result.metrics["stop_loss"] = result.config.stop_loss
@@ -259,6 +289,8 @@ def run_backtest(
     if broker:
         result.metrics["broker"] = broker
         result.metrics["fees_paid"] = float(portfolio.total_commission)
+    if slippage_bps is not None:
+        result.metrics["slippage_bps"] = float(slippage_bps)
     return result
 
 
@@ -270,6 +302,7 @@ def run_quick_screen(
     initial_capital: float,
     from_date: str,
     to_date: str,
+    timeframe: str | None = None,
 ) -> BacktestResult:
     """Legacy vectorized quick filter: :func:`runner.run_on_candles` + trim.
 
@@ -282,6 +315,9 @@ def run_quick_screen(
         strategy,
         params,
         symbol,
-        BacktestConfig(initial_capital=initial_capital),
+        BacktestConfig(
+            initial_capital=initial_capital,
+            periods_per_year=periods_per_year(timeframe),
+        ),
     )
     return trim_to_range(result, from_date, to_date)

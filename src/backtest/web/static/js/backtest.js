@@ -5,6 +5,7 @@
  */
 let lastRun = null;          // {config, result}
 let currentParams = {};      // schema for the selected strategy
+let symbolPicker = null;     // components/symbol_picker.js handle
 
 // --- Recent-run history (localStorage) --------------------------------------
 // Each completed run is cached so it can be re-opened without re-running.
@@ -69,12 +70,39 @@ function collectConfig() {
     return {
         strategy: $("strategy").value,
         symbol: $("symbol").value,
-        timeframe: $("timeframe").value,
+        timeframe: timeframeValue(),
         from_date: $("fromDate").value,
         to_date: $("toDate").value,
         capital: Number($("capital").value) || 0,
         params: collectParams(),
+        // Empty = canonical fill-exact engine. "quick_screen" is only ever an
+        // explicit opt-in (the Fast Preview toggle) — never the default, so a
+        // result can never silently come from the approximate path.
+        mode: engineMode(),
     };
+}
+
+/**
+ * The timeframe to send. §1.4: the dropdown only ever offers what the
+ * selected symbol actually has cached, and never claims an intraday
+ * granularity on a source that stores daily bars only.
+ */
+function timeframeValue() {
+    const sel = $("timeframe");
+    if (!sel || !sel.value) return "1day";
+    const canonical = Timeframes.toCanonical(sel.value);
+    const available = symbolPicker ? symbolPicker.timeframesFor($("symbol").value) : [];
+    if (available.length && !available.includes(canonical)) {
+        showToast(`${sel.value} has no data for ${$("symbol").value} — using ${available[0]}`, "warning");
+        return available[0];
+    }
+    return canonical;
+}
+
+/** Requested engine mode: "" (full engine) or "quick_screen" (fast preview). */
+function engineMode() {
+    const box = $("fastPreview");
+    return box && box.checked ? "quick_screen" : "";
 }
 
 // ---------------------------------------------------------------------------
@@ -97,7 +125,10 @@ async function runBacktest() {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify(config),
         });
-        lastRun = { config, result };
+        // §6: a handle for this rendered result, so the Optimize hand-off and
+        // its audit chain have something to name. Backtests are stateless —
+        // nothing about this run is persisted server-side.
+        lastRun = { config, result, resultId: TuneThis.mintResultId() };
         renderResults(result);
         saveRecentRun(lastRun);
         showToast("Backtest complete", "success");
@@ -109,7 +140,23 @@ async function runBacktest() {
 }
 
 function renderResults(result) {
+    // Engine + data provenance first: every number below it is read through
+    // these two badges (PRD backTest-enhance §1.1/§1.2).
+    if (typeof Provenance !== "undefined") Provenance.renderInto("resultProvenance", result.provenance);
     renderMetricsCards("metricsCards", result.metrics);
+    // PRD §2.2: risk/tail, drawdown detail, trade quality and statistical
+    // confidence, plus the insufficient-sample banner when it applies.
+    if (typeof MetricSections !== "undefined") MetricSections.renderInto("metricSections", result.metrics);
+    // PRD §3.1/§3.2/§3.3: buy-and-hold reference, slippage stress and trade
+    // sequence resampling. Read from the same payload as the cards above, so a
+    // check can never qualify a different result than the one being shown.
+    if (typeof RunChecks !== "undefined") RunChecks.renderInto("runChecks", result);
+    // PRD §5: the readiness summary, from the same payload as everything above.
+    if (typeof Certification !== "undefined") Certification.renderInto("certification", result.readiness);
+    // PRD §6: carry this result into Optimize. Never hidden — see the note in
+    // tune_this.js about why a not-yet-certifiable result is precisely when
+    // someone wants to tune.
+    if (typeof TuneThis !== "undefined") TuneThis.renderInto("tuneThis", lastRun);
     TradeTable.render("tradeTable-wrap", result.trades);
     // default tab = equity; render lazily on tab switch
     renderChartForPane("equity");
@@ -269,11 +316,30 @@ function openRecentRun(idx) {
 
 async function init() {
     wireTabs();
+
+    // Which prices this run is measured on. A disabled source blocks the Run
+    // button and says why, rather than letting it 409 on click.
+    if (window.DataSourceGate) {
+        DataSourceGate.mount("dataSourceGate", {
+            status: $("dataSourceGate").dataset.status,
+            blockIds: ["runBtn"],
+        });
+    }
+
     $("runBtn").addEventListener("click", runBacktest);
     $("saveCompareBtn").addEventListener("click", saveToCompare);
     $("exportCsvBtn").addEventListener("click", exportCsv);
     $("promoteBtn").addEventListener("click", promoteToForward);
     renderRecentRuns();
+
+    // §1.3/§1.4: the picker and the timeframe dropdown are driven by what the
+    // server says the chosen symbol actually has, so neither can offer a
+    // phantom option.
+    symbolPicker = SymbolPicker.mount({
+        select: "symbol", search: "symbol-search", tabs: "symbol-tabs", summary: "symbol-status",
+        onChange: () => Timeframes.applyTo($("timeframe"), symbolPicker.timeframesFor($("symbol").value)),
+    });
+    Timeframes.applyTo($("timeframe"), null);
 
     // load strategies
     let strategies = [];
@@ -298,8 +364,15 @@ async function init() {
     if (pre && pre.config && pre.config.strategy) {
         const cfg = pre.config;
         $("strategy").value = cfg.strategy;
-        if (cfg.symbol) $("symbol").value = cfg.symbol;
-        if (cfg.timeframe) $("timeframe").value = cfg.timeframe;
+        if (cfg.symbol) {
+            symbolPicker.setValue(cfg.symbol);
+            Timeframes.applyTo($("timeframe"), symbolPicker.timeframesFor(cfg.symbol));
+        }
+        if (cfg.timeframe) {
+            const want = Timeframes.toCanonical(cfg.timeframe);
+            const sel = $("timeframe");
+            if (want && [...sel.options].some((o) => o.value === want)) sel.value = want;
+        }
         if (cfg.from_date) $("fromDate").value = cfg.from_date;
         if (cfg.to_date) $("toDate").value = cfg.to_date;
         if (cfg.capital) $("capital").value = cfg.capital;

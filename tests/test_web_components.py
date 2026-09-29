@@ -80,6 +80,91 @@ def test_live_order_management_components(harness, expected):
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_provenance_badges_behaviour():
+    """PRD backTest-enhance §1.1/§1.2: the engine + data badges a result page
+    shows above its numbers, and the banners it may never hide."""
+    result = subprocess.run(
+        ["node", str(_REPO_ROOT / "tests" / "js" / "test_provenance.mjs")],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert (
+        result.returncode == 0
+    ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "13 tests passed" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_symbol_picker_and_timeframes_behaviour():
+    """PRD backTest-enhance §1.3/§1.4: the shared instrument list and the
+    timeframe vocabulary behind it.
+
+    Pins the two defects the PRD names: a symbol with no cached bars silently
+    disappearing from the picker, and a timeframe dropdown offering
+    granularities that produce no bars (and annualising them with a daily
+    factor when they do).
+    """
+    result = subprocess.run(
+        ["node", str(_REPO_ROOT / "tests" / "js" / "test_symbol_picker.mjs")],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert (
+        result.returncode == 0
+    ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "18 tests passed" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_richer_metric_sections_behaviour():
+    """PRD backTest-enhance §2.2: the four expandable metric sections and the
+    insufficient-trade-count banner.
+
+    Pins the two things a screenshot cannot: that a metric the server did not
+    send renders as NOTHING rather than as a confident 0.00, and that the
+    "fewer than 20 closed trades" banner actually appears — and stays away when
+    the sample is fine.
+    """
+    result = subprocess.run(
+        ["node", str(_REPO_ROOT / "tests" / "js" / "test_metric_sections.mjs")],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert (
+        result.returncode == 0
+    ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "19 tests passed" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_single_run_checks_behaviour():
+    """PRD backTest-enhance §3: the benchmark / cost-shock / Monte Carlo panels.
+
+    Pins the three ways a diagnostics panel can lie while looking healthy: an
+    absent check rendering as an absent panel, a "Base (0.05%)" column implying
+    a frictionless run was costed, and the Monte Carlo's reorder block — whose
+    final equity is invariant by construction — presented as a distribution.
+    """
+    result = subprocess.run(
+        ["node", str(_REPO_ROOT / "tests" / "js" / "test_run_checks.mjs")],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert (
+        result.returncode == 0
+    ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "28 tests passed" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
 def test_cross_broker_analytics_ui_behaviour():
     """PRD-003: the By Broker / Execution Quality sections and their modals.
 
@@ -138,3 +223,141 @@ console.log(JSON.stringify({ a: count(els["a"].querySelector("tbody").innerHTML)
         "a": 3,
         "b": 7,
     }, f"containers must render independently: {result.stdout}{result.stderr}"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_compare_analytics_panels_behaviour():
+    """PRD backTest-enhance §4.1/§4.3/§4.4/§4.5: the Compare tab's analytics.
+
+    Pins the four claims this tab now makes that a screenshot cannot check: a
+    correlated pair is explained in words, an "n/a" cell is explained rather
+    than left blank, a server verdict of "no significant difference" is not
+    upgraded by the renderer, and every equity curve starts at exactly 100.
+    """
+    result = subprocess.run(
+        ["node", str(_REPO_ROOT / "tests" / "js" / "test_compare_panels.mjs")],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert (
+        result.returncode == 0
+    ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "24 tests passed" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_compare_controller_sends_the_right_request():
+    """PRD backTest-enhance §4.1/§4.2: what the Compare page actually SENDS.
+
+    The API tests prove the server honours a request; these prove the page
+    makes one worth honouring. A controller that quietly re-introduced a
+    per-slot timeframe, or let generalization send four different parameter
+    sets, would leave every server-side test still green.
+    """
+    result = subprocess.run(
+        ["node", str(_REPO_ROOT / "tests" / "js" / "test_compare_controller.mjs")],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert (
+        result.returncode == 0
+    ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "13 tests passed" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_certification_readiness_panel_behaviour():
+    """PRD backTest-enhance §5: the advisory traffic light.
+
+    Pins the one behaviour that would be dangerous to get wrong: a check that
+    could not be evaluated must render neutrally and be named, never folded
+    into the pass count. Everything else in the panel is cosmetic by design —
+    it makes no decision and blocks nothing.
+    """
+    result = subprocess.run(
+        ["node", str(_REPO_ROOT / "tests" / "js" / "test_certification.mjs")],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert (
+        result.returncode == 0
+    ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "14 tests passed" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_regime_and_warning_panel_behaviour():
+    """PRD Part 2 §6.1/§6.2. That a short period prints no Sharpe, and that a
+    warning cannot be clicked away."""
+    result = subprocess.run(
+        ["node", str(_REPO_ROOT / "tests" / "js" / "test_regime_warnings.mjs")],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert (
+        result.returncode == 0
+    ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "13 tests passed" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_deflated_sharpe_panel_behaviour():
+    """PRD Part 2 §3. The maths is pinned in tests/optimization/test_deflation.py;
+    this pins that the two statistics stay distinguishable in the UI."""
+    result = subprocess.run(
+        ["node", str(_REPO_ROOT / "tests" / "js" / "test_deflated_sharpe.mjs")],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert (
+        result.returncode == 0
+    ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "11 tests passed" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_data_source_gate_behaviour():
+    """Runs 16 checks on the gate; the refusal itself is pinned in
+    tests/test_api_data_source_policy.py."""
+    result = subprocess.run(
+        ["node", str(_REPO_ROOT / "tests" / "js" / "test_data_source_gate.mjs")],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert (
+        result.returncode == 0
+    ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "16 tests passed" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_tune_this_prefill_behaviour():
+    """PRD backTest-enhance §6: what the hand-off actually carries.
+
+    The one that matters most is the engine. Dropping it means a result screened
+    on Quick-Screen gets tuned on the canonical driver — §1.1's bug, one hop
+    downstream, with an audit trail showing one continuous lineage.
+    """
+    result = subprocess.run(
+        ["node", str(_REPO_ROOT / "tests" / "js" / "test_tune_this.mjs")],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert (
+        result.returncode == 0
+    ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "28 tests passed" in result.stdout

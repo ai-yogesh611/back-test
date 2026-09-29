@@ -3,6 +3,7 @@
 
 {% block content %}
 <div class="opt-page" id="optSetup" data-selected-strategy="{{ selected_strategy }}" data-source="{{ source }}">
+    <div id="dataSourceGate" data-status='{{ data_sources | tojson }}'></div>
     <div class="opt-page-head">
         <div>
             <h1 class="page-title">🎯 Parameter Optimization</h1>
@@ -15,6 +16,8 @@
     </div>
 
     <div id="optDbBanner" class="warning-banner" hidden></div>
+    <!-- PRD §6: shown only when the form was filled from a backtest result. -->
+    <div id="optPrefillNotice" class="opt-prefill-notice" hidden></div>
 
     <div class="opt-setup-grid">
         <!-- ============================ SETUP FORM ============================ -->
@@ -36,17 +39,19 @@
                         <div id="optStrategyDesc" class="hint muted small"></div>
                     </div>
                     <div class="form-row">
+                        <label for="optSymbolSearch">Search symbol</label>
+                        <input type="search" id="optSymbolSearch" class="input" placeholder="NIFTY, RELIANCE…">
+                    </div>
+                    <div class="form-row">
                         <label for="optSymbol">Symbol</label>
-                        <input id="optSymbol" class="input" value="DEMO" maxlength="40">
+                        <div id="optSymbolTabs" class="sym-tabs"></div>
+                        <select id="optSymbol" class="input"></select>
+                        <small id="optSymbolStatus" class="text-muted"></small>
                     </div>
                     <div class="form-row">
                         <label for="optTimeframe">Timeframe</label>
-                        <select id="optTimeframe" class="input">
-                            <option value="1day" selected>1 day</option>
-                            <option value="1hour">1 hour</option>
-                            <option value="15min">15 min</option>
-                            <option value="5min">5 min</option>
-                        </select>
+                        <select id="optTimeframe" class="input"></select>
+                        <small class="text-muted">Only granularities actually stored for the selected symbol are offered.</small>
                     </div>
                     <div class="form-row">
                         <label for="optFrom">From</label>
@@ -60,6 +65,10 @@
                         <label for="optCapital">Initial capital</label>
                         <input id="optCapital" class="input" type="number" min="1000" step="1000" value="500000">
                     </div>
+                    <!-- PRD Part 2 §2: which data will this run on, said out
+                         loud before the search starts rather than inferred from
+                         whatever the app was launched with. -->
+                    <div id="optAttestation" class="opt-attestation" hidden></div>
                     <div class="form-row" id="optSelectorRow" hidden>
                         <label for="optSelector">Strike selector</label>
                         <select id="optSelector" class="input">
@@ -204,6 +213,9 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="{{ url_for('static', filename='js/components/data_source_gate.js') }}"></script>
 <script src="{{ url_for('static', filename='js/optimize_common.js') }}"></script>
+<script src="{{ url_for('static', filename='js/components/symbol_picker.js') }}"></script>
+<script src="{{ url_for('static', filename='js/components/timeframes.js') }}"></script>
 <script src="{{ url_for('static', filename='js/optimize_setup.js') }}"></script>
 {% endblock %}

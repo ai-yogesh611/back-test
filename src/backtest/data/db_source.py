@@ -239,3 +239,33 @@ class DbSource:
                 timeframe,
             )
         return rows
+
+    def last_ingested_at(self, symbol: str, timeframe: Optional[str] = None) -> Optional[str]:
+        """
+        When this symbol's bars were last written to ``market_data_cache``
+        (``YYYY-MM-DD``), or ``None`` when nothing is cached for it.
+
+        Backs the data-provenance stamp on a result (PRD backTest-enhance
+        §1.2): "real data" only means something next to "real data as of
+        when". ``timeframe`` is optional — a caller that resampled from a
+        finer stored bar passes the requested interval and gets the newest
+        write across that symbol's granularities.
+        """
+        query = text(
+            """
+            SELECT MAX(ingested_at) FROM market_data_cache
+            WHERE symbol = :symbol
+              AND (:timeframe IS NULL OR timeframe = :timeframe)
+            """
+        )
+        try:
+            engine = self._get_engine()
+            with engine.connect() as conn:
+                row = conn.execute(query, {"symbol": symbol, "timeframe": timeframe}).fetchone()
+        except Exception as exc:  # noqa: BLE001 — provenance is best-effort
+            log.debug("[db] last_ingested_at(%s) failed: %s", symbol, exc)
+            return None
+        if not row or row[0] is None:
+            return None
+        log.debug("[db] last_ingested_at(%s, tf=%s) → %s", symbol, timeframe, row[0])
+        return str(row[0])[:10]

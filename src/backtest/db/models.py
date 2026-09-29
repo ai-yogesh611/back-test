@@ -1235,6 +1235,32 @@ class OptimizationRun(Base):
     # -- analytics (extension): sensitivity, equity curves, warnings --------
     analysis: Mapped[Optional[Any]] = mapped_column(JSONVariant)
     robustness_score: Mapped[Optional[Decimal]] = mapped_column(Numeric(4, 2))
+    # PRD Part 2 §3. The Sharpe the best-of-N had to beat, on the same scale
+    # as `best_metrics.sharpe`. The full statistic (including the probability)
+    # is in `analysis["deflated_sharpe"]`; this column is the one number you
+    # would want to sort or filter on.
+    deflated_sharpe: Mapped[Optional[Decimal]] = mapped_column(Numeric(6, 3))
+
+    # -- data attestation (PRD Part 2 §2, migration 015) --------------------
+    # What this run actually ran on, measured on the candles the search loaded
+    # rather than on the range that was requested. All nullable and all
+    # unbackfilled on purpose: a row written before this migration has no
+    # attestation, and that is the truth of it. A guessed value here would be a
+    # claim nobody checked.
+    #
+    # The flat columns exist so runs can be listed and filtered by source
+    # without unpacking JSON in every query; `data_attestation` holds the whole
+    # record, including staleness and the synthetic acknowledgement. They are
+    # written together by `attestation.attestation_columns()` and nowhere else,
+    # so the two cannot drift.
+    data_source: Mapped[Optional[str]] = mapped_column(String(30))
+    data_fetch_date: Mapped[Optional[date]] = mapped_column(Date)
+    bars_count: Mapped[Optional[int]] = mapped_column(Integer)
+    symbol: Mapped[Optional[str]] = mapped_column(String(30))
+    timeframe: Mapped[Optional[str]] = mapped_column(String(10))
+    date_from: Mapped[Optional[date]] = mapped_column(Date)
+    date_to: Mapped[Optional[date]] = mapped_column(Date)
+    data_attestation: Mapped[Optional[Any]] = mapped_column(JSONVariant)
 
     # -- metadata -----------------------------------------------------------
     created_by: Mapped[Optional[str]] = mapped_column(String(100))

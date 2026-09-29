@@ -45,6 +45,26 @@ CREATE TABLE IF NOT EXISTS optimization_runs (
 	avg_test_score NUMERIC(10, 4), 
 	analysis JSON, 
 	robustness_score NUMERIC(4, 2), 
+	-- PRD Part 2 §3: the Sharpe the best-of-N had to beat. NUMERIC(6,3) rather
+	-- than matching robustness_score's 4,2 because the bar rises with the size
+	-- of the search and a wide search on a narrow distribution overflows 99.99.
+	deflated_sharpe NUMERIC(6, 3),
+	-- PRD Part 2 §2: what this run actually ran on, measured on the candles the
+	-- search loaded rather than on the range that was requested. Nullable and
+	-- unbackfilled on purpose — a row written before this has no attestation,
+	-- and that is the truth of it. A backfilled value would be a claim nobody
+	-- checked. The flat columns exist so a runs list can be filtered by source
+	-- without unpacking JSON in every query; data_attestation holds the whole
+	-- record, including staleness and the synthetic acknowledgement. They are
+	-- written together by attestation_columns() and nowhere else.
+	data_source VARCHAR(30),
+	data_fetch_date DATE,
+	bars_count INTEGER,
+	symbol VARCHAR(30),
+	timeframe VARCHAR(10),
+	date_from DATE,
+	date_to DATE,
+	data_attestation JSON,
 	created_by VARCHAR(100), 
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 

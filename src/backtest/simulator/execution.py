@@ -365,17 +365,25 @@ class ExecutionConfig:
 def free_executor(
     portfolio: "Portfolio | None" = None,
     max_participation: Decimal | str | None = None,
+    slippage: "SlippageCalculator | None" = None,
 ) -> "OrderExecutor":
-    """Deterministic, zero-cost :class:`OrderExecutor`.
+    """Deterministic, zero-fee :class:`OrderExecutor`.
 
-    Zero slippage, no price improvement, no market-hours gate, no fees — a
-    market order fills exactly at the supplied touch. Canonical home for the
-    deterministic executor used by walk-forward paper buckets and canonical
-    backtests (ticket #6); ``backtest.forward.paper_runner`` re-exports it.
+    No price improvement, no market-hours gate, no fees — a market order fills
+    at the supplied touch. Canonical home for the deterministic executor used
+    by walk-forward paper buckets and canonical backtests (ticket #6);
+    ``backtest.forward.paper_runner`` re-exports it.
 
     ``max_participation`` caps each order at a fraction of the bar's volume
     (executor default 10%). Walk-forward passes ``"1"`` so an all-in order
     may take the whole bar.
+
+    ``slippage`` replaces the default zero-slippage calculator. It MUST be
+    passed here rather than assigned to ``executor.slippage`` afterwards: the
+    executor hands the calculator to its fill provider in ``__init__``, so a
+    later reassignment is silently ignored and every fill still comes out
+    frictionless — which looks exactly like "slippage does not affect this
+    strategy".
     """
     config = ExecutionConfig(
         seed=42,
@@ -386,7 +394,7 @@ def free_executor(
         config.max_participation = Decimal(max_participation)
     return OrderExecutor(
         config=config,
-        slippage=SlippageCalculator.disabled(),
+        slippage=slippage or SlippageCalculator.disabled(),
         fees=CommissionCalculator(broker=PAPER_FREE_PROFILE),
         portfolio=portfolio,
     )
@@ -396,6 +404,7 @@ def costed_executor(
     portfolio: "Portfolio | None" = None,
     broker: str | BrokerProfile | None = "mstock",
     max_participation: Decimal | str | None = "1",
+    slippage: "SlippageCalculator | None" = None,
 ) -> "OrderExecutor":
     """Deterministic, FULL-COST :class:`OrderExecutor` (rule R-E1).
 
@@ -408,6 +417,9 @@ def costed_executor(
 
     Deterministic like ``free_executor``: same bars + params → identical
     fills and fees, every run.
+
+    ``slippage`` behaves exactly as in :func:`free_executor` — including the
+    reason it has to be passed in at construction rather than assigned later.
     """
     config = ExecutionConfig(
         seed=42,
@@ -421,7 +433,7 @@ def costed_executor(
         profile = PAPER_FREE_PROFILE
     return OrderExecutor(
         config=config,
-        slippage=SlippageCalculator.disabled(),
+        slippage=slippage or SlippageCalculator.disabled(),
         fees=CommissionCalculator(broker=profile),
         portfolio=portfolio,
     )

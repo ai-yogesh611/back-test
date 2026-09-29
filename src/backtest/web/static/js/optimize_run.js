@@ -77,6 +77,11 @@
         $('btnExport').href = `${base}/export.csv`;
         $('btnPreset').hidden = !(done && r.best_params);
         $('btnApply').hidden = !(done && r.best_params);
+        $('btnMonteCarlo').hidden = !(done && r.best_params);
+        // Engine + data this run was produced from, read back from the run
+        // record itself (PRD backTest-enhance §1.2) — never from whatever the
+        // app happens to be configured with now.
+        if (typeof Provenance !== 'undefined') Provenance.render($('runProvenance'), r.provenance);
         if (r.status === 'failed') showError(`Run failed: ${r.error_message || 'unknown error'}`);
         else if (r.status === 'cancelled' && r.error_message) showError(`${r.error_message} — partial results below.`);
         else showError('');
@@ -149,6 +154,54 @@
     const COMPARE_METRICS = ['sharpe', 'sortino', 'calmar', 'total_return', 'cagr', 'max_drawdown',
         'win_rate', 'profit_factor', 'total_trades', 'expectancy', 'drawdown_duration_days'];
 
+    /**
+     * PRD Part 2 §3 — the deflated Sharpe.
+     *
+     * Two numbers on two scales, and the wording keeps them apart on purpose:
+     * the bar is a Sharpe (what the best-of-N had to beat), the probability is
+     * a probability (how likely the edge is real). Rendering them as one
+     * "Deflated Sharpe" figure would be the easy mistake and the wrong one.
+     */
+    function renderDeflatedSharpe(dsr, observedMetrics) {
+        const observed = observedMetrics && observedMetrics.sharpe;
+        $('dsrObserved').textContent = C.isNum(observed) ? C.fmtNum(observed, 2) : '—';
+        const reason = $('dsrReason');
+        if (!dsr || dsr.status !== 'ok') {
+            // An absent statistic is a normal outcome (a 2-combination search
+            // has no selection to correct for). Say why rather than showing a
+            // confident dash that reads like a zero.
+            $('dsrBar').textContent = '—';
+            $('dsrVerdict').textContent = '';
+            $('dsrVerdict').className = 'opt-dsr-verdict';
+            $('dsrFacts').innerHTML = '';
+            reason.textContent = (dsr && dsr.reason)
+                || 'Not enough combinations were tried for a multiple-testing correction.';
+            return;
+        }
+        reason.textContent = '';
+        const bar = Number(dsr.deflated_sharpe);
+        $('dsrBar').textContent = C.fmtNum(bar, 2);
+
+        const verdict = $('dsrVerdict');
+        if (C.isNum(observed)) {
+            const clears = Number(observed) >= bar;
+            verdict.className = `opt-dsr-verdict ${clears ? 'pos' : 'neg'}`;
+            verdict.textContent = clears
+                ? `Clears the bar by ${C.fmtNum(Number(observed) - bar, 2)}.`
+                : `Does not clear the bar — short by ${C.fmtNum(bar - Number(observed), 2)}.`;
+        } else {
+            verdict.className = 'opt-dsr-verdict';
+            verdict.textContent = '';
+        }
+
+        const pct = C.isNum(dsr.probability) ? `${(dsr.probability * 100).toFixed(0)}%` : '—';
+        $('dsrFacts').innerHTML = [
+            ['Chances taken', C.isNum(dsr.trials) ? dsr.trials.toLocaleString() : '—'],
+            ['Likely genuinely positive', pct],
+            ['Return observations', C.isNum(dsr.observations) ? dsr.observations.toLocaleString() : '—'],
+        ].map(([k, v]) => `<li><span>${C.escapeHtml(k)}</span><span>${C.escapeHtml(v)}</span></li>`).join('');
+    }
+
     function renderOverview() {
         const r = state.run;
         const a = r.analysis || {};
@@ -166,6 +219,7 @@
         const cmp = a.comparison;
         const baseM = (cmp && cmp.baseline.metrics) || r.baseline_metrics || {};
         const optM = (cmp && cmp.optimized.metrics) || r.best_metrics || {};
+        renderDeflatedSharpe(a.deflated_sharpe, optM);
         $('compareBody').innerHTML = [['score', r.baseline_score, r.best_score]].concat(
             COMPARE_METRICS.map((k) => [k, baseM[k], optM[k]])).map(([k, b, o]) => {
             const better = C.isImprovement(k, b, o);
@@ -192,6 +246,8 @@
             || '<li class="muted">No constraints.</li>';
 
         const levelIcon = { danger: '⛔', warning: '⚠️', info: 'ℹ️' };
+        renderWarningPanel(a.warnings);
+        renderRegimes(a.regimes);
         $('warningsList').innerHTML = (a.warnings || []).map((w) =>
             `<li class="opt-warn-${w.level}">${levelIcon[w.level] || '•'} ${C.escapeHtml(w.message)}</li>`).join('')
             || '<li class="pos">No overfitting warning signs detected.</li>';
@@ -204,6 +260,190 @@
             { label: 'Current params', points: (a.curves || {}).baseline || [], color: '#94a3b8' },
             { label: 'Optimized', points: (a.curves || {}).optimized || [], color: '#3b82f6' },
         ]);
+    }
+
+    /**
+     * PRD Part 2 §6.2 — warning signs, made impossible to miss.
+     *
+     * Sticky at the top of the results, not dismissable. The warnings were
+     * already generated; the PRD's complaint is that they were easy to miss in
+     * the layout, and a dismissable banner is the layout's answer to that. So:
+     * no close button, and it stays put while the page scrolls.
+     */
+    function renderWarningPanel(warnings) {
+        const el = $('warningPanel');
+        if (!el) return;
+        const list = (warnings || []).filter((w) => w.level !== 'info' || true);
+        if (!list.length) { el.hidden = true; el.innerHTML = ''; return; }
+        const danger = list.filter((w) => w.level === 'danger').length;
+        const level = danger ? 'opt-warning-panel--danger' : 'opt-warning-panel--warning';
+        const title = danger
+            ? `⛔ ${danger} of ${list.length} warning sign${list.length === 1 ? '' : 's'} need attention`
+            : `⚠️ ${list.length} warning sign${list.length === 1 ? '' : 's'}`;
+        el.hidden = false;
+        el.className = `opt-warning-panel ${level}`;
+        el.innerHTML = `<div class="opt-warning-title">${C.escapeHtml(title)}</div>
+            <ul class="opt-warning-list">${list.map((w) => `<li class="opt-warning-${w.level}">
+                ${C.escapeHtml(w.message)}</li>`).join('')}</ul>`;
+    }
+
+    /**
+     * PRD Part 2 §6.1 — how the winner behaved in each named period.
+     *
+     * A period with too few bars prints no Sharpe. The number would be there
+     * and it would be larger than the number next to it, which reads as "this
+     * period was better" when the truth is "this period is too short to say".
+     */
+    function renderRegimes(regimes) {
+        const box = $('regimeBox');
+        if (!box) return;
+        if (!regimes || !regimes.available || !(regimes.periods || []).length) {
+            box.hidden = true;
+            box.innerHTML = '';
+            return;
+        }
+        const uncovered = regimes.named_coverage_pct < 99.9;
+        const rows = regimes.periods.map((p) => `<tr class="${p.named ? '' : 'opt-regime-unnamed'}">
+            <td>${C.escapeHtml(p.label)}<small class="muted"> ${C.escapeHtml(p.from ? `${p.from} → ${p.to}` : 'outside the named bands')}</small></td>
+            <td class="${p.return_pct >= 0 ? 'pos' : 'neg'}">${C.fmtNum(p.return_pct, 2)}%</td>
+            <td>${p.sufficient ? C.fmtNum(p.sharpe, 2) : '<span class="muted" title="too few bars for a meaningful Sharpe">—</span>'}</td>
+            <td>${C.fmtNum(p.max_drawdown_pct, 2)}%</td>
+            <td>${p.trades === null ? '—' : p.trades}</td>
+        </tr>`).join('');
+
+        box.hidden = false;
+        box.innerHTML = `<h2 class="card-title">Regime breakdown</h2>
+            <p class="muted small">How the winning parameters behaved in each named period.
+                ${uncovered ? `<strong class="neg">These bands cover only
+                    ${C.fmtNum(regimes.named_coverage_pct, 1)}% of this run's bars</strong> — the
+                    rest is shown as other.` : ''}</p>
+            <div class="table-scroll"><table class="data-table opt-compact">
+                <thead><tr><th>Period</th><th>Return</th><th>Sharpe</th><th>Max DD</th><th>Trades</th></tr></thead>
+                <tbody>${rows}</tbody></table></div>
+            <p class="muted small opt-regime-note">A period marked — has too few bars for a
+                meaningful Sharpe (${regimes.min_bars} is the floor). The name describes what
+                happened; nothing here predicts the next one.</p>`;
+    }
+
+    /**
+     * PRD Part 2 §4 — Monte Carlo on the winning result.
+     *
+     * Re-runs the best parameters once (the engine's doing, server-side) and
+     * resamples that result's trade sequence. The button is beside Apply to
+     * Paper on purpose: this is the last check before those parameters reach a
+     * runner, and the two answer different questions — walk-forward asks
+     * whether the parameters generalise across time, this asks whether the
+     * order of the trades was luck.
+     */
+    function renderMonteCarlo(mc) {
+        const box = $('monteCarloBox');
+        if (!box) return;
+        if (!mc) { box.hidden = true; box.innerHTML = ''; return; }
+        if (!mc.available) {
+            box.hidden = false;
+            box.innerHTML = `<h2 class="card-title">Monte Carlo on best result</h2>
+                <p class="muted small">Not available: ${C.escapeHtml(mc.reason || 'unknown reason')}.</p>`;
+            state.monteCarlo = null;
+            return;
+        }
+        state.monteCarlo = mc;
+        const boot = mc.bootstrap || {};
+        const reorder = mc.reorder || {};
+        const params = Object.entries(mc.params || {})
+            .map(([k, v]) => `${C.escapeHtml(k)}=${C.escapeHtml(v)}`).join(', ');
+        const lvl = { error: 'opt-mc-warn-error', warning: 'opt-mc-warn', info: 'opt-mc-info' };
+
+        box.hidden = false;
+        box.innerHTML = `<h2 class="card-title">Monte Carlo on best result</h2>
+            <p class="muted small">${mc.simulations.toLocaleString()} resamples of
+                <strong>${mc.trades}</strong> closed trades from
+                <code>${params || '—'}</code>. The same trades in different orders, and a fresh
+                draw from the same distribution.</p>
+            <div class="opt-mc-grid">
+                <div class="opt-mc-stat">
+                    <span class="opt-mc-num ${boot.profit_probability_pct >= 60 ? 'pos' : 'neg'}">
+                        ${C.fmtNum(boot.profit_probability_pct, 0)}%</span>
+                    <span class="opt-mc-label">of sequences finished profitable</span>
+                </div>
+                <div class="opt-mc-stat">
+                    <span class="opt-mc-num">${C.fmtNum(boot.p5_final_equity, 0)}</span>
+                    <span class="opt-mc-label">5th percentile final equity</span>
+                </div>
+                <div class="opt-mc-stat">
+                    <span class="opt-mc-num">${C.fmtNum(boot.p95_final_equity, 0)}</span>
+                    <span class="opt-mc-label">95th percentile final equity</span>
+                </div>
+                <div class="opt-mc-stat">
+                    <span class="opt-mc-num">${C.fmtNum(reorder.p95_max_drawdown_pct, 2)}%</span>
+                    <span class="opt-mc-label">worst drawdown from reordering</span>
+                </div>
+            </div>
+            <canvas id="mcFanChart" height="150"></canvas>
+            <p class="muted small opt-mc-note">${C.escapeHtml(mc.drawdown_note || '')}</p>
+            ${(mc.warnings || []).map((w) => `<div class="opt-mc-banner ${lvl[w.level] || 'opt-mc-info'}">
+                ${C.escapeHtml(w.message)}</div>`).join('')}`;
+        drawFanChart('mcFanChart', mc);
+    }
+
+    /** The 5–95% envelope of the bootstrap resamples. */
+    function drawFanChart(canvasId, mc) {
+        if (typeof Chart === 'undefined') return;
+        const fan = mc.fan || {};
+        const bands = fan.bands || {};
+        if (!bands['50'] || !bands['50'].length) return;
+        const ctx = document.getElementById(canvasId);
+        if (!ctx) return;
+        const canvas = Chart.getChart(ctx);
+        if (canvas) canvas.destroy();
+        const labels = Array.from({ length: fan.points }, (_, i) => i);
+        new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels,
+                datasets: [
+                    { label: 'p95', data: bands['95'], borderColor: 'rgba(148,163,184,.55)',
+                      backgroundColor: 'rgba(148,163,184,.16)', fill: '+1', pointRadius: 0,
+                      borderWidth: 1, tension: 0.1 },
+                    { label: 'p50', data: bands['50'], borderColor: '#3b82f6',
+                      backgroundColor: 'rgba(59,130,246,.18)', fill: '+1', pointRadius: 0,
+                      borderWidth: 2, tension: 0.1 },
+                    { label: 'p5', data: bands['5'], borderColor: 'rgba(148,163,184,.55)',
+                      backgroundColor: 'transparent', fill: false, pointRadius: 0,
+                      borderWidth: 1, tension: 0.1 },
+                ],
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false, animation: false,
+                interaction: { mode: 'index', intersect: false },
+                plugins: {
+                    legend: { labels: { color: '#e2e8f0' } },
+                    title: { display: true, color: '#94a3b8',
+                        text: `Equity by trade — 5th to 95th percentile of ${mc.simulations} resamples` },
+                },
+                scales: {
+                    x: { title: { display: true, color: '#94a3b8', text: 'trade' },
+                         ticks: { color: '#94a3b8', maxTicksLimit: 8 }, grid: { color: 'rgba(51,65,85,.4)' } },
+                    y: { ticks: { color: '#94a3b8' }, grid: { color: 'rgba(51,65,85,.4)' } },
+                },
+            },
+        });
+    }
+
+    async function runMonteCarlo() {
+        const btn = $('btnMonteCarlo');
+        const previous = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = '🎲 Resampling…';
+        try {
+            const res = await C.api(`${base}/monte-carlo`, { method: 'POST', body: {} });
+            renderMonteCarlo(res.monte_carlo);
+        } catch (e) {
+            renderMonteCarlo({ available: false, reason: e.message });
+            C.toast(e.message, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = previous;
+        }
     }
 
     function drawLineChart(canvasId, series) {
@@ -435,7 +675,13 @@
                 const d = a.action_details || {};
                 const diff = Object.entries(a.params_diff || {}).map(([k, v]) => `${k}: ${v.old ?? '—'} → ${v.new ?? '—'}`).join(', ');
                 const canRollback = a.action === 'apply' && !d.rolled_back;
-                return `<tr><td class="small">${C.fmtDate(a.timestamp)}</td><td>${C.escapeHtml(a.action)}${d.rolled_back ? ' <span class="muted small">(rolled back)</span>' : ''}</td>
+                // PRD Part 2 §2 — the audit row is the last place a run's data
+                // can be checked, long after the results page has scrolled away.
+                const att = d.data_attestation;
+                const attLine = att
+                    ? ` <span class="${att.data_source_real ? 'muted' : 'neg'}" title="${C.escapeHtml(att.date_from || '')} → ${C.escapeHtml(att.date_to || '')}">${C.escapeHtml(att.data_source_label || att.data_source || '')}</span>`
+                    : '';
+                return `<tr><td class="small">${C.fmtDate(a.timestamp)}</td><td>${C.escapeHtml(a.action)}${d.rolled_back ? ' <span class="muted small">(rolled back)</span>' : ''}${attLine}</td>
                     <td class="small">${C.escapeHtml(d.target || a.applied_to_mode || '—')}${d.new_instance_id ? ` · ${C.escapeHtml(String(d.new_instance_id).slice(0, 8))}` : ''}</td>
                     <td class="small">${C.escapeHtml(diff || '—')}</td><td class="small">${C.escapeHtml(a.user_id || '—')}</td>
                     <td>${canRollback ? `<button class="btn btn-sm" data-rollback="${a.audit_id}">↶ Rollback</button>` : ''}</td></tr>`;
@@ -464,8 +710,58 @@
         }</tbody></table>`;
     }
 
+    /**
+     * PRD §6 reverse flow: the three-step chain, shown BEFORE applying so the
+     * user sees where the parameters came from and where they are going.
+     *
+     * The first link is a SESSION handle minted by the Backtest page, not a
+     * stored backtest record — nothing about a completed backtest is
+     * persisted. It is labelled as such rather than dressed up as an id that
+     * resolves to something.
+     */
+    function renderChain() {
+        const el = $('applyChain');
+        if (!el) return;
+        const origin = (state.run && state.run.backtest_config || {}).sourceBacktestId;
+        const t = applyTarget();
+        const runnerId = ($('applyRunner') || {}).value || '';
+        const spawning = (t === 'paper' || t === 'ab_test') && !runnerId;
+        const links = [
+            {
+                id: origin || null,
+                label: 'Backtest result',
+                note: origin ? `session handle ${origin}` : 'not started from a backtest',
+                missing: !origin,
+            },
+            {
+                id: (state.run && state.run.run_id) || null,
+                label: 'Optimize run',
+                note: (state.run && state.run.run_id) || '—',
+                missing: false,
+            },
+            {
+                id: t === 'none' ? null : (spawning ? 'new runner' : runnerId),
+                label: t === 'live' ? 'Live runner' : 'Paper runner',
+                note: t === 'none' ? 'record only — no runner changes'
+                    : spawning ? 'a new runner will be created'
+                        : (runnerId || '—'),
+                missing: false,
+            },
+        ];
+        el.innerHTML = `<span class="opt-chain-title">Applied from</span>` + links.map((l, i) => {
+            const cls = l.missing ? 'opt-chain-missing' : '';
+            const arrow = i < links.length - 1 ? '<span class="opt-chain-arrow">→</span>' : '';
+            return `<span class="opt-chain-link ${cls}">`
+                + `<span class="opt-chain-label">${C.escapeHtml(l.label)}</span>`
+                + `<code>${C.escapeHtml(l.id || '—')}</code>`
+                + `<span class="opt-chain-note">${C.escapeHtml(l.note)}</span></span>${arrow}`;
+        }).join('');
+    }
+
     async function openApply(params) {
         state.applyParams = params || state.run.best_params;
+        renderChain();
+        renderMonteCarloGate();
         $('applyParams').innerHTML = paramsPreview(state.applyParams);
         $('applyError').innerHTML = '';
         $('applyConfirmLive').checked = false;
@@ -479,6 +775,36 @@
         syncApplyTarget();
     }
 
+    /**
+     * PRD Part 2 §4's gate behaviour: low P(profit) is a **visible flag that
+     * must be acknowledged**, not a block.
+     *
+     * A block would be wrong here. Monte Carlo is opt-in — the user has to
+     * press the button to get a result — so a hard gate on it would mean the
+     * apply path silently depends on a check that may never have been run. A
+     * flag that says "this has not been tested, or tested badly" is the honest
+     * version of the same idea.
+     */
+    function renderMonteCarloGate() {
+        const box = $('applyMcGate');
+        if (!box) return;
+        const mc = state.monteCarlo;
+        if (!mc || !mc.available) {
+            box.hidden = true;
+            box.innerHTML = '';
+            return;
+        }
+        const pct = (mc.bootstrap || {}).profit_probability_pct;
+        const low = C.isNum(pct) && pct < 60;
+        box.hidden = false;
+        box.innerHTML = low
+            ? `<label class="small"><input type="checkbox" id="applyMcAck"> Monte Carlo on the best
+                 result found only <strong class="neg">${C.fmtNum(pct, 0)}%</strong> of resampled
+                 trade sequences profitable. I have read that.</label>`
+            : `<p class="small pos">Monte Carlo: ${C.fmtNum(pct, 0)}% of resampled trade sequences
+                 finished profitable.</p>`;
+    }
+
     function applyTarget() {
         return (document.querySelector('input[name="applyTarget"]:checked') || {}).value || 'none';
     }
@@ -487,6 +813,7 @@
         const t = applyTarget();
         const row = $('applyRunnerRow');
         const sel = $('applyRunner');
+        renderChain();
         const wantMode = t === 'live' ? 'live' : 'paper';
         const runners = state.runners.filter((r) => r.mode === wantMode);
         row.hidden = t === 'none';
@@ -512,9 +839,21 @@
 
     async function confirmApply() {
         const t = applyTarget();
+        // The Monte Carlo acknowledgement is required only when it is on
+        // screen and unchecked. A checkbox nobody was shown must not become a
+        // gate that silently blocks a run which never had the test run on it.
+        const ack = $('applyMcAck');
+        if (ack && !ack.checked) {
+            $('applyError').innerHTML = `<div>Tick the Monte Carlo acknowledgement to apply
+                these parameters.</div>`;
+            return;
+        }
         const body = {
             target: t, params: state.applyParams, instance_id: $('applyRunner').value || null,
             confirm_live: $('applyConfirmLive').checked, allow_unvalidated: $('applyAllowUnvalidated').checked,
+            monte_carlo_acknowledged: !!ack,
+            monte_carlo_profit_probability: state.monteCarlo && state.monteCarlo.available
+                ? (state.monteCarlo.bootstrap || {}).profit_probability_pct : null,
             notes: $('applyNotes').value || null,
         };
         $('applyConfirm').disabled = true;
@@ -568,10 +907,12 @@
         $('btnRerun').addEventListener('click', () => action('rerun'));
         $('btnRerunWf').addEventListener('click', () => action('rerun', { overrides: { walkForward: { enabled: true } } }));
         $('btnApply').addEventListener('click', () => openApply());
+        $('btnMonteCarlo').addEventListener('click', () => runMonteCarlo());
         $('btnPreset').addEventListener('click', () => openPreset());
         $('applyConfirm').addEventListener('click', confirmApply);
         $('presetConfirm').addEventListener('click', confirmPreset);
         document.querySelectorAll('input[name="applyTarget"]').forEach((r) => r.addEventListener('change', syncApplyTarget));
+        $('applyRunner').addEventListener('change', renderChain);
         document.querySelectorAll('.modal-overlay [data-close]').forEach((b) => b.addEventListener('click', () => {
             b.closest('.modal-overlay').hidden = true;
         }));

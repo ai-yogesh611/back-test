@@ -37,13 +37,20 @@ import traceback
 from concurrent.futures import ProcessPoolExecutor
 from typing import Any
 
+import pandas as pd
 from flask import Blueprint, current_app, jsonify, request
 
 from backtest.adapters.backtest_adapter import BacktestAdapter
+from backtest.data.provenance import ENGINE_FILL_EXACT, ENGINE_MIXED
 from backtest.engine.backtest_runner import resolve_interval, resolve_warmup_start
 from backtest.engine.backtest_runner import run_backtest as _run_driver
 from backtest.engine.backtest_runner import run_quick_screen
+from backtest.engine.comparison import correlation_matrix, sharpe_significance
+from backtest.engine.cost_shock import run_cost_shock
+from backtest.engine.monte_carlo import monte_carlo_trade_order
+from backtest.engine.readiness import build_readiness
 from backtest.logging_config import get_logger, timed
+from backtest.api.data_guard import guard_source
 from backtest.runner import build_source
 from backtest.strategy.registry import get_strategy
 
@@ -64,8 +71,48 @@ def _source() -> Any:
 
 
 def _candles(symbol: str, from_date: str, to_date: str, interval: str):
-    """Fetch candles for a symbol at an already-resolved ``interval``."""
-    return _source().get_candles(symbol, from_date, to_date, interval)
+    """Fetch candles for a symbol at an already-resolved ``interval``.
+
+    Returns ``(source, candles)`` — the source object rides along because the
+    provenance stamp may need to ask it when the data was last fetched
+    (PRD backTest-enhance §1.2); building a second source to ask would open
+    a second connection for one number.
+    """
+    source = _source()
+    return source, source.get_candles(symbol, from_date, to_date, interval)
+
+
+def _provenance(
+    candles,
+    *,
+    source_name: str,
+    engine: str,
+    symbol: str,
+    timeframe: str,
+    from_date: str,
+    to_date: str,
+    source_obj: Any = None,
+) -> dict[str, Any]:
+    """Provenance block for one result (engine + data + coverage)."""
+    from backtest.data.provenance import build_provenance
+
+    first = last = None
+    if candles is not None and len(candles):
+        first, last = candles.index[0], candles.index[-1]
+    return build_provenance(
+        source=source_name,
+        engine=engine,
+        symbol=symbol,
+        timeframe=timeframe,
+        start_date=from_date,
+        end_date=to_date,
+        # None (not 0) when there are no candles of their own — a Compare
+        # shared block describes conditions, not a run.
+        bars=len(candles) if candles is not None else None,
+        data_from=first,
+        data_to=last,
+        source_obj=source_obj,
+    )
 
 
 def _check_params(strategy_cls: Any, params: dict, where: str) -> list[str]:
@@ -127,6 +174,31 @@ def _resolve_strategy(name: str):
         return str(exc)
 
 
+def _provenance_log(prov: dict, label: str) -> None:
+    """One INFO line naming the engine + data behind a result (PRD §1.1/§1.2).
+
+    A number and its provenance belong in the SAME log line: grepping the log
+    for a run has to answer "which engine, which data" without a second query
+    against the run record.
+    """
+    log.info(
+        "[prov] %s engine=%s (%s) data=%s (%s) symbol=%s tf=%s %s..%s bars=%s fetched=%s",
+        label,
+        prov.get("engine_used"),
+        prov.get("engine_label"),
+        prov.get("data_source"),
+        prov.get("data_source_label"),
+        prov.get("symbol"),
+        prov.get("timeframe"),
+        prov.get("data_from"),
+        prov.get("data_to"),
+        prov.get("bars_count"),
+        prov.get("data_fetch_date"),
+    )
+    for warning in prov.get("warnings") or []:
+        log.warning("[prov] %s %s: %s", label, warning.get("level"), warning.get("message"))
+
+
 # ---------------------------------------------------------------------------
 # Engines
 # ---------------------------------------------------------------------------
@@ -143,12 +215,72 @@ QUICK_SCREEN = "quick_screen"
 
 
 # ---------------------------------------------------------------------------
+# Cost shock (PRD §3.2)
+# ---------------------------------------------------------------------------
+
+
+def _cost_shock(
+    candles: Any,
+    strategy: str,
+    params: dict,
+    symbol: str,
+    capital: float,
+    timeframe: str,
+    engine: str,
+    metrics: dict,
+) -> dict:
+    """PRD §3.2 table, or a well-formed "not available" block.
+
+    Quick-screen is the legacy vectorized path with a built-in cost model and
+    no slippage argument, so it is reported as unavailable with a reason rather
+    than silently skipped — a stress test that is quietly absent is
+    indistinguishable from one that passed.
+
+    Two extra engine runs, ~60ms each on 800 bars. The whole block is wrapped
+    so a failure degrades the page rather than failing the user's backtest.
+    """
+    if engine == QUICK_SCREEN:
+        return {
+            "available": False,
+            "reason": "cost shock runs on the canonical engine, not Fast Preview",
+            "scenarios": [],
+        }
+    try:
+        block = run_cost_shock(
+            candles,
+            strategy,
+            params,
+            symbol,
+            capital,
+            timeframe,
+            _run_driver,
+            actual_metrics=metrics,
+        )
+    except Exception as exc:  # noqa: BLE001 — a diagnostic must not fail the run
+        log.warning("[cost-shock] %s/%s failed: %s", strategy, symbol, exc)
+        return {"available": False, "reason": f"cost shock failed: {exc}", "scenarios": []}
+    log.info(
+        "[cost-shock] %s/%s base=%sbps(%s) status=%s rows=%d",
+        strategy,
+        symbol,
+        block.get("base_bps"),
+        block.get("base_bps_source"),
+        block.get("status"),
+        len(block.get("scenarios") or []),
+    )
+    return block
+
+
+# ---------------------------------------------------------------------------
 # Single backtest
 # ---------------------------------------------------------------------------
 
 
 @backtest_bp.post("/api/backtest/run")
 def run_backtest_endpoint() -> tuple:
+    _refused = guard_source()
+    if _refused:
+        return _refused
     data = request.get_json(silent=True) or {}
 
     strategy = data.get("strategy")
@@ -198,7 +330,7 @@ def run_backtest_endpoint() -> tuple:
 
     try:
         with timed(log, f"[data] fetch {symbol} {warmup_start}..{to_date}", logging.DEBUG) as t:
-            candles_full = _candles(symbol, warmup_start, to_date, interval)
+            source, candles_full = _candles(symbol, warmup_start, to_date, interval)
     except Exception as exc:  # noqa: BLE001
         log.warning("[run] data error for %s: %s", symbol, exc)
         return jsonify({"error": f"data error: {exc}"}), 400
@@ -216,13 +348,16 @@ def run_backtest_endpoint() -> tuple:
                     capital,
                     from_date,
                     to_date,
+                    timeframe,
                 )
             engine = "quick_screen"
         else:
             # Canonical: BacktestDriver over simulator/ (next-bar-open fills).
             # It runs exactly the fetched range (WARMUP_BARS=0), so no trim.
             with timed(log, f"[run] {strategy} on {symbol} (driver)", logging.DEBUG):
-                result = _run_driver(candles_full, strategy, params, symbol, capital)
+                result = _run_driver(
+                    candles_full, strategy, params, symbol, capital, timeframe=timeframe
+                )
             engine = "backtest_driver"
     except ValueError as exc:
         log.warning("[run] %s rejected input: %s", strategy, exc)
@@ -235,8 +370,186 @@ def run_backtest_endpoint() -> tuple:
     payload["config"].update(
         {"timeframe": timeframe, "from_date": from_date, "to_date": to_date, "engine": engine}
     )
+    payload["cost_shock"] = _cost_shock(
+        candles_full, strategy, params, symbol, capital, timeframe, engine, result.metrics
+    )
+    payload["provenance"] = _provenance(
+        candles_full,
+        source_name=current_app.config.get("BACKTEST_SOURCE", "synthetic"),
+        engine=engine,
+        symbol=symbol,
+        timeframe=timeframe,
+        from_date=from_date,
+        to_date=to_date,
+        source_obj=source,
+    )
+    _provenance_log(payload["provenance"], f"run/{strategy}")
+    # §5: the advisory traffic light. Computed from the payload that is about
+    # to be returned, so it can never describe a different run than the one
+    # rendered above it.
+    payload["readiness"] = build_readiness(payload)
     _summarise(payload, f"run/{strategy}", params)
     return jsonify(payload), 200
+
+
+@backtest_bp.post("/api/backtest/monte-carlo")
+def monte_carlo_endpoint() -> tuple:
+    """PRD §3.3 — resample a finished result's trades.
+
+    ``/api/backtest/run`` already returns a ``monte_carlo`` block, so this
+    endpoint exists for the two cases that need one: re-running with a
+    different simulation count, and re-running against a result that is in the
+    client's hands rather than the server's. Both call the same
+    :func:`~backtest.engine.monte_carlo.monte_carlo_trade_order`, so the two
+    paths cannot drift.
+
+    Accepts either an inline ``trades`` list or a ``trades`` payload in the
+    same shape ``to_all()`` returns.
+    """
+    data = request.get_json(silent=True) or {}
+    try:
+        simulations = int(data.get("simulations", 1000))
+    except (TypeError, ValueError):
+        log.warning("[mc] rejected: simulations=%r is not an integer", data.get("simulations"))
+        return jsonify({"error": "simulations must be an integer"}), 400
+    if simulations < 2 or simulations > 50_000:
+        log.warning("[mc] rejected: simulations=%s out of range", simulations)
+        return jsonify({"error": "simulations must be between 2 and 50000"}), 400
+
+    payload = data.get("result")
+    if isinstance(payload, dict) and "trades" in payload:
+        raw = payload["trades"]
+    else:
+        raw = data.get("trades")
+    if not isinstance(raw, list):
+        return jsonify({"error": "trades (a list) or a result payload is required"}), 400
+
+    try:
+        capital = float(data.get("capital", 100_000))
+    except (TypeError, ValueError):
+        return jsonify({"error": "capital must be a number"}), 400
+
+    pnls = []
+    for row in raw:
+        if isinstance(row, dict):
+            if row.get("is_open"):
+                continue  # an open trade has not happened yet
+            pnl = row.get("pnl")
+        else:
+            pnl = row
+        try:
+            pnls.append(float(pnl))
+        except (TypeError, ValueError):
+            return jsonify({"error": f"non-numeric trade pnl: {pnl!r}"}), 400
+
+    block = monte_carlo_trade_order(pnls, capital, simulations=simulations)
+    log.info(
+        "[mc] %d closed trades, %d simulations, P(profit)=%s%%",
+        len(pnls),
+        simulations,
+        (block.get("bootstrap") or {}).get("profit_probability_pct", "n/a"),
+    )
+    return jsonify(block), 200
+
+
+# ---------------------------------------------------------------------------
+# Cross-strategy comparison (PRD §4.3 / §4.4)
+# ---------------------------------------------------------------------------
+
+
+def _slot_label(job: dict, payload: dict) -> str:
+    """A human label that stays unique when slots share a strategy.
+
+    Two slots on the same strategy are common (that is how a parameter sweep
+    works), and a correlation matrix keyed on a duplicated name would silently
+    collapse them into one row.
+    """
+    name = str(job.get("strategy") or "?")
+    symbol = str(job.get("symbol") or "")
+    params = job.get("params") or {}
+    detail = ",".join(f"{k}={v}" for k, v in sorted(params.items())) if params else ""
+    base = f"{name} · {symbol}" if symbol else name
+    return f"{base} ({detail})" if detail else base
+
+
+def _comparison_block(
+    results: dict[str, Any], jobs: list[dict], source_name: str
+) -> dict[str, Any]:
+    """§4.3 correlation heatmap + §4.4 significance, from the slot payloads.
+
+    Reads the per-bar returns each slot already returns, so the matrix is built
+    from the same numbers the table above it is showing. A slot that failed is
+    left out of the maths and named in ``excluded`` — it is not silently
+    dropped, and it is not given a row of zeros either.
+    """
+    from backtest.data.base import periods_per_year as annualisation
+
+    returns: dict[str, pd.Series] = {}
+    excluded: list[dict[str, str]] = []
+    ppy_used = 0.0
+    labels_by_id: dict[str, str] = {}
+
+    for job in jobs:
+        sid = str(job.get("id"))
+        payload = results.get(sid)
+        if not isinstance(payload, dict) or "error" in payload:
+            excluded.append(
+                {
+                    "slot": sid,
+                    "label": _slot_label(job, {}),
+                    "reason": (payload or {}).get("error", "no result"),
+                }
+            )
+            continue
+        equity = payload.get("equity") or {}
+        values = equity.get("values") or []
+        dates = equity.get("dates") or []
+        if not values or len(values) != len(dates):
+            excluded.append(
+                {
+                    "slot": sid,
+                    "label": _slot_label(job, payload),
+                    "reason": "no equity curve",
+                }
+            )
+            continue
+        label = _slot_label(job, payload)
+        # Disambiguate the rare case of two slots producing the same label.
+        if label in returns:
+            label = f"{label} (#{sid})"
+        labels_by_id[sid] = label
+        returns[label] = pd.Series(
+            [float(v) for v in values],
+            index=pd.Index(dates),
+            dtype="float64",
+        ).pct_change()
+        tf = (payload.get("config") or {}).get("timeframe") or ""
+        if tf:
+            try:
+                ppy_used = max(ppy_used, float(annualisation(tf)))
+            except Exception:  # noqa: BLE001 — an unknown timeframe is not fatal
+                pass
+
+    # Daily is the engine's own fallback when a run reports no timeframe.
+    if ppy_used <= 0:
+        ppy_used = float(annualisation("1day"))
+
+    correlation = correlation_matrix(returns)
+    significance = sharpe_significance(returns, ppy_used)
+    log.info(
+        "[run-many] comparison: %d comparable, %d excluded, max |corr|=%s",
+        len(returns),
+        len(excluded),
+        correlation.get("max_correlation"),
+    )
+    return {
+        "labels_by_slot": labels_by_id,
+        "periods_per_year": ppy_used,
+        "source_name": source_name,
+        "correlation": correlation,
+        "significance": significance,
+        "excluded": excluded,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +559,9 @@ def run_backtest_endpoint() -> tuple:
 
 @backtest_bp.post("/api/backtest/run-many")
 def run_many() -> tuple:
+    _refused = guard_source()
+    if _refused:
+        return _refused
     data = request.get_json(silent=True) or {}
     shared = data.get("shared", {}) or {}
     slots = data.get("slots", []) or []
@@ -293,6 +609,15 @@ def run_many() -> tuple:
     # so job params must be picklable plain data — no source objects, no
     # closures, no lambdas. Each worker process rebuilds its own source by
     # name (sources are deterministic/plain-constructor, so this is exact).
+    # §4.2 "Test Generalization": one strategy, up to four SYMBOLS. The shared
+    # symbol stays the default for every slot, so the ordinary
+    # "different strategies, same data" mode is byte-identical to before; only
+    # a slot that names its own symbol opts out. Everything else — dates,
+    # capital, engine, timeframe — stays shared, because a comparison across
+    # different date ranges or engines is not a comparison.
+    slot_symbols = {
+        str(slot.get("id")): str(slot.get("symbol") or symbol).strip().upper() for slot in slots
+    }
     jobs = [
         {
             "id": slot.get("id"),
@@ -300,7 +625,7 @@ def run_many() -> tuple:
             "params": slot.get("params") or {},
             "timeframe": slot.get("timeframe", "1D"),
             "mode": str(slot.get("mode", "")).strip().lower(),
-            "symbol": symbol,
+            "symbol": slot_symbols[str(slot.get("id"))],
             "from_date": from_date,
             "to_date": to_date,
             "warmup_start": warmup_start,
@@ -345,7 +670,42 @@ def run_many() -> tuple:
         f" (slots {', '.join(failed)})" if failed else "",
     )
 
-    return jsonify({"results": results}), 200
+    # One provenance block for the conditions every slot SHARES, so a
+    # comparison page can badge the run without re-deriving the source from
+    # four payloads. Per-slot engines are compared here: slots that disagree
+    # are stamped "mixed" and warned about, because their numbers are not
+    # like-for-like (PRD §1.1 / §4.1).
+    slot_engines = {str(job.get("mode", "")).strip().lower() or ENGINE_FILL_EXACT for job in jobs}
+    shared_engine = next(iter(slot_engines)) if len(slot_engines) == 1 else ENGINE_MIXED
+    # In generalization mode the slots deliberately run DIFFERENT symbols, so
+    # the shared badge must name that rather than the (unused) shared symbol.
+    distinct_symbols = sorted({job["symbol"] for job in jobs})
+    shared_provenance = _provenance(
+        None,
+        source_name=source_name,
+        engine=shared_engine,
+        symbol=symbol if len(distinct_symbols) == 1 else ", ".join(distinct_symbols),
+        timeframe=",".join(sorted({str(job.get("timeframe", "1D")) for job in jobs})),
+        from_date=from_date,
+        to_date=to_date,
+    )
+    shared_provenance["engines_used"] = sorted(slot_engines)
+    shared_provenance["symbols_used"] = distinct_symbols
+    # NOT "mode": that key is the ENGINE mode (fill-exact / quick_screen) and
+    # is read by the provenance badge. Naming the comparison mode "mode" would
+    # silently relabel every run as a strategy comparison.
+    shared_provenance["comparison_mode"] = (
+        "generalization" if len(distinct_symbols) > 1 else "strategies"
+    )
+    _provenance_log(shared_provenance, "run-many")
+
+    comparison = _comparison_block(
+        results, jobs, current_app.config.get("BACKTEST_SOURCE", "synthetic")
+    )
+    return (
+        jsonify({"results": results, "provenance": shared_provenance, "comparison": comparison}),
+        200,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -410,13 +770,19 @@ def run_single_backtest(params: dict) -> dict:
                 capital,
                 from_date,
                 to_date,
+                timeframe,
             )
             engine = "quick_screen"
         else:
-            result = _run_driver(candles_full, strategy, slot_params, symbol, capital)
+            result = _run_driver(
+                candles_full, strategy, slot_params, symbol, capital, timeframe=timeframe
+            )
             engine = "backtest_driver"
 
         payload = BacktestAdapter(result).to_all()
+        payload["cost_shock"] = _cost_shock(
+            candles_full, strategy, slot_params, symbol, capital, timeframe, engine, result.metrics
+        )
         payload["config"].update(
             {
                 "timeframe": timeframe,
@@ -428,6 +794,20 @@ def run_single_backtest(params: dict) -> dict:
                 "worker_pid": os.getpid(),
             }
         )
+        payload["provenance"] = _provenance(
+            candles_full,
+            source_name=str(params.get("source_name", "synthetic")),
+            engine=engine,
+            symbol=symbol,
+            timeframe=timeframe,
+            from_date=from_date,
+            to_date=to_date,
+            source_obj=source,
+        )
+        _provenance_log(payload["provenance"], f"slot {sid}")
+        # §5: readiness is per-strategy, so each slot carries its own. It is
+        # computed in the worker so the web process does no extra engine work.
+        payload["readiness"] = build_readiness(payload)
         # NOTE: the [result]/[slot ...] INFO lines are emitted by the ENDPOINT
         # (web process) after the pool returns — worker-process log records
         # do not surface in the web process's log capture.

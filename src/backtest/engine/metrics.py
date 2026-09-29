@@ -8,31 +8,30 @@ approximations of it (gaps G1/G2).
 Quant-grade extensions (2026-09-21): Sortino, profit factor, expectancy,
 VaR/ES, max consecutive losses, exposure — needed for self-sufficient
 trading system evaluation.
+
+PRD ``docs/backTest-enhance.md`` §2 adds the risk/tail, drawdown-detail,
+trade-quality and statistical-confidence families. Their maths lives in
+:mod:`backtest.engine.metrics_risk`; this module stays the orchestrator so
+every tab that runs the engine — Backtest, Compare and Optimize — picks them up
+from one place.
 """
 
 from __future__ import annotations
 
 import math
 
-import numpy as np
-import pandas as pd
-
+from backtest.engine.metrics_risk import (
+    consecutive_streaks,
+    drawdown_detail,
+    omega_ratio,
+    payoff_ratio,
+    return_skew_kurtosis,
+    sharpe_std_error,
+    trade_count_flag,
+    trade_durations,
+    var_es,
+)
 from backtest.engine.trades import trade_stats, walk_trades
-
-
-def _var_es(returns: pd.Series, alpha: float = 0.05) -> tuple[float, float]:
-    """Historical VaR / Expected Shortfall at alpha (e.g. 5%)."""
-    if len(returns) < 10:
-        return 0.0, 0.0
-    try:
-        # VaR is the alpha-quantile of returns (negative = loss)
-        var = float(np.quantile(returns.values, alpha))
-        # ES is mean of returns <= VaR
-        tail = returns[returns <= var]
-        es = float(tail.mean()) if len(tail) else var
-        return var, es
-    except Exception:
-        return 0.0, 0.0
 
 
 def compute_metrics(result) -> dict:
@@ -61,9 +60,11 @@ def compute_metrics(result) -> dict:
     max_drawdown = float(drawdown.min()) if len(drawdown) > 0 else 0.0
     calmar = cagr / abs(max_drawdown) if max_drawdown < 0 and abs(max_drawdown) > 0 else 0.0
 
-    # VaR / ES
-    var_95, es_95 = _var_es(returns, 0.05)
-    var_99, es_99 = _var_es(returns, 0.01)
+    # VaR / ES. One implementation, shared with the §2 tail block below: the
+    # local copy that used to live here had drifted into a second definition of
+    # the same quantile, which is exactly how two cards start disagreeing.
+    var_95, es_95 = var_es(returns, 0.05)
+    var_99, es_99 = var_es(returns, 0.01)
 
     position = result.position.fillna(0)
 
@@ -84,23 +85,45 @@ def compute_metrics(result) -> dict:
     profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else 0.0
     expectancy = (sum(realised_pnls) / len(realised_pnls)) if realised_pnls else 0.0
 
-    # Max consecutive losses
-    max_consec_losses = 0
-    cur_consec = 0
-    for t in trades:
-        if t.is_open:
-            continue
-        if t.result == "Loss":
-            cur_consec += 1
-            max_consec_losses = max(max_consec_losses, cur_consec)
-        else:
-            cur_consec = 0
+    # Streaks. Max consecutive losses is the capital-tolerance number, and it
+    # is computed from the SAME closed-trade walk the trade table shows — one
+    # definition of a streak, not two that can disagree.
+    closed_results = [t.result for t in trades if not t.is_open]
+    max_wins, max_consec_losses = consecutive_streaks(closed_results)
 
-    # Avg holding period (in bars) — estimate from trade count vs exposure
+    # Avg holding period (in bars) — the older exposure-derived estimate, kept
+    # because Compare/Optimize surfaces already read this key. PRD §2 adds the
+    # measured `avg_trade_duration_bars` / `median_trade_duration_bars` below;
+    # note the estimate is algebraically the same as the measured mean whenever
+    # the trade spans tile the curve, so the real gain is the MEDIAN, not a
+    # corrected average.
     if stats["num_trades"]:
         avg_holding_bars = exposure * len(equity) / stats["num_trades"]
     else:
         avg_holding_bars = 0.0
+
+    last_equity = float(equity.iloc[-1]) if len(equity) else 0.0
+
+    # ---------------------------------------------------------------- §2
+    # Risk & tail. `returns` is a fraction series, so these are fractions per
+    # period, matching volatility/sharpe. The Rupee forms the PRD asks for are
+    # added explicitly below rather than left for a call site to guess at.
+    dd = drawdown_detail(equity)
+    skew, excess_kurt = return_skew_kurtosis(returns)
+
+    # Trade quality. `wins`/`losses` are already split above, so the payoff
+    # ratio reuses them rather than re-filtering the trade list. Durations use
+    # CLOSED trades only: an open trade is right-censored (it has been held at
+    # least N bars, not exactly N), and averaging a censored sample in drags the
+    # mean down toward a number nobody actually held.
+    payoff = payoff_ratio(wins, losses)
+    avg_bars, median_bars = trade_durations([t.bars_held for t in trades if not t.is_open])
+
+    # Statistical confidence: is this sample big enough to believe, and how
+    # wide is the error bar on the Sharpe we just printed? Flagged on CLOSED
+    # trades — an open trade is not a result yet.
+    se = sharpe_std_error(sharpe, stats["closed_trades"])
+    flag = trade_count_flag(stats["closed_trades"])
 
     return {
         "total_return": total_return,
@@ -133,6 +156,40 @@ def compute_metrics(result) -> dict:
         "max_consecutive_losses": max_consec_losses,
         "exposure": exposure,
         "avg_holding_bars": avg_holding_bars,
-        "final_equity": float(equity.iloc[-1]),
+        "final_equity": last_equity,
         "bars": int(len(equity)),
+        # --- §2.1 risk & tail -----------------------------------------
+        # These are the PRD's own key names. `kurtosis` is EXCESS (Fisher)
+        # kurtosis, so a normal distribution reads 0.0, not 3.0.
+        "omega": omega_ratio(returns),
+        "skewness": skew,
+        "kurtosis": excess_kurt,
+        "ulcer_index": dd["ulcer_index"],
+        # CVaR 95% is Expected Shortfall at 95% — the same number under the name
+        # the PRD uses, so it is aliased rather than recomputed. It is worse
+        # (more negative) than VaR 95% by construction, and that ordering is
+        # what makes it the number worth showing.
+        "cvar_95": es_95,
+        "var_95_inr": var_95 * last_equity,
+        "cvar_95_inr": es_95 * last_equity,
+        # --- §2.1 drawdown detail -------------------------------------
+        "max_drawdown_duration_days": dd["max_drawdown_duration_days"],
+        "max_drawdown_recovery_days": dd["max_drawdown_recovery_days"],
+        "max_drawdown_recovered": dd["max_drawdown_recovered"],
+        "time_in_drawdown_pct": dd["time_in_drawdown_pct"],
+        "drawdowns_over_10pct": dd["drawdowns_over_10pct"],
+        "drawdown_episodes": dd["drawdown_episodes"],
+        # --- §2.1 trade quality ---------------------------------------
+        # `expectancy_inr` is the PRD's name for the Rupee form of `expectancy`.
+        "expectancy_inr": expectancy,
+        "payoff_ratio": payoff,
+        "max_consecutive_wins": max_wins,
+        "avg_trade_duration_bars": avg_bars,
+        "median_trade_duration_bars": median_bars,
+        # --- §2.1 statistical confidence ------------------------------
+        "sharpe_std_error": se,
+        "sharpe_ci_low": sharpe - se,
+        "sharpe_ci_high": sharpe + se,
+        "trade_count_flag": flag,
+        "trade_count_sufficient": flag != "insufficient",
     }

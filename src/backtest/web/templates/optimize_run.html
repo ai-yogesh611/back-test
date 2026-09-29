@@ -17,11 +17,16 @@
             <button class="btn btn-ghost" id="btnRerun" hidden>↻ Re-run</button>
             <a class="btn btn-ghost" id="btnExport" hidden>⬇ CSV</a>
             <button class="btn" id="btnPreset" hidden>★ Save preset</button>
+            <button class="btn" id="btnMonteCarlo" hidden title="Resample the winning result's trade sequence">
+                🎲 Monte Carlo on best</button>
             <button class="btn btn-primary" id="btnApply" hidden>Apply parameters…</button>
         </div>
     </div>
 
     <div id="runError" class="warning-banner" hidden></div>
+
+    <!-- Engine + data the run was produced from (PRD backTest-enhance §1.2) -->
+    <div id="runProvenance" class="prov-strip"></div>
 
     <!-- ============================ LIVE PROGRESS ============================ -->
     <section class="card" id="progressCard" hidden>
@@ -78,12 +83,34 @@
 
         <!-- Overview -->
         <div class="tab-pane active" data-pane="overview">
+            <!-- PRD Part 2 §4. On the winner only, on demand: the engine
+                 re-runs the best parameters once and resamples that result's
+                 trade sequence. -->
+            <!-- PRD Part 2 §6.2. Sticky, at the top, NOT dismissable.
+                 A warning you can scroll past is a warning you will. -->
+            <div id="warningPanel" class="opt-warning-panel" hidden></div>
+            <div id="monteCarloBox" class="card opt-mc-box" hidden></div>
+            <div id="regimeBox" class="card opt-regime-box" hidden></div>
             <div class="opt-overview-grid">
                 <div class="card opt-robust-card">
                     <h2 class="card-title">Robustness</h2>
                     <div class="opt-robust-score"><span id="robustScore">—</span><small>/10</small></div>
                     <div id="robustLabel" class="opt-robust-label"></div>
                     <ul id="robustComponents" class="opt-kv"></ul>
+                </div>
+                <!-- PRD Part 2 §3. The bar the best-of-N had to clear, next
+                     to the Sharpe it cleared. Kept in its own card because
+                     the two numbers mean different things and the comparison
+                     between them is the entire point. -->
+                <div class="card opt-dsr-card">
+                    <h2 class="card-title">Deflated Sharpe</h2>
+                    <div class="opt-dsr-main">
+                        <span id="dsrBar" class="opt-dsr-value">—</span>
+                        <span class="opt-dsr-vs muted">vs Sharpe <strong id="dsrObserved">—</strong></span>
+                    </div>
+                    <div id="dsrVerdict" class="opt-dsr-verdict"></div>
+                    <ul id="dsrFacts" class="opt-kv"></ul>
+                    <p id="dsrReason" class="muted small opt-dsr-reason"></p>
                 </div>
                 <div class="card">
                     <h2 class="card-title">Current vs optimized</h2>
@@ -230,6 +257,11 @@
     <div class="modal opt-apply-modal" role="dialog" aria-modal="true" aria-labelledby="applyTitle">
         <div class="modal-head"><h3 id="applyTitle">Apply parameters</h3><button class="modal-close" data-close>✕</button></div>
         <div class="modal-body">
+            <!-- PRD §6 reverse flow: where these parameters came from. -->
+            <div id="applyChain" class="opt-chain"></div>
+            <!-- PRD Part 2 §4's gate. Appears only once Monte Carlo has been
+                 run; a flag that must be acknowledged, not a hard block. -->
+            <div id="applyMcGate" class="opt-mc-gate" hidden></div>
             <div id="applyParams" class="opt-apply-params"></div>
             <div class="form-row">
                 <label>Target</label>
@@ -282,5 +314,6 @@
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/optimize_common.js') }}"></script>
+<script src="{{ url_for('static', filename='js/components/provenance.js') }}"></script>
 <script src="{{ url_for('static', filename='js/optimize_run.js') }}"></script>
 {% endblock %}

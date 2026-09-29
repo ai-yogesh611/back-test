@@ -1,3 +1,47 @@
+# PRD — Backtest & Compare / Optimize Enhancements
+
+> **Implementation status** (updated 2026-09-29). Implemented one section at a
+> time, "bugs first" as §1 asks.
+>
+> | Section | Status |
+> |---|---|
+> | Part 1 §1.1 Engine consistency | ✅ Done — driver stays the default, `quick_screen` is an explicit **Fast Preview** opt-in, permanent Engine badge, yellow approximate warning, `mixed` stamp when Compare slots disagree |
+> | Part 1 §1.2 Data source visibility | ✅ Done — permanent Data badge, red non-real-data banner, `provenance` record on every backtest / compare-slot / optimize-run payload |
+> | Part 1 §1.3 Symbol picker + coverage | ✅ Done — `GET /api/data/coverage`, shared picker on all three pages, no-data rows listed-and-explained, All/Equity/Index/F&O tabs |
+> | Part 1 §1.4 Timeframe reality + `periods_per_year` | ✅ Done — `data.base.periods_per_year()` (252 × bars/day, weekly 52) reaches the engine, the optimizer and the UI; dropdowns offer only real granularities |
+> | Part 1 §2 Richer metrics | ✅ Done — `engine/metrics_risk.py` (Omega, skew, excess kurtosis, CVaR, Ulcer, drawdown episodes, streaks, Sharpe SE), `Trade.bars_held` for real durations, `trade_count_flag` ok/warn/insufficient, four collapsible sections + the insufficient-sample banner on the Backtest result page, all keys in `BacktestAdapter.to_all()` |
+> | Part 1 §3 Benchmark / cost shock / Monte Carlo | ✅ Done — `engine/benchmark.py` (buy-and-hold metrics, alpha, beta), `engine/cost_shock.py` (1x/2x/3x slippage, green/yellow/red), `engine/monte_carlo.py` (reorder + bootstrap, trade concentration), `POST /api/backtest/monte-carlo`, three collapsible panels. **Two PRD rules replaced** — see the notes below |
+> | Part 1 §4 Compare enhancements | ⬜ Not started (Compare already applies one shared engine — see §1.1) |
+> | Part 1 §5 Certification readiness | ⬜ Not started (depends on §2/§3) |
+> | Part 1 §6 "Tune This" | ⬜ Not started |
+> | Part 2 §1–§6 Optimize | ⬜ Not started (§1.2 provenance already lands on the Optimize results page) |
+>
+> Implementation notes live in `PROJECT-CONTEXT.md` under "Backtest & Compare —
+> Engine & Data Provenance" and "Single-Run Checks (§3)". Deviations from the
+> letter of the PRD are recorded there and in the git history.
+>
+> ### §3 — two rules in the PRD cannot fire, and are replaced rather than shipped dead
+>
+> 1. **"Re-runs at 2× and 3× the configured slippage."** The canonical backtest is
+>    frictionless by default (`free_executor`: zero slippage, zero fees), so
+>    2 × zero is zero. Implemented literally, every strategy ever run would
+>    report three identical green rows. §3.2 now stresses from an explicit,
+>    labelled 5 bps NSE default when the run is frictionless, and the payload
+>    carries `base_bps_source` so the UI says the run itself was not costed.
+> 2. **"Median / 5th / 95th percentile final equity" and "above the 90th
+>    percentile" from shuffling trades.** A shuffle cannot change a sum, so
+>    under a pure reorder the final equity is identical in all 1,000
+>    simulations and P(profit) is exactly 100% or 0%. Separately, a same-size
+>    bootstrap resamples the very sample that defines its own distribution, so
+>    the actual result's percentile has a mathematical ceiling of ~74% for any
+>    n — a 90th-percentile rule can never fire. The final-equity spread now
+>    comes from a **bootstrap** (resample with replacement) and the reorder
+>    block is reported as path-only; the "was this lucky" question is asked
+>    directly via **trade concentration** (what share of gross profit rests on
+>    the single best trade), which can fail.
+
+---
+
 Let me check the "Optimize from Backtest" flow and data source question first, then I'll draft the PRD.
 
 ---
