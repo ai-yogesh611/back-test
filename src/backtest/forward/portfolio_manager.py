@@ -184,9 +184,7 @@ class PortfolioManager:
         #: Phase 3 order-aging alerts: coid → the bands already announced, so
         #: each working order is reported once per band instead of every tick.
         self._aging_alerted: Dict[str, set] = {}
-        self._state_store = (
-            PortfolioStateStore(state_path) if state_path else None
-        )
+        self._state_store = PortfolioStateStore(state_path) if state_path else None
         # GAP-4 (2026-09-21): permanent trade history in PostgreSQL. Fail-soft:
         # a missing/unreachable DB degrades to the JSON snapshot only.
         self._trade_persister: Optional[Any] = None
@@ -700,6 +698,21 @@ class PortfolioManager:
             return "paper"
         return runner.config.execution_broker or "live"
 
+    def broker_of(self, instance_id: str) -> str:
+        """Public broker label for one runner, resolved by :meth:`_runner_broker`.
+
+        The Orders tab, the risk rollup and the cross-broker analytics all need
+        "which venue is this row's" and all three must answer identically, so
+        the definition lives here once instead of being re-derived per view.
+        Unknown instance → ``"paper"`` (the legacy default venue), never a
+        guess at a live broker.
+        """
+        with self._lock:
+            runner = self._runners.get(instance_id)
+        if runner is None:
+            return "paper"
+        return self._runner_broker(runner)
+
     def reconcile_broker(self, broker_name: Optional[str] = None) -> Dict[str, Any]:
         """Reconcile working orders against one broker's venue book (10.5).
 
@@ -906,8 +919,7 @@ class PortfolioManager:
                 raise ValueError(f"mode must be one of {VALID_INSTANCE_MODES}, got {mode!r}")
         with self._lock:
             runners = [
-                r for r in self._runners.values()
-                if mode is None or self._runner_bucket(r) == mode
+                r for r in self._runners.values() if mode is None or self._runner_bucket(r) == mode
             ]
         rows: List[Dict[str, Any]] = []
         for runner in runners:
@@ -1090,10 +1102,18 @@ class PortfolioManager:
     def _scoped_orders_summary(self, instances: List[str]) -> Dict[str, Any]:
         """Ledger summary restricted to a set of runners."""
         totals: Dict[str, Any] = {
-            "total": 0, "pending": 0, "filled": 0, "cancelled": 0, "rejected": 0,
-            "status_counts": {}, "fills": 0, "avg_slippage": 0.0,
-            "avg_slippage_pct": 0.0, "worst_slippage": 0.0,
-            "slippage_samples": 0, "oldest_pending_age_s": 0.0,
+            "total": 0,
+            "pending": 0,
+            "filled": 0,
+            "cancelled": 0,
+            "rejected": 0,
+            "status_counts": {},
+            "fills": 0,
+            "avg_slippage": 0.0,
+            "avg_slippage_pct": 0.0,
+            "worst_slippage": 0.0,
+            "slippage_samples": 0,
+            "oldest_pending_age_s": 0.0,
             # Phase 3 order aging. Shipped on BOTH summary paths (scoped and
             # whole-ledger) so the Orders tab's badge and strip cannot show
             # different aging counts than the rows they sit above.
@@ -1193,8 +1213,12 @@ class PortfolioManager:
             logger.log(
                 level,
                 "[orders] %s aged %gs (%s %s x%g) — still working, coid=%s",
-                band.upper(), age, row.get("side"), row.get("symbol"),
-                float(row.get("quantity") or 0.0), coid,
+                band.upper(),
+                age,
+                row.get("side"),
+                row.get("symbol"),
+                float(row.get("quantity") or 0.0),
+                coid,
             )
             try:
                 self._audit_log(
@@ -1223,9 +1247,7 @@ class PortfolioManager:
         """
         if mode is None:
             return self.ledger.summary()
-        return self._scoped_orders_summary(
-            [r.instance_id for r in self._bucket_runners(mode)]
-        )
+        return self._scoped_orders_summary([r.instance_id for r in self._bucket_runners(mode)])
 
     def cancel_order(self, client_order_id: str) -> Dict[str, Any]:
         """Cancel a still-pending order; audited like every other control.
@@ -1321,9 +1343,7 @@ class PortfolioManager:
             )
 
         before = (order.quantity, order.limit_price)
-        result = gateway.modify_working(
-            client_order_id, quantity=quantity, limit_price=limit_price
-        )
+        result = gateway.modify_working(client_order_id, quantity=quantity, limit_price=limit_price)
         after = (result["quantity"], result["limit_price"])
         self._audit_log(
             f"ORDER_AMENDED · {order.symbol}",
@@ -1513,9 +1533,7 @@ class PortfolioManager:
                     self._audit_log("RESET_BREAKER all", scope="all", detail="master reset")
                 except Exception:
                     pass
-                self._resolve_breaker_alerts(
-                    ["portfolio", "bucket:paper", "bucket:live"]
-                )
+                self._resolve_breaker_alerts(["portfolio", "bucket:paper", "bucket:live"])
             else:
                 # Scoped reset: one bucket or one `segment:<name>` latch.
                 mode = str(mode).strip().lower()
@@ -1685,7 +1703,9 @@ class PortfolioManager:
                 # boot — fail-closed: skip THAT runner, never block the boot.
                 logger.warning(
                     "[state] runner %s (%s) refused on restore: %s — skipped",
-                    config.instance_id, config.name, exc,
+                    config.instance_id,
+                    config.name,
+                    exc,
                 )
                 continue
             runner = self._runners.get(config.instance_id)
@@ -2253,9 +2273,8 @@ class PortfolioManager:
                 "tick": self.tick_index,
                 # Feed clock for the UI countdown: freshest bar any runner
                 # processed + the poll cadence it arrived on (2026-09-23).
-                "last_bar_ts": max(
-                    (r.get("last_bar_ts") or "" for r in states), default=""
-                ) or None,
+                "last_bar_ts": max((r.get("last_bar_ts") or "" for r in states), default="")
+                or None,
                 "fill_count": self.ledger.fill_count,
                 "order_count": self.ledger.order_count,
                 "runners": states,
@@ -2317,9 +2336,7 @@ class PortfolioManager:
             with r._lock:
                 curve = list(r.equity_curve)
                 trades = r.closed_trades
-                trades_today = [
-                    t for t in trades if (t.get("exit_ts") or "")[:10] == today
-                ]
+                trades_today = [t for t in trades if (t.get("exit_ts") or "")[:10] == today]
             state = r.get_state()
             per_runner.append(
                 {
@@ -2349,10 +2366,7 @@ class PortfolioManager:
                 if day == today:
                     intraday_today.append({"ts": ts, "equity": eq})
 
-        day_closes = [
-            {"date": d, "equity": round(day_points[d], 2)}
-            for d in sorted(day_points)
-        ]
+        day_closes = [{"date": d, "equity": round(day_points[d], 2)} for d in sorted(day_points)]
 
         # -- session summary --------------------------------------------------
         equity = sum(p["equity"] for p in per_runner)

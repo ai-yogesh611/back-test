@@ -117,6 +117,8 @@
         if (periodSelect) {
             periodSelect.addEventListener('change', (e) => {
                 currentPeriod = e.target.value;
+                // PRD-003: the broker sections share this page's period filter.
+                if (window.CrossBrokerUI) window.CrossBrokerUI.setPeriod(currentPeriod);
                 if (analyticsDetailPane.style.display !== 'none' && currentStrategyId) {
                     loadStrategyDetail(currentStrategyId);
                 } else {
@@ -128,6 +130,7 @@
         if (modeFilterSelect) {
             modeFilterSelect.addEventListener('change', (e) => {
                 currentMode = e.target.value;
+                if (window.CrossBrokerUI) window.CrossBrokerUI.setMode(currentMode);
                 loadOverview();
             });
         }
@@ -148,6 +151,7 @@
 
         if (refreshBtn) {
             refreshBtn.addEventListener('click', () => {
+                if (window.CrossBrokerUI) window.CrossBrokerUI.invalidate();
                 if (analyticsDetailPane.style.display !== 'none' && currentStrategyId) {
                     loadStrategyDetail(currentStrategyId);
                 } else {

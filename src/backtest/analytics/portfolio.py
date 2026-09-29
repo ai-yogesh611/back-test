@@ -4,6 +4,12 @@ Provides quantitative performance analytics, risk ratios, equity & drawdown curv
 trade distribution, monthly breakdowns, and edge degradation detection for
 individual running strategies as well as portfolio-level aggregation.
 
+This module moved here from ``backtest/api/analytics_service.py`` (PRD-003) so
+the analytics layer has ONE home: the service layer no longer lives under
+``backtest.api``, whose package ``__init__`` eagerly imports every blueprint —
+which made ``backtest.analytics.cross_broker`` (an HTTP-layer consumer) unable
+to import the service it builds on without closing an import cycle.
+
 Conventions (docs/archive/ANALYTICS-TAB-GAPS.md fixes, 2026-09-28):
 
 * **Clock** — naive timestamps are IST market time (bar/exit stamps come off
@@ -525,29 +531,45 @@ class AnalyticsService:
         }
         return merged, history
 
-    def get_portfolio_overview(
+    def collect_books(
         self, period: str = "30d", mode: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """Aggregate performance overview across all runners."""
-        runners_summary = self.mgr.list_instances(mode=mode)
-        all_closed_trades: List[Dict[str, Any]] = []
-        strategy_cards: List[Dict[str, Any]] = []
+    ) -> List[Dict[str, Any]]:
+        """One record per runner, with broker/segment attribution attached.
 
-        total_allocated_capital = 0.0
-        active_count = 0
+        This is the SINGLE read path for per-runner analytics. ``/analytics``
+        overview (:meth:`get_portfolio_overview`) and the cross-broker
+        aggregation (PRD-003, :mod:`backtest.analytics.cross_broker`) both
+        consume it, so a runner's broker label, its trades and its metrics can
+        never come from two different reads and disagree.
 
-        for r_meta in runners_summary:
+        Each record::
+
+            {
+              "instance_id", "name", "strategy_name", "mode", "status",
+              "symbols", "allocated_capital",
+              "broker",              # display label: the execution broker for
+                                    # live runners, "paper" otherwise
+              "segment",             # capital segment the runner trades in
+              "execution_broker",    # the configured broker, None for paper
+              "equity", "daily_pnl",
+              "trades",              # period-filtered, broker-tagged
+              "all_trades",          # unfiltered (period = "all_time")
+              "metrics", "health", "history",
+            }
+
+        ``broker`` comes from :meth:`PortfolioManager.broker_of`, the same
+        accessor the Orders tab and the risk page's per-broker rollup use, so
+        the three views can never disagree about which venue a row belongs to.
+        """
+        books: List[Dict[str, Any]] = []
+        for r_meta in self.mgr.list_instances(mode=mode):
             inst_id = r_meta.get("instance_id")
             runner = self.mgr.get_runner(inst_id)
             if not runner:
                 continue
 
             allocated = float(r_meta.get("allocated_capital", 100_000.0))
-            total_allocated_capital += allocated
-            status = r_meta.get("status", "STOPPED").upper()
-            if status in ("RUNNING", "ACTIVE"):
-                active_count += 1
-
+            status = str(r_meta.get("status", "STOPPED")).upper()
             closed, history = self._runner_trades_with_history(runner)
             period_trades = _filter_by_period(closed, period)
             metrics = compute_metrics_from_trades(
@@ -555,13 +577,71 @@ class AnalyticsService:
                 allocated_capital=allocated,
                 equity_history=runner.equity_curve,
             )
+            health = get_health_rating(
+                metrics["sharpe_ratio"],
+                metrics["max_drawdown_pct"],
+                metrics["win_rate"],
+                profit_factor=metrics["profit_factor"],
+                total_trades=metrics["total_trades"],
+            )
+
+            broker = self.mgr.broker_of(inst_id) or "paper"
+            for t in period_trades:
+                t["broker"] = broker
+                t["segment"] = r_meta.get("segment")
+
+            books.append({
+                "instance_id": inst_id,
+                "name": r_meta.get("name"),
+                "strategy_name": r_meta.get("strategy_name"),
+                "mode": r_meta.get("mode"),
+                "status": status,
+                "symbols": r_meta.get("symbols", []),
+                "allocated_capital": allocated,
+                "broker": broker,
+                "segment": r_meta.get("segment"),
+                "execution_broker": r_meta.get("execution_broker"),
+                "equity": float(r_meta.get("equity") or 0.0),
+                "daily_pnl": float(r_meta.get("daily_pnl") or 0.0),
+                "trades": period_trades,
+                "all_trades": closed,
+                "metrics": metrics,
+                "health": health,
+                "history": history,
+                "last_trade_ts": closed[-1].get("exit_ts") if closed else None,
+                # Kept so the overview's sparkline can read the runner's own
+                # equity curve without a second manager lookup per runner.
+                "equity_curve": runner.equity_curve,
+            })
+        return books
+
+    def get_portfolio_overview(
+        self, period: str = "30d", mode: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Aggregate performance overview across all runners."""
+        books = self.collect_books(period=period, mode=mode)
+        all_closed_trades: List[Dict[str, Any]] = []
+        strategy_cards: List[Dict[str, Any]] = []
+
+        total_allocated_capital = 0.0
+        active_count = 0
+
+        for book in books:
+            total_allocated_capital += book["allocated_capital"]
+            if book["status"] in ("RUNNING", "ACTIVE"):
+                active_count += 1
+
+            allocated = book["allocated_capital"]
+            period_trades = book["trades"]
+            metrics = book["metrics"]
 
             # Mini equity curve (last 10-20 points) + time labels (fix #9:
             # index-labelled sparklines were misleading after decimation).
             mini_curve = []
             mini_curve_ts = []
-            if runner.equity_curve:
-                sample_pts = runner.equity_curve[-20:]
+            equity_curve = book["equity_curve"] or []
+            if equity_curve:
+                sample_pts = equity_curve[-20:]
                 mini_curve = [round(float(p.get("equity", allocated)), 1) for p in sample_pts]
                 mini_curve_ts = [str(p.get("ts") or "")[:16] for p in sample_pts]
             elif period_trades:
@@ -573,34 +653,32 @@ class AnalyticsService:
                 mini_curve = [allocated]
                 mini_curve_ts = [""]
 
-            health = get_health_rating(
-                metrics["sharpe_ratio"],
-                metrics["max_drawdown_pct"],
-                metrics["win_rate"],
-                profit_factor=metrics["profit_factor"],
-                total_trades=metrics["total_trades"],
-            )
-
             for t in period_trades:
                 et = dict(t)
-                et["runner_id"] = inst_id
-                et["strategy_name"] = r_meta.get("strategy_name")
+                et["runner_id"] = book["instance_id"]
+                et["strategy_name"] = book["strategy_name"]
                 all_closed_trades.append(et)
 
             strategy_cards.append({
-                "instance_id": inst_id,
-                "name": r_meta.get("name"),
-                "strategy_name": r_meta.get("strategy_name"),
-                "mode": r_meta.get("mode"),
-                "status": status,
-                "symbols": r_meta.get("symbols", []),
+                "instance_id": book["instance_id"],
+                "name": book["name"],
+                "strategy_name": book["strategy_name"],
+                "mode": book["mode"],
+                "status": book["status"],
+                "symbols": book["symbols"],
                 "allocated_capital": allocated,
+                # Multi-broker attribution (PRD-003): the strategy table and
+                # the cross-broker rollup must agree on which venue a card
+                # belongs to, so both read the same three keys.
+                "broker": book["broker"],
+                "segment": book["segment"],
+                "execution_broker": book["execution_broker"],
                 "metrics": metrics,
                 "mini_curve": mini_curve,
                 "mini_curve_ts": mini_curve_ts,
-                "health": health,
-                "history": history,
-                "last_trade_ts": closed[-1].get("exit_ts") if closed else None,
+                "health": book["health"],
+                "history": book["history"],
+                "last_trade_ts": book["last_trade_ts"],
             })
 
         # Registry metadata (description/version/author) per strategy type —
@@ -613,7 +691,7 @@ class AnalyticsService:
         )
 
         # Portfolio aggregate equity curve
-        portfolio_equity_curve = self._build_portfolio_equity_curve(runners_summary, period)
+        portfolio_equity_curve = self._build_portfolio_equity_curve(books, period)
 
         # Recent alerts (e.g. degrading Sharpe, excessive DD)
         alerts = self._generate_overview_alerts(strategy_cards)
@@ -623,7 +701,7 @@ class AnalyticsService:
             "mode": mode or "all",
             "portfolio_metrics": portfolio_metrics,
             "active_runners": active_count,
-            "total_runners": len(runners_summary),
+            "total_runners": len(books),
             "total_allocated_capital": total_allocated_capital,
             "strategy_cards": strategy_cards,
             "portfolio_equity_curve": portfolio_equity_curve,
@@ -700,7 +778,7 @@ class AnalyticsService:
         }
 
     def _build_portfolio_equity_curve(
-        self, runners_summary: List[Dict[str, Any]], period: str
+        self, books: List[Dict[str, Any]], period: str
     ) -> List[Dict[str, Any]]:
         """Date-joined portfolio equity with CARRY-FORWARD (fix #7).
 
@@ -713,19 +791,17 @@ class AnalyticsService:
         allocations.
         """
         total_initial = (
-            sum(float(r.get("allocated_capital", 100_000.0)) for r in runners_summary) or 100_000.0
+            sum(float(r.get("allocated_capital", 100_000.0)) for r in books) or 100_000.0
         )
 
         # Per-runner: date → last observed equity that date.
         per_runner: List[tuple] = []  # (allocated, {date: equity})
         all_dates: set = set()
-        for r_meta in runners_summary:
-            runner = self.mgr.get_runner(r_meta.get("instance_id"))
-            if not runner:
-                continue
-            allocated = float(r_meta.get("allocated_capital", 100_000.0))
+        for book in books:
+            equity_curve = book.get("equity_curve") or []
+            allocated = float(book.get("allocated_capital", 100_000.0))
             by_date: Dict[str, float] = {}
-            for pt in runner.equity_curve:
+            for pt in equity_curve:
                 ts = pt.get("ts")
                 if not ts:
                     continue

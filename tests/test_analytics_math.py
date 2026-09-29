@@ -13,7 +13,7 @@ from datetime import timedelta
 
 import pytest
 
-from backtest.api.analytics_service import (
+from backtest.analytics.portfolio import (
     IST,
     AnalyticsService,
     _calculate_streaks,
@@ -128,9 +128,7 @@ class TestCalmar:
 
     def test_max_dd_from_equity_history_golden(self):
         eq = [{"equity": e} for e in (100_000, 110_000, 99_000, 105_000)]
-        m = compute_metrics_from_trades(
-            _trades([(0, 100), (1, -100)]), 100_000, equity_history=eq
-        )
+        m = compute_metrics_from_trades(_trades([(0, 100), (1, -100)]), 100_000, equity_history=eq)
         assert m["max_drawdown_pct"] == 10.0  # (99k−110k)/110k
         assert m["max_drawdown_amount"] == 11_000.0
 
@@ -174,9 +172,7 @@ class TestMonthlyBreakdown:
         return svc
 
     def test_single_day_month_has_no_sharpe(self):
-        rows = self._svc()._build_monthly_breakdown(
-            _trades([(0, 500), (0, 700)]), capital=100_000
-        )
+        rows = self._svc()._build_monthly_breakdown(_trades([(0, 500), (0, 700)]), capital=100_000)
         assert rows[0]["sharpe_ratio"] is None  # 1 trading day ≠ a Sharpe
 
     def test_multi_day_month_sharpe_is_annualized_daily(self):
@@ -205,10 +201,18 @@ class TestInstrumentClass:
     def test_distribution_splits_a_mixed_book(self):
         svc = AnalyticsService.__new__(AnalyticsService)
         trades = [
-            {"pnl": 500.0, "kind": "equity", "symbol": "RELIANCE",
-             "exit_ts": "2026-09-01T11:00:00"},
-            {"pnl": -200.0, "kind": "option", "symbol": "NIFTY26OCT24800CE",
-             "exit_ts": "2026-09-02T11:00:00"},
+            {
+                "pnl": 500.0,
+                "kind": "equity",
+                "symbol": "RELIANCE",
+                "exit_ts": "2026-09-01T11:00:00",
+            },
+            {
+                "pnl": -200.0,
+                "kind": "option",
+                "symbol": "NIFTY26OCT24800CE",
+                "exit_ts": "2026-09-02T11:00:00",
+            },
         ]
         dist = svc._build_trade_distribution(trades)
         assert set(dist["by_class"]) == {"equity", "option"}
@@ -219,11 +223,6 @@ class TestInstrumentClass:
 # ---------------------------------------------------------------------------
 # Fix #7 — portfolio curve carry-forward
 # ---------------------------------------------------------------------------
-
-
-class _FakeRunner:
-    def __init__(self, curve):
-        self.equity_curve = curve
 
 
 class _FakeMgr:
@@ -241,20 +240,26 @@ class TestPortfolioCurveCarryForward:
         Carry-forward seeds B's allocation on day 1: baseline 150k, and the
         day-2 move is only B's actual +1k."""
         svc = AnalyticsService.__new__(AnalyticsService)
-        svc.mgr = _FakeMgr({
-            "A": _FakeRunner([
-                {"ts": "2026-09-01T10:00:00", "equity": 100_000},
-                {"ts": "2026-09-02T10:00:00", "equity": 100_000},
-            ]),
-            "B": _FakeRunner([
-                {"ts": "2026-09-02T10:00:00", "equity": 51_000},
-            ]),
-        })
-        summary = [
-            {"instance_id": "A", "allocated_capital": 100_000},
-            {"instance_id": "B", "allocated_capital": 50_000},
+        svc.mgr = _FakeMgr({})
+        # PRD-003: the curve is built from collect_books() records, so the
+        # per-runner equity curve rides along on the book rather than being
+        # looked up again per runner here.
+        books = [
+            {
+                "instance_id": "A",
+                "allocated_capital": 100_000,
+                "equity_curve": [
+                    {"ts": "2026-09-01T10:00:00", "equity": 100_000},
+                    {"ts": "2026-09-02T10:00:00", "equity": 100_000},
+                ],
+            },
+            {
+                "instance_id": "B",
+                "allocated_capital": 50_000,
+                "equity_curve": [{"ts": "2026-09-02T10:00:00", "equity": 51_000}],
+            },
         ]
-        curve = svc._build_portfolio_equity_curve(summary, "30d")
+        curve = svc._build_portfolio_equity_curve(books, "30d")
         assert [c["equity"] for c in curve] == [150_000.0, 151_000.0]
         assert curve[0]["pnl"] == 0.0  # baseline = ACTUAL start equity
         assert curve[1]["pnl"] == 1_000.0

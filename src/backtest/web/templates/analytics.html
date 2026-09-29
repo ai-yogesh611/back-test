@@ -80,6 +80,161 @@
             </div>
         </div>
 
+        <!-- Cross-broker: portfolio totals across every venue (PRD-003) -->
+        <div class="card" style="margin-bottom: 24px;">
+            <div class="card-head" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                <h2 class="card-title inline" style="margin: 0;">🌐 Cross-Broker Portfolio</h2>
+                <span id="crossBrokerScopePill" class="badge" style="background: var(--surface-2); padding: 4px 10px; border-radius: 12px; font-size: 0.8rem;">0 brokers</span>
+            </div>
+            <div class="metric-cards" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px;">
+                <div class="metric-card">
+                    <div class="label">Total P&amp;L (all brokers)</div>
+                    <div id="crossBrokerTotalPnl" class="value">—</div>
+                    <div id="crossBrokerTotalPnlSub" class="small muted">—</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Portfolio Sharpe</div>
+                    <div id="crossBrokerSharpe" class="value">—</div>
+                    <div id="crossBrokerSharpeSub" class="small muted">—</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Max Drawdown</div>
+                    <div id="crossBrokerMaxDd" class="value">—</div>
+                    <div id="crossBrokerMaxDdSub" class="small muted">—</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Trades / Orders</div>
+                    <div id="crossBrokerTrades" class="value">—</div>
+                    <div id="crossBrokerTradesSub" class="small muted">—</div>
+                </div>
+            </div>
+            <div id="crossBrokerDataQuality" class="small muted" style="margin-top: 12px;"></div>
+        </div>
+
+        <!-- By Broker (collapsible) -->
+        <details class="card xb-section" id="brokerSection" style="margin-bottom: 24px;">
+            <summary class="xb-section-head">
+                <span>🏦 By Broker</span>
+                <span class="xb-chevron" aria-hidden="true">▾</span>
+            </summary>
+            <div class="xb-section-body">
+                <div id="brokerHeadline" class="xb-headline"></div>
+                <div class="table-scroll">
+                    <table class="data-table" id="brokerTable">
+                        <thead>
+                            <tr>
+                                <th>Broker</th>
+                                <th class="text-right">Net P&amp;L</th>
+                                <th class="text-right">Share</th>
+                                <th class="text-right">Sharpe</th>
+                                <th class="text-right">Max DD</th>
+                                <th class="text-right">Trades</th>
+                                <th class="text-right">Win %</th>
+                                <th class="text-right">Slip</th>
+                                <th class="text-right">Fill</th>
+                                <th class="text-right">Fill time</th>
+                                <th class="text-right">Rejects</th>
+                                <th>Segments</th>
+                            </tr>
+                        </thead>
+                        <tbody id="brokerTableBody">
+                            <tr><td colspan="12" class="text-center muted">Expand to load broker performance…</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div id="brokerAlerts" class="xb-alerts"></div>
+                <div id="brokerInsights" class="xb-insights"></div>
+                <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px;">
+                    <button id="openCompareBtn" class="btn btn-primary btn-small" type="button">🔄 Compare Brokers</button>
+                    <button id="openMigrationBtn" class="btn btn-ghost btn-small" type="button">🧭 Strategy Migration Analyzer</button>
+                    <button id="openRecommendBtn" class="btn btn-ghost btn-small" type="button">🎯 Recommend a Broker</button>
+                </div>
+            </div>
+        </details>
+
+        <!-- Execution Quality (collapsible) -->
+        <details class="card xb-section" id="executionSection" style="margin-bottom: 24px;">
+            <summary class="xb-section-head">
+                <span>⚡ Execution Quality</span>
+                <span class="xb-chevron" aria-hidden="true">▾</span>
+            </summary>
+            <div class="xb-section-body">
+                <div class="xb-filters">
+                    <label for="execBrokerFilter" class="small muted">Broker</label>
+                    <select id="execBrokerFilter" class="input" style="padding: 4px 10px; width: auto; font-size: 0.85rem;">
+                        <option value="">All brokers</option>
+                    </select>
+                    <label for="execStrategyFilter" class="small muted">Strategy</label>
+                    <select id="execStrategyFilter" class="input" style="padding: 4px 10px; width: auto; font-size: 0.85rem;">
+                        <option value="">All strategies</option>
+                    </select>
+                </div>
+
+                <div id="execDegradation" class="xb-headline"></div>
+
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; align-items: start;">
+                    <div class="xb-panel">
+                        <h4 class="xb-panel-title">Slippage trend (bps, adverse-positive)</h4>
+                        <div style="height: 200px; position: relative;">
+                            <canvas id="execSlippageChart"></canvas>
+                        </div>
+                        <div id="execSlippageMedian" class="small muted" style="margin-top: 6px;"></div>
+                    </div>
+                    <div class="xb-panel">
+                        <h4 class="xb-panel-title">Slippage distribution</h4>
+                        <div style="height: 200px; position: relative;">
+                            <canvas id="execDistributionChart"></canvas>
+                        </div>
+                        <div id="execDistributionNote" class="small muted" style="margin-top: 6px;"></div>
+                    </div>
+                </div>
+
+                <div class="xb-panel" style="margin-top: 20px;">
+                    <h4 class="xb-panel-title">Fill performance by broker</h4>
+                    <div class="table-scroll">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Broker</th>
+                                    <th class="text-right">Fill rate</th>
+                                    <th class="text-right">Avg time</th>
+                                    <th class="text-right">Rejections</th>
+                                    <th class="text-right">Stale (&gt;60s)</th>
+                                    <th class="text-right">Orders</th>
+                                </tr>
+                            </thead>
+                            <tbody id="execPeerBody">
+                                <tr><td colspan="6" class="text-center muted">No execution data in this period.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="xb-panel" style="margin-top: 20px;">
+                    <h4 class="xb-panel-title">By strategy</h4>
+                    <div class="table-scroll">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Strategy</th>
+                                    <th>Broker</th>
+                                    <th class="text-right">Avg slippage</th>
+                                    <th class="text-right">Fill rate</th>
+                                    <th class="text-right">Rejections</th>
+                                    <th class="text-right">Orders</th>
+                                </tr>
+                            </thead>
+                            <tbody id="execStrategyBody">
+                                <tr><td colspan="6" class="text-center muted">No execution data in this period.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div id="execNotes" class="xb-notes"></div>
+            </div>
+        </details>
+
         <!-- Strategy Comparison Table -->
         <div style="margin-bottom: 24px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
@@ -288,8 +443,119 @@
         </div>
     </div>
 </div>
+
+{# ------------------------------------------------------------------ #}
+{# Cross-broker modals (PRD-003 §5.4 / §5.5)                            #}
+{# ------------------------------------------------------------------ #}
+<div id="crossBrokerCompareOverlay" class="broker-auth-overlay" role="dialog" aria-modal="true" aria-labelledby="crossBrokerCompareTitle">
+  <div class="broker-auth-modal xb-modal">
+    <div class="broker-auth-header">
+      <span id="crossBrokerCompareTitle" class="broker-auth-title">🔄 Compare Brokers</span>
+      <button id="crossBrokerCompareClose" class="broker-auth-close" type="button" aria-label="Close">&times;</button>
+    </div>
+    <div class="broker-auth-form">
+      <div class="xb-field">
+        <label for="compareBrokerChecks">Brokers to compare</label>
+        <div id="compareBrokerChecks" class="xb-checks"></div>
+      </div>
+      <div class="xb-field">
+        <label for="compareMetricSelect">Metrics</label>
+        <select id="compareMetricSelect" class="input">
+          <option value="all" selected>All metrics</option>
+          <option value="sharpe">Sharpe ratio</option>
+          <option value="net_pnl">Net P&amp;L</option>
+          <option value="win_rate">Win rate</option>
+          <option value="max_drawdown_pct">Max drawdown</option>
+          <option value="avg_slippage_bps">Avg slippage</option>
+          <option value="fill_rate_pct">Fill rate</option>
+          <option value="fill_time_sec">Avg fill time</option>
+          <option value="rejection_rate_pct">Rejection rate</option>
+          <option value="total_trades">Trades</option>
+        </select>
+      </div>
+      <div class="xb-field">
+        <label><input type="checkbox" id="compareStatTest" checked /> Run significance tests</label>
+      </div>
+      <div id="compareError" class="broker-auth-error" role="alert"></div>
+      <button id="compareRunBtn" class="btn btn-primary btn-block" type="button">Run comparison</button>
+      <div id="compareResult" class="xb-result"></div>
+    </div>
+  </div>
+</div>
+
+<div id="crossBrokerMigrationOverlay" class="broker-auth-overlay" role="dialog" aria-modal="true" aria-labelledby="crossBrokerMigrationTitle">
+  <div class="broker-auth-modal xb-modal">
+    <div class="broker-auth-header">
+      <span id="crossBrokerMigrationTitle" class="broker-auth-title">🧭 Strategy Migration Analyzer</span>
+      <button id="crossBrokerMigrationClose" class="broker-auth-close" type="button" aria-label="Close">&times;</button>
+    </div>
+    <div class="broker-auth-form">
+      <p class="small muted">What would happen if this strategy moved to another broker?</p>
+      <div class="xb-field">
+        <label for="migrationStrategy">Strategy</label>
+        <select id="migrationStrategy" class="input"></select>
+      </div>
+      <div class="xb-field xb-field-row">
+        <div>
+          <label for="migrationFrom">From broker (current)</label>
+          <select id="migrationFrom" class="input"></select>
+        </div>
+        <div>
+          <label for="migrationTo">To broker</label>
+          <select id="migrationTo" class="input"></select>
+        </div>
+      </div>
+      <div id="migrationError" class="broker-auth-error" role="alert"></div>
+      <button id="migrationRunBtn" class="btn btn-primary btn-block" type="button">Calculate impact</button>
+      <div id="migrationResult" class="xb-result"></div>
+    </div>
+  </div>
+</div>
+
+<div id="crossBrokerRecommendOverlay" class="broker-auth-overlay" role="dialog" aria-modal="true" aria-labelledby="crossBrokerRecommendTitle">
+  <div class="broker-auth-modal xb-modal">
+    <div class="broker-auth-header">
+      <span id="crossBrokerRecommendTitle" class="broker-auth-title">🎯 Recommend a Broker</span>
+      <button id="crossBrokerRecommendClose" class="broker-auth-close" type="button" aria-label="Close">&times;</button>
+    </div>
+    <div class="broker-auth-form">
+      <p class="small muted">For a strategy that has not been deployed yet.</p>
+      <div class="xb-field xb-field-row">
+        <div>
+          <label for="recommendType">Strategy type</label>
+          <select id="recommendType" class="input">
+            <option value="scalper" selected>Scalper</option>
+            <option value="intraday">Intraday</option>
+            <option value="swing">Swing</option>
+            <option value="options">Options</option>
+          </select>
+        </div>
+        <div>
+          <label for="recommendFrequency">Frequency</label>
+          <select id="recommendFrequency" class="input">
+            <option value="high" selected>High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+          </select>
+        </div>
+      </div>
+      <div class="xb-field">
+        <label for="recommendSize">Avg trade size (₹, optional)</label>
+        <input id="recommendSize" class="input" type="number" min="0" step="1000" placeholder="Uses observed notional if blank" />
+      </div>
+      <div class="xb-field">
+        <label for="recommendSegment">Segment (optional)</label>
+        <select id="recommendSegment" class="input"><option value="">All segments</option></select>
+      </div>
+      <div id="recommendError" class="broker-auth-error" role="alert"></div>
+      <button id="recommendRunBtn" class="btn btn-primary btn-block" type="button">Recommend</button>
+      <div id="recommendResult" class="xb-result"></div>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/analytics.js') }}"></script>
+<script src="{{ url_for('static', filename='js/cross_broker.js') }}"></script>
 {% endblock %}

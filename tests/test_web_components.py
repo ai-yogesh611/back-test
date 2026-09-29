@@ -80,6 +80,28 @@ def test_live_order_management_components(harness, expected):
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_cross_broker_analytics_ui_behaviour():
+    """PRD-003: the By Broker / Execution Quality sections and their modals.
+
+    The harness pins what a screenshot cannot: that a missing metric renders
+    as "—" and never as a fabricated 0.00, that an un-significant comparison
+    says so, that a declined fill rate is announced, and that a broker name
+    containing markup is escaped before it reaches innerHTML.
+    """
+    result = subprocess.run(
+        ["node", str(_REPO_ROOT / "tests" / "js" / "test_cross_broker.mjs")],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert (
+        result.returncode == 0
+    ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "18 tests passed" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
 def test_trade_table_is_container_scoped():
     """Two tables on one page must keep their own sort/page state (G13 remnant)."""
     script = """
