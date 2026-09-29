@@ -47,6 +47,37 @@ agent work. Blocked only by item 1 passing.
 - [x] **7. Portfolio-page option trade rows (UI polish)** — ✅ DONE (verified in code 2026-09-28): `portfolio.js` renders per-structure rows via `OptionView.openStructures` (matrix + deep-dive); API side covered by `tests/engine/test_portfolio_options_rows.py`, JS by `tests/js/test_option_view.mjs` + `render_option_views.mjs`.
 - [ ] **8. Consultant answers on 6 open questions** — `CONSULTANT_RESPONSE.md` §0.4 — *Who: You*
 
+### Consolidated P&L / tax report (PRD-002) — follow-ups
+
+- [ ] **13. Tax config sign-off** — *Who: You (+ your CA)*. `config/reporting.yaml`
+      ships FY 2026-27 law: STCG 20%, LTCG 12.5% above ₹1,25,000, and
+      `business_slab_rate: 0.30` as a **safe upper bound** — a slab estimate that
+      ignores your basic exemption limit, other income and the s.87A rebate. Set it
+      to your actual marginal rate (and add surcharge if your income crosses the
+      threshold) before treating the "estimated tax" line as your number.
+- [ ] **14. Validate the `dhan` broker profile** — *Who: You (one contract note)*.
+      `config/brokers.yaml` holds an INDICATIVE dhan profile (intraday 0.03% capped
+      ₹20, delivery ₹0 + stamp/DP, options flat ₹20/order). Fee *estimates* for dhan
+      trades depend on it.
+
+      **Where to write the real numbers:** `/settings` → the **dhan** card (it now
+      appears under *In use*, since `equity_intraday` points at it) → paste the
+      corrected commission/statutory fields → **Save** (audited) → then
+      **Edit / validate** → contract-note validator with the note's per-component
+      amounts; an all-PASS stamps the profile. Editing `config/brokers.yaml` also
+      works *until* the panel saves a row for that broker: the fee engine resolves
+      **DB row → yaml → preset**, and the card shows *"differs from
+      config/brokers.yaml — this row wins"* when the stored row is shadowing the file.
+- [ ] **15. Turn the monthly email on** — *Who: You*. Default is dry-run: each run
+      writes a complete `.eml` (HTML body + PDF) to `var/reporting/outbox`. To send:
+      set `monthly_email.enabled: true` and `smtp.host` in `config/reporting.yaml`,
+      and export the password via the env named in `smtp.password_env`
+      (`REPORTING_SMTP_PASSWORD`). Nothing secret belongs in the config file.
+- [ ] **16. Reconciliation against real contract notes** — *Who: You + Agent*.
+      `/reporting` → paste each broker's note net P&L (+ itemised fees) → PASS/WARNING/
+      FAIL. Until this is done at least once per broker, "the platform's P&L" has only
+      ever been checked against itself.
+
 ## 🟢 Later (no date)
 
 - [x] 9. Options-tab hard delete — ✅ DONE early (2026-09-22): GAP-3 resolved as REMOVE — /options page, options.js, Manual Options Book tab/banner deleted; JSON endpoints + book singleton kept (portfolio merge + emergency flatten). Review date no longer needed.

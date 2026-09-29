@@ -26,8 +26,9 @@
     <button id="killswitch-toggle" class="btn btn-small" type="button">Toggle</button>
   </div>
 
-  <!-- Broker profiles -->
-  <div id="settings-profiles" style="display:grid; grid-template-columns:repeat(auto-fill,minmax(340px,1fr)); gap:14px;"></div>
+  <!-- Broker profiles — grouped: in use first, the rate catalogue collapses -->
+  <div id="settings-profile-summary" class="muted" style="margin-top:16px; font-size:12px;"></div>
+  <div id="settings-profiles"></div>
 
   <!-- Segments (Phase 2: risk limits belong to segments, v2 §0 #2) -->
   <div style="margin-top:26px;">
@@ -133,15 +134,37 @@
       });
   }
 
+  var GROUPS = [
+    ["in_use", "In use", "Referenced by a segment, the active broker or the data routing — these price your real runs."],
+    ["configured", "In config/brokers.yaml", "Rates the file defines; no segment points at them yet."],
+    ["catalogue", "Built-in presets", "Rate models you can adopt, compare against or derive from. Nothing here is charged until a segment points at it."]
+  ];
+
+  function grouped(list) {
+    var out = {};
+    GROUPS.forEach(function (g) { out[g[0]] = []; });
+    list.forEach(function (p) {
+      (out[p.group] || out.catalogue).push(p);
+    });
+    return out;
+  }
+
   function renderActiveSelect() {
     var sel = document.getElementById("settings-active-broker");
     sel.innerHTML = "";
     var none = el("option", { value: "" }, "(from config yaml)");
     sel.appendChild(none);
-    profiles.forEach(function (p) {
-      var opt = el("option", { value: p.profile_id }, p.profile_name + " (" + p.profile_id + ")");
-      if (p.profile_id === active) opt.selected = true;
-      sel.appendChild(opt);
+    var buckets = grouped(profiles);
+    GROUPS.forEach(function (g) {
+      var rows = buckets[g[0]] || [];
+      if (!rows.length) return;
+      var optgroup = el("optgroup", { label: g[1] });
+      rows.forEach(function (p) {
+        var opt = el("option", { value: p.profile_id }, p.profile_name + " (" + p.profile_id + ")");
+        if (p.profile_id === active) opt.selected = true;
+        optgroup.appendChild(opt);
+      });
+      sel.appendChild(optgroup);
     });
     sel.onchange = function () {
       var call = sel.value
@@ -151,14 +174,16 @@
     };
   }
 
-  function renderProfiles() {
-    var host = document.getElementById("settings-profiles");
-    host.innerHTML = "";
-    profiles.forEach(function (p) {
+  function profileCard(p) {
       var card = el("div", { class: "settings-card", style: "border:1px solid var(--border,#333); border-radius:10px; padding:12px;" });
       var head = el("div", { style: "display:flex; justify-content:space-between; align-items:center;" });
       head.appendChild(el("strong", null, p.profile_name));
-      if (p.is_preset) head.appendChild(el("span", { class: "muted", title: "Built-in preset — edits are audited overrides" }, "preset"));
+      var chip = p.origin === "yaml" || p.matches_file
+        ? ["config/brokers.yaml", "The numbers in force are the file's own — an edit here becomes an audited override"]
+        : p.is_preset
+          ? ["preset", "Built-in preset — edits are audited overrides"]
+          : [null, null];
+      if (chip[0]) head.appendChild(el("span", { class: "muted", title: chip[1] }, chip[0]));
       card.appendChild(head);
       card.appendChild(el("div", { class: "muted", style: "margin:4px 0;" }, p.profile_id + " · " + p.currency + " · " + p.default_segment));
       if (p.validated_on) {
@@ -172,11 +197,65 @@
       var cm = (p.commission_model && p.commission_model.default) || {};
       summary.appendChild(el("div", null, "Brokerage: " + (cm.model || "—") + (cm.per_trade ? " ₹" + cm.per_trade : "") + (cm.rate ? " " + cm.rate : "")));
       card.appendChild(summary);
+      (p.usage || []).forEach(function (reason) {
+        card.appendChild(el("div", { class: "muted", style: "font-size:11px; margin-top:4px;" }, "• " + reason));
+      });
       var btn = el("button", { class: "btn btn-ghost btn-small", type: "button", style: "margin-top:8px;" }, "Edit / validate");
       btn.onclick = function () { openEditor(p.profile_id); };
       card.appendChild(btn);
-      host.appendChild(card);
-    });
+      return card;
+  }
+
+  function profileGrid(rows) {
+    var grid = el("div", { "data-grid": "1", style: "display:grid; grid-template-columns:repeat(auto-fill,minmax(340px,1fr)); gap:14px;" });
+    rows.forEach(function (p) { grid.appendChild(profileCard(p)); });
+    return grid;
+  }
+
+  function groupSection(key, rows, headingTag) {
+    var group = GROUPS.filter(function (g) { return g[0] === key; })[0];
+    var section = el("section", { "data-group": key, style: "margin-top:14px;" });
+    var head = el("div", { style: "display:flex; align-items:baseline; gap:8px; flex-wrap:wrap;" });
+    head.appendChild(el(headingTag, { style: "margin:0;" }, group[1] + " (" + rows.length + ")"));
+    head.appendChild(el("span", { class: "muted", style: "font-size:12px;" }, group[2]));
+    section.appendChild(head);
+    section.appendChild(profileGrid(rows));
+    return section;
+  }
+
+  function renderProfiles() {
+    var host = document.getElementById("settings-profiles");
+    host.innerHTML = "";
+    var buckets = grouped(profiles);
+    var inUse = buckets.in_use || [];
+    var rest = (buckets.configured || []).concat(buckets.catalogue || []);
+    var summary = document.getElementById("settings-profile-summary");
+    if (summary) {
+      summary.textContent = inUse.length + " broker(s) in use · " + rest.length
+        + ' more available (collapsed) — nothing outside "In use" prices a run.';
+    }
+
+    host.appendChild(groupSection("in_use", inUse, "h3"));
+
+    if (!rest.length) return;
+    // Collapsed by default: this is where you ADOPT a broker, not where you
+    // trade. Expanding it is how a new broker becomes selectable without
+    // deleting the rate catalogue it was derived from.
+    var details = document.createElement("details");
+    details.style.marginTop = "18px";
+    var toggle = document.createElement("summary");
+    toggle.className = "muted";
+    toggle.style.cursor = "pointer";
+    toggle.textContent = "Show " + rest.length + " other broker(s) — config file + built-in presets";
+    details.appendChild(toggle);
+
+    if ((buckets.configured || []).length) {
+      details.appendChild(groupSection("configured", buckets.configured, "h4"));
+    }
+    if ((buckets.catalogue || []).length) {
+      details.appendChild(groupSection("catalogue", buckets.catalogue, "h4"));
+    }
+    host.appendChild(details);
   }
 
   function field(label, value, key) {

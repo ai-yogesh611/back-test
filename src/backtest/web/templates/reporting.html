@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Consolidated P&amp;L{% endblock %}
+
+{% block content %}
+<div style="max-width:1280px; margin:0 auto; padding:16px;">
+  <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px; flex-wrap:wrap; gap:10px;">
+    <div>
+      <h1 style="margin:0;">🧾 Consolidated P&amp;L</h1>
+      <div class="muted">
+        Every broker, both books, one statement — gross → costs → net → tax → what is actually left.
+        Rates come from <code>config/reporting.yaml</code>; estimates are labelled as estimates.
+      </div>
+    </div>
+    <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+      <label class="muted" for="rp-from">From</label>
+      <input id="rp-from" class="input" type="date" style="width:150px;">
+      <label class="muted" for="rp-to">To</label>
+      <input id="rp-to" class="input" type="date" style="width:150px;">
+      <label class="muted" style="display:flex; align-items:center; gap:4px;">
+        <input id="rp-paper" type="checkbox" checked> paper
+      </label>
+      <input id="rp-brokers" class="input" type="text" placeholder="brokers (csv, blank = all)" style="width:190px;">
+      <button id="rp-load" class="btn btn-primary btn-small" type="button">↻ Generate</button>
+    </div>
+  </div>
+
+  <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px;">
+    <button id="rp-pdf" class="btn btn-small" type="button">⬇️ PDF statement</button>
+    <button id="rp-itr" class="btn btn-small" type="button">📊 ITR annexures (xlsx)</button>
+    <button id="rp-trades" class="btn btn-small" type="button">📄 Trade ledger (csv)</button>
+    <button id="rp-email" class="btn btn-ghost btn-small" type="button">✉️ Email (dry run)</button>
+    <label class="muted" style="display:flex; align-items:center; gap:4px; margin-left:auto;">
+      <input id="rp-demo" type="checkbox"> demo book (labelled sample data)
+    </label>
+  </div>
+
+  <div id="rp-message" class="muted" style="min-height:18px; margin-bottom:8px;"></div>
+  <div id="rp-banner"></div>
+  <div id="rp-summary"></div>
+  <div id="rp-brokers-block"></div>
+  <div id="rp-tax-block"></div>
+  <div id="rp-reconcile-block"></div>
+  <div id="rp-caveats-block"></div>
+  <div id="rp-ledger-block"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/reporting.js') }}"></script>
+<script>Reporting.init();</script>
+{% endblock %}

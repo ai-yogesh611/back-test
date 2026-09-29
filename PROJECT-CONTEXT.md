@@ -40,16 +40,22 @@ backtest papertrade --mode walkforward --strategies X --from D1 --to D2  # Paper
 ```
 
 ## Test Status
-- ✅ 1582 passed, 4 skipped (mStock credentials) — `PYTHONPATH=src pytest tests/ -q`
-  (as of 2026-08-31, post-F-01; the count drifts with each refactor ticket)
-- ✅ 36 JS behaviour assertions across 4 Node harnesses (`tests/js/*.mjs`)
-- ✅ Optimization engine: `pytest tests/optimization tests/db/test_migrations_009_013.py`
-  (~105 tests, ~25 s; set `OPTIMIZATION_TEST_PG_URL` for the live PostgreSQL round trip)
-- ✅ 2712 passed, 4 skipped (mStock credentials) — `PYTHONPATH=src pytest tests/ -q`
-  (as of 2026-09-23, post Live Order Management Phase 3; the count drifts per ticket)
-- ✅ 69 JS behaviour assertions across 6 Node harnesses (`tests/js/*.mjs`) — the two new
-  ones drive the positions-table actions and the Orders tab (incl. amend + aging) in a
-  stub DOM (`tests/test_web_components.py` runs them; skipped when node is absent)
+- ✅ 3418 passed, 28 skipped, 4 xfailed, 3 xpassed — `PYTHONPATH=src pytest tests/ -q`
+  (as of 2026-09-28, post Consolidated P&L / PRD-002 + the broker-catalogue grouping;
+  the count drifts per ticket). Skips are environment-gated (mStock credentials,
+  optional readers, node absent). The xfail/xpass pair in
+  `tests/strategies/test_registry_template.py` is the per-bar-budget probe: it flips
+  with machine load, not with code (verified: 4/3 in isolation, 5/2 under a full run).
+- ✅ 91 JS behaviour assertions across 8 Node harnesses (`tests/js/*.mjs`) — positions
+  actions, Orders tab (amend + aging), the P&L page's view models, and the Cost & Risk
+  broker-card grouping (extracted from the template's inline script) in a stub DOM
+  (`tests/test_web_components.py`, `tests/test_reporting_ui.py`,
+  `tests/test_settings_panel.py`; skipped without node)
+- ✅ Reporting suite: `tests/test_reporting_{core,exports,email,api,ui}.py` +
+  `tests/test_reporting_sources.py` — tax classification/estimate, ledger counting,
+  the DB read path (broker attribution never guessed, paper zero-costs, estimated
+  stacks flagged), exports read back (PDF/OOXML), the mailer's never-send-by-accident
+  rule, and every endpoint incl. its 400s. Package coverage 93% (every module ≥88%).
 - ⚠ Sandbox note: rebuild the venv each session —
   `python3 -m venv /home/user/.venv && /home/user/.venv/bin/pip install -q -r requirements.txt pytest-cov flake8`
 
@@ -109,6 +115,45 @@ backtest papertrade --mode walkforward --strategies X --from D1 --to D2  # Paper
   against the live mark, checked on every bar and on stress markdowns; option structures
   close atomically. A live close returns `placed`, never a fake fill.
 - Endpoints, semantics and the two tabs: `docs/PORTFOLIO-CENTER.md`.
+
+## Consolidated P&L & Tax Report (PRD-002)
+- `src/backtest/reporting/` — one statement across every broker and both books:
+  `sources.py` (DB ⋈ portfolios, in-memory runners, labelled demo book),
+  `records.py` (`TradeRecord`, `Period`, fee re-estimation), `tax.py`
+  (classification + estimate + turnover/audit), `consolidator.py`
+  (`ConsolidatedPnL.generate_report` → `PnLReport`), `reconciliation.py`
+  (contract-note PASS/WARNING/FAIL), `exports/` (stdlib PDF + OOXML writers,
+  Schedule CG / PGBP / STT / turnover / guidance annexures), `email_report.py`
+  (monthly email; dry-run to `var/reporting/outbox` unless SMTP is configured).
+- Tax heads: F&O = non-speculative business income and intraday equity =
+  speculative business income (both slab; `business_slab_rate` default 30% as a
+  safe upper bound), delivery ≤12m = STCG 20%, >12m = LTCG 12.5% above ₹1,25,000,
+  paper = never taxable, unknown = fail-closed `UNCLASSIFIED`. STT is deductible
+  against business income (s.36(1)(xv)) but **not** against a capital gain
+  (proviso to s.48); losses produce a carry-forward, never a negative tax.
+- Rates/tolerances/mailer live in `config/reporting.yaml` (`tax:`,
+  `reconciliation:`, `monthly_email:`, `smtp:`, `exports:`), overridable with
+  `REPORTING_CONFIG_PATH`. Every export carries the "estimate — verify with a
+  chartered accountant" disclaimer.
+- API: `/api/reporting/pnl/consolidated`, `/config`, `/pnl/export/{pdf,itr,trades}`,
+  `/pnl/reconcile`, `/email`; page: `/reporting` (`docs/WEB-UI.md`).
+- Filing guidance is explicit: F&O + intraday + capital gains → **ITR-3**
+  (Schedule CG A3/B3 + PGBP); the s.44AD/ITR-4 presumptive route cannot carry
+  capital gains, and a delivery-only book → ITR-2 (see the `guidance` sheet).
+
+## Cost & Risk Settings — broker catalogue (`/settings`)
+- The panel lists every broker the fee engine can price, grouped by adoption:
+  **In use** (active broker + segment/data-routing brokers, expanded) and
+  **everything else collapsed** (config/brokers.yaml entries + built-in presets).
+  A yaml-only broker such as `dhan` used to be invisible here, so it could not
+  be edited or contract-note validated; it now appears with its file rates.
+- Provenance chips: `config/brokers.yaml`, built-in preset, or *"differs from …
+  this row wins"* when a panel edit shadows the file. Internal marker rows
+  (`__active__`, `__live_kill_switch__`) are filtered out — they are state, not
+  brokers.
+- Resolution order for a cost model is **DB row → `config/brokers.yaml` → built-in
+  preset**; the panel's save is an audited override, and a contract-note PASS
+  stamps the profile (which is what the live-arming gate checks).
 
 ## Build Dependencies
 Python 3.10+, pandas, numpy, requests, python-dotenv, matplotlib, pytest

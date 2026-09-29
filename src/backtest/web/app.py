@@ -30,6 +30,7 @@ from backtest.api import (
     forward_bp,
     intelligence_bp,
     portfolio_bp,
+    reporting_bp,
     settings_bp,
     strategies_bp,
 )
@@ -370,6 +371,7 @@ def create_app(
     app.register_blueprint(optimize_bp)
     app.register_blueprint(segments_bp)
     app.register_blueprint(settings_bp)
+    app.register_blueprint(reporting_bp)
 
     # SSE broadcast cadence for the portfolio command center.
     app.config.setdefault("PORTFOLIO_SSE_INTERVAL", 1.0)
@@ -490,6 +492,11 @@ def create_app(
     @app.get("/data")
     def data_page() -> Any:
         return render_template("data_manager.html", active="data")
+
+    @app.get("/reporting")
+    def reporting_page() -> Any:
+        """Consolidated P&L / tax report (PRD-002)."""
+        return render_template("reporting.html", active="reporting")
 
     # Options trading dashboard (Phase 7) — page + JSON API
     from backtest.web.options_api import register_options_routes
