@@ -4,7 +4,7 @@
 pieces fit together. Written from the code, not from the specs, so where the
 docs and the source disagree this file follows the source.*
 
-Last verified against commit `19ea3ff` (2026-09-12).
+Last verified against commit `c9df92f` (2026-09-29) — includes Consolidated P&L & Tax Reporting (PRD-002).
 
 ---
 
@@ -54,6 +54,7 @@ sits — this is the single most important thing to understand before using it.
 | **Portfolio (Paper)** | Paper sandbox — simulated fills only | `GET /portfolio/paper` |
 | **Portfolio (Overview)** | Combined view — Live prominent, Paper secondary | `GET /portfolio` |
 | **Options** | Multi-leg option structures (long call/put, spreads) — paper or live | `GET /options` |
+| **Reporting** | Consolidated P&L across all brokers/books, tax estimation, exports, reconciliation | `GET /reporting` |
 
 The distinction between **backtest** and **forward test** is the interesting
 one. A backtest computes the whole result instantly. A forward test replays the
@@ -367,6 +368,81 @@ Typical workflow:
 6. If successful, apply to live (with confirmation)
 
 See [docs/STRATEGY-PERFORMANCE-ANALYTICS.md](STRATEGY-PERFORMANCE-ANALYTICS.md) for complete documentation.
+
+### Consolidated P&L & Tax Reporting (PRD-002)
+
+The reporting system (`src/backtest/reporting/`) produces a single consolidated statement across every broker and both books (live + paper), with correct Indian tax classification, estimated tax liability, and exportable annexures:
+
+**What it does:**
+- Classifies every closed trade into the correct head of income under the Income-tax Act, 2025
+- Computes gross P&L → itemised fees (brokerage, STT, exchange, SEBI, stamp, GST) → net → estimated tax → net-after-tax
+- Groups results by broker, mode (live/paper), tax category, and strategy
+- Reconciles platform P&L against broker contract notes with tolerance bands
+- Exports PDF statements, ITR annexures (xlsx/csv/json), and uncapped trade ledgers
+- Sends monthly email reports on the 1st of each month (dry-run to outbox unless SMTP configured)
+
+**Tax Classification (correct as of FY 2026-27):**
+
+| Activity | Head of Income | Rate | Loss Rules |
+|---|---|---|---|
+| F&O (futures & options) | Non-speculative business income | Slab rate (default 30%) | Set off against any income except salary; carry forward 8 years |
+| Intraday equity | Speculative business income | Slab rate (default 30%) | Only against speculative gains; carry forward 4 years |
+| Delivery equity ≤12 months | Short-term capital gain (s.111A) | 20% | Only against capital gains; carry forward 8 years |
+| Delivery equity >12 months | Long-term capital gain (s.112A) | 12.5% above ₹1,25,000 exemption | Only against capital gains; carry forward 8 years |
+| Paper trading | Not taxable | N/A | Never enters a tax return |
+| Unknown instrument | Fail-closed `UNCLASSIFIED` | Error | Report flagged for manual review |
+
+**Key design decisions:**
+- **STT is deductible against business income** (F&O + intraday, per s.36(1)(xv)) but **NOT against capital gains** (proviso to s.48) — a subtlety that quietly matters on delivery trades where STT is 0.1% on both legs
+- **Losses produce carry-forward**, never a negative tax bill
+- **Paper trading is excluded from tax** entirely (zero costs, zero revenue)
+- **Unknown instruments fail-closed** rather than guessing a category (silently misclassifying inputs is how wrong numbers get filed)
+- **One trade found twice is counted once** — deduplication prevents double-counting when multiple sources report the same fill
+
+**Configuration:**
+Rates, reconciliation tolerances, and mailer settings live in `config/reporting.yaml`:
+```yaml
+tax:
+  stcg_rate: 0.20                    # Short-term capital gains rate
+  ltcg_rate: 0.125                   # Long-term capital gains rate
+  ltcg_exemption: 125000             # Annual LTCG exemption threshold
+  business_slab_rate: 0.30           # Marginal slab rate for business income
+  cess_rate: 0.04                    # Health & education cess on tax
+
+reconciliation:
+  pass_tolerance: 10                 # ≤₹10 apart = rounding, not signal
+  warn_tolerance: 100                # <₹100 apart = warning
+  warn_pct: 1.0                      # ... or under 1% of note's P&L
+
+monthly_email:
+  enabled: false                     # Nothing sent until true AND smtp.host set
+  send_on_day: 1                     # Day of month
+  send_at_hour: 9                    # 24h clock, IST
+```
+
+Override the config file path with `REPORTING_CONFIG_PATH`. Every export carries the "estimate only — verify with a chartered accountant" disclaimer.
+
+**API endpoints:**
+- `GET /api/reporting/pnl/consolidated?from_date=&to_date=&include_paper=&brokers=&demo=` — The consolidated report
+- `GET /api/reporting/config` — Tax rules + thresholds (no secrets)
+- `POST /api/reporting/pnl/export/pdf` — PDF statement
+- `POST /api/reporting/pnl/export/itr?format=xlsx|csv|json` — ITR annexures workbook
+- `POST /api/reporting/pnl/export/trades` — Trade ledger CSV
+- `POST /api/reporting/pnl/reconcile` — Contract-note reconciliation `{broker, contract_note_pnl, contract_note_fees?}`
+- `POST /api/reporting/email` — Monthly email (dry-run writes `.eml` to `var/reporting/outbox`)
+
+**Fail-soft guarantees:**
+- Missing database → empty report with warning (never 500)
+- Malformed dates/unparseable numbers → 400 (silently guessing inputs is how wrong numbers get filed)
+- Dead source → only its rows lost, rest of report intact
+- No secrets stored in config files (SMTP password via env var `REPORTING_SMTP_PASSWORD`)
+
+**Filing guidance included:**
+- F&O + intraday + capital gains → **ITR-3** (Schedule CG A3/B3 + PGBP)
+- s.44AD presumptive route cannot carry capital gains
+- Delivery-only book → ITR-2
+
+Access: `/reporting` UI page, or API endpoints above. See [docs/WEB-UI.md](WEB-UI.md) §4 for full page elements.
 
 ---
 
@@ -736,3 +812,4 @@ Straight from the code and trackers, not aspirational:
 | What is done, what is planned? | `docs/OPEN-ITEMS-TRACKER.md` (planned work noted in `docs/MULTI-BROKER-PRD.md`) |
 | Invariants I must not break | `PROJECT-CONTEXT.md` |
 | mStock endpoints | `docs/archive/mstock-typea-api-reference.md` |
+| Consolidated P&L & tax reporting? | `docs/WEB-UI.md` §4, `config/reporting.yaml` |

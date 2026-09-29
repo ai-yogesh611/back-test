@@ -2,11 +2,11 @@
 
 An algorithmic trading platform for Indian markets: backtest, compare, forward-test (paper), and trade strategies across equity and NIFTY/BANKNIFTY options — with portfolio-level risk, order management, and portfolio intelligence watching the combined book.
 
-## Current Status (2026-09-27)
+## Current Status (2026-09-29)
 
 | Area | Status |
 |------|--------|
-| Backtest / Compare engine | ✅ Production — deterministic, request-id logging, 2,700+ tests |
+| Backtest / Compare engine | ✅ Production — deterministic, request-id logging, 3,418+ tests |
 | Forward testing (paper) | ✅ Production — server-side replay clock, equity + options, persistence across restarts |
 | Options (paper, live, backtest) | ✅ Complete — 9/9 PRD phases; atomic multi-leg execution, Greeks, full statutory fee stack, expiry handling |
 | Playbooks (unified trading) | ✅ Live — declarative option-strategy configs spawn runners; risk envelope with "estimated" badge |
@@ -14,6 +14,8 @@ An algorithmic trading platform for Indian markets: backtest, compare, forward-t
 | Risk management | ✅ Live — 3 tiers: global breakers, independent per-bucket breakers, `/risk` monitoring page |
 | Portfolio Intelligence & Alerts | ✅ Live — portfolio Greeks in ₹, concentration, correlation, VIX regime, pub/sub AlertBroker with strategy hooks, DB persistence (migration 005) |
 | Strategy Analytics | ✅ Live — `/analytics` per-strategy performance suite + extended `/compare` |
+| Parameter Optimization | ✅ Live — grid/random/Bayesian/genetic search with walk-forward validation, sensitivity analysis, robustness scoring |
+| **Consolidated P&L & Tax Reporting** | **✅ Live — single statement across all brokers/books, correct Indian tax classification, estimated tax, exports (PDF/xlsx/csv), contract-note reconciliation, monthly email reports** |
 | Multi-broker sessions | ✅ mStock + Dhan — registry-based, per-broker login via auth modal, one *active session* at a time |
 | Feed-quality monitoring | ✅ Live — staleness/gaps/repeats/error-rate per (broker, symbol), durable JSONL log, restart-proof |
 | Data sources | ✅ Synthetic, CSV, mStock, Dhan; PostgreSQL/TimescaleDB cache (467K+ bars, 201 stocks) |
@@ -67,6 +69,7 @@ Market Data (OHLCV candles)
 | **Risk** | 3-tiered risk management & monitoring — global circuit breakers (daily loss, drawdown, leverage), per-bucket breakers with independent halts, and a live `/risk` page + dashboard risk strip |
 | **Analytics** | `/analytics` — per-strategy performance suite (P&L attribution, trade stats, equity behaviour, risk ratios, edge degradation detection) plus an extended `/compare` — see [docs/STRATEGY-PERFORMANCE-ANALYTICS.md](docs/STRATEGY-PERFORMANCE-ANALYTICS.md) |
 | **Optimization** | Systematic parameter search (grid/random/Bayesian/genetic) with walk-forward validation, sensitivity analysis, robustness scoring, and one-click apply to runners — see [docs/STRATEGY-PERFORMANCE-ANALYTICS.md](docs/STRATEGY-PERFORMANCE-ANALYTICS.md), [docs/OPTIMIZATION-ENGINE.md](docs/OPTIMIZATION-ENGINE.md) |
+| **Reporting** | Consolidated P&L across all brokers/books, correct Indian tax classification, estimated tax liability, exports (PDF/xlsx/csv), contract-note reconciliation, monthly email reports — see [docs/WEB-UI.md](docs/WEB-UI.md) §4 |
 
 ## Built-In Strategies
 
@@ -300,6 +303,7 @@ Open `http://localhost:5000` → Backtest tab → Pick a strategy → Hit **Run 
 | [docs/STRATEGY-AUTHORING.md](docs/STRATEGY-AUTHORING.md) | Writing strategies/plugins — flow, hooks, hard rules, conformance battery, catalog, lifecycle |
 | [docs/STRATEGY-PERFORMANCE-ANALYTICS.md](docs/STRATEGY-PERFORMANCE-ANALYTICS.md) | **Live/paper performance analytics + parameter optimization** (new) |
 | [docs/OPTIMIZATION-ENGINE.md](docs/OPTIMIZATION-ENGINE.md) | Optimization engine technical details |
+| [docs/WEB-UI.md](docs/WEB-UI.md) §4 | **Consolidated P&L & tax reporting page** (PRD-002) |
 | [docs/STRATEGY-TEMPLATE-GUIDE.md](docs/STRATEGY-TEMPLATE-GUIDE.md) | Strategy template + Pine Script converter (new) |
 | [docs/STRATEGY-GUIDELINES.md](docs/STRATEGY-GUIDELINES.md) | Rules & review checklist for new strategies (+ `templates/strategy_test_template.py`) |
 | [docs/LOGGING.md](docs/LOGGING.md) | Logging levels, request ids, debugging table |
@@ -317,16 +321,38 @@ O(1)-memory SQLite result store, pruned candidate cache and a UI page. Migration
 009–013 back the runs table. See the optimizer section in
 [docs/BACKTEST-ENGINE.md](docs/BACKTEST-ENGINE.md).
 
+## Consolidated P&L & Tax Reporting (PRD-002)
+
+A single consolidated statement across every broker and both books (live + paper), with correct Indian tax classification, estimated tax liability, and exportable annexures:
+
+**Tax heads (FY 2026-27):**
+- F&O → non-speculative business income (slab rate, default 30%)
+- Intraday equity → speculative business income (slab rate)
+- Delivery ≤12m → STCG 20% (s.111A)
+- Delivery >12m → LTCG 12.5% above ₹1,25,000 exemption (s.112A)
+- Paper trading → not taxable (never enters a return)
+- Unknown instruments → fail-closed `UNCLASSIFIED`
+
+**Key features:**
+- Gross P&L → itemised fees (brokerage, STT, exchange, SEBI, stamp, GST) → net → estimated tax → net-after-tax
+- Groups by broker, mode (live/paper), tax category, strategy
+- Contract-note reconciliation per broker (PASS/WARNING/FAIL tolerance bands)
+- Exports: PDF statement, ITR annexures workbook (xlsx/csv/json), uncapped trade ledger CSV
+- Monthly email reports on 1st of month (dry-run to `var/reporting/outbox` unless SMTP configured)
+- Rates/tolerances/mailer in `config/reporting.yaml` (override with `REPORTING_CONFIG_PATH`)
+
+**Access:** `/reporting` UI page, or `GET /api/reporting/pnl/consolidated`, `POST /api/reporting/pnl/export/{pdf,itr,trades}`, `POST /api/reporting/pnl/reconcile`, `POST /api/reporting/email`. See [docs/WEB-UI.md](docs/WEB-UI.md) §4 for full page elements and endpoints.
+
 ## Tests
 
 ```bash
-cd src && python -m pytest ../tests/ -q          # full suite (2,700+ tests)
+cd src && python -m pytest ../tests/ -q          # full suite (3,418+ tests)
 cd src && python -m pytest ../tests/ -q -k options   # options slice only
 cd src && python -m pytest ../tests/test_position_management.py -q   # order management (67 tests)
-cd src && python -m pytest ../tests/intelligence ../tests/alerts ../tests/db -q   # intelligence + alerts + migrations (100 tests)
+cd src && python -m pytest ../tests/intelligence ../tests/alerts ../tests/db ../tests/reporting_*.py -q   # intelligence + alerts + migrations + reporting (500+ tests)
 ```
 
-Plus JS behaviour assertions across Node harnesses (`tests/js/*.mjs` — positions actions, Orders tab incl. amend + aging, alert widget, monitor page), run by `tests/test_web_components.py` and skipped when node is absent.
+Plus JS behaviour assertions across Node harnesses (`tests/js/*.mjs` — positions actions, Orders tab incl. amend + aging, alert widget, monitor page, P&L view models, broker-card grouping), run by `tests/test_web_components.py`, `tests/test_reporting_ui.py`, and `tests/test_settings_panel.py`; skipped when node is absent.
 
 The options layer is Decimal-exact throughout, and the options backtest
 path is deterministic by construction — the suite asserts byte-identical
