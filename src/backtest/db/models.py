@@ -135,6 +135,8 @@ class PortfolioSource(StrEnum):
     SYNTHETIC = "synthetic"
     REPLAY = "replay"
     MSTOCK = "mstock"
+    #: Second broker venue (migration 016 widened the DB CHECK to admit it).
+    DHAN = "dhan"
 
 
 class PositionStatus(StrEnum):
@@ -255,11 +257,16 @@ class Portfolio(Base):
     mode: Mapped[str] = mapped_column(
         String(16), nullable=False, default="paper", server_default=text("'paper'")
     )
-    #: Where this run's bars come from (migration 002): synthetic = generated,
-    #: replay = historical DB, mstock = live broker feed.
+    #: Where this run's bars come from (migration 002, widened by 016):
+    #: synthetic = generated, replay = historical DB, mstock | dhan = live
+    #: broker feed.
     source: Mapped[str] = mapped_column(
         String(16), nullable=False, default="synthetic", server_default=text("'synthetic'")
     )
+    #: Capital partition this run belongs to (migration 008): '' = none, legacy.
+    segment: Mapped[str] = mapped_column(String(64), nullable=False, server_default=text("''"))
+    #: Broker the runner routes orders to (migration 008): '' = default routing.
+    execution_broker: Mapped[str] = mapped_column(String(32), nullable=False, server_default=text("''"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -333,6 +340,9 @@ class Position(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
     status: Mapped[str] = mapped_column(String(8), nullable=False, server_default=text("'open'"))
+    #: Venue classification (migration 008): 'paper' = simulated fills, else
+    #: the broker the position's orders were routed to.
+    broker: Mapped[str] = mapped_column(String(32), nullable=False, server_default=text("'paper'"))
 
     portfolio: Mapped["Portfolio"] = relationship(back_populates="positions")
     fills: Mapped[list["Fill"]] = relationship(back_populates="position")
@@ -365,6 +375,7 @@ class Position(Base):
         Index("ix_positions_portfolio_status", "portfolio_id", "status"),
         Index("ix_positions_symbol", "symbol"),
         Index("ix_positions_opened_at", text("opened_at DESC")),
+        Index("ix_positions_broker", "broker"),
     )
 
     def __repr__(self) -> str:  # pragma: no cover
@@ -417,6 +428,9 @@ class Order(Base):
     client_order_id: Mapped[Optional[str]] = mapped_column(String(64))
     #: Broker-assigned identifier; NULL in pure simulation.
     broker_order_id: Mapped[Optional[str]] = mapped_column(String(64))
+    #: Venue classification (migration 008): 'paper' = simulated fills, else
+    #: the broker the order was routed to.
+    broker: Mapped[str] = mapped_column(String(32), nullable=False, server_default=text("'paper'"))
 
     submitted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -472,6 +486,7 @@ class Order(Base):
         Index("ix_orders_portfolio_status", "portfolio_id", "status"),
         Index("ix_orders_symbol_submitted", "symbol", text("submitted_at DESC")),
         Index("ix_orders_position", "position_id"),
+        Index("ix_orders_broker", "broker"),
         # Hot path: the execution loop scans working orders every tick.
         Index(
             "ix_orders_working",

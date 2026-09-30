@@ -795,6 +795,7 @@
       renderSpawnParams();
       syncSpawnForm();
       loadSegmentSelector();
+      loadBrokerSelector();
     } catch (e) { toast("Failed to load spawn form: " + e.message, "error"); }
   }
 
@@ -822,6 +823,7 @@
       sel._wired = true;
       sel.addEventListener("change", () => {
         const seg = (sel._segments || []).find((s) => s.name === sel.value);
+        sel._picked = seg || null;
         const hint = $("spawn-segment-hint");
         if (!seg) { if (hint) hint.textContent = ""; return; }
         const cap = Number(seg.allocated_capital || 0);
@@ -835,6 +837,49 @@
         // form never submits a conflicting pair (the API refuses those).
         const modeSel = $("spawn-mode");
         if (modeSel && seg.mode) modeSel.value = seg.mode;
+        // Sync the broker select to the segment's broker so the venue the
+        // orders will route to is always visible. Changing it afterwards is
+        // the explicit execution_broker override (wins over the segment per
+        // the routing rules).
+        const brokerSel = $("spawn-broker");
+        if (brokerSel && seg.broker &&
+            brokerSel.querySelector('option[value="' + seg.broker + '"]')) {
+          brokerSel.value = seg.broker;
+          brokerSel.dispatchEvent(new Event("change"));
+        }
+      });
+    }
+  }
+
+  // Multi-broker: the direct execution-venue choice. Populated from the
+  // broker registry (GET /api/broker/list) so a newly registered broker
+  // appears without UI changes. Value feeds the runner's execution_broker —
+  // for live runners the explicit choice wins over the segment's broker
+  // (PRD §4.3); for paper runners it is recorded as intent while fills stay
+  // simulated on the paper book.
+  async function loadBrokerSelector() {
+    const sel = $("spawn-broker");
+    const hint = $("spawn-broker-hint");
+    if (!sel) return;
+    let brokers = [];
+    try {
+      const data = await fetch("/api/broker/list").then((r) => r.json());
+      brokers = (data && data.brokers) || [];
+    } catch (e) { /* registry API unavailable — keep the default option */ }
+    sel.innerHTML = '<option value="">— default routing —</option>' +
+      brokers.map((b) =>
+        '<option value="' + b.name + '">' + (b.display_name || b.name) + "</option>").join("");
+    sel._brokers = brokers;
+    if (!sel._wired) {
+      sel._wired = true;
+      sel.addEventListener("change", () => {
+        if (!hint) return;
+        const broker = (sel._brokers || []).find((b) => b.name === sel.value);
+        if (!broker) { hint.textContent = ""; return; }
+        const seg = ($("spawn-segment") || {})._picked;
+        const override = !!(seg && seg.broker && seg.broker !== sel.value);
+        hint.textContent = (broker.authenticated ? "session live" : "not authenticated") +
+          (override ? " — overrides segment “" + (seg.display_name || seg.name) + "”" : "");
       });
     }
   }
@@ -1013,6 +1058,10 @@
       // Multi-broker Phase B: the segment routes this runner's orders to
       // its broker; empty string → no segment (legacy default path).
       segment: $("spawn-segment") ? ($("spawn-segment").value || null) : null,
+      // Direct execution-venue choice: empty → routing falls to the segment's
+      // broker, or the legacy default when neither is set. In live mode the
+      // explicit broker wins over the segment's broker.
+      execution_broker: $("spawn-broker") ? ($("spawn-broker").value || null) : null,
     };
 
     // U6.1: option routing comes from signal_kind + the selected playbook.

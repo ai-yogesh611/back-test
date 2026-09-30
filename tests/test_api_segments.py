@@ -130,3 +130,114 @@ def test_create_runner_segment_mode_conflict_400(api):
         },
     )
     assert resp.status_code == 400
+
+
+def test_create_runner_live_execution_broker_refused_without_session(api):
+    """Live + explicit broker with no authenticated session → 409 refused.
+
+    The runner is never half-armed: fail-closed at the gateway (never a
+    paper fill under a live label, never a reroute to another broker).
+    """
+    resp = api.post(
+        "/api/portfolio/runner/create",
+        json={
+            "name": "live-dhan",
+            "strategy": "sma_crossover",
+            "symbol": "RELIANCE",
+            "allocated_capital": 100000,
+            "mode": "live",
+            "execution_broker": "dhan",
+            "source": "dhan",
+        },
+    )
+    assert resp.status_code == 409
+    assert "dhan" in resp.get_json()["error"].lower()
+
+
+def test_create_runner_live_execution_broker_routes_to_dhan(api, monkeypatch):
+    """Live + explicit broker with an authenticated session → broker = dhan."""
+    from backtest.brokers.base import STATUS_AUTHENTICATED
+    from backtest.brokers.session_manager import get_session_manager
+    from backtest.forward.portfolio_manager import reset_portfolio_manager
+
+    class _StubDhan:
+        broker_name = "dhan"
+        broker_display_name = "Dhan"
+
+        def is_authenticated(self):
+            return True
+
+        def get_session_status(self):
+            return {"status": STATUS_AUTHENTICATED, "expires_at": None}
+
+        def get_session_token(self):
+            return "stub-token"
+
+    stub = _StubDhan()
+    get_session_manager().set_broker(stub)
+    # The live-order confirm gate is a manager-level flag (two-tier live
+    # gate): arm it the same way tests/test_position_management.py does.
+    monkeypatch.setenv("ALLOW_LIVE_ORDERS", "1")
+    mgr = reset_portfolio_manager(
+        auto_start_feed=False,
+        tick_seconds=1.0,
+        live_broker=stub,
+        confirm_live_orders=True,
+    )
+    try:
+        resp = api.post(
+            "/api/portfolio/runner/create",
+            json={
+                "name": "live-dhan-ok",
+                "strategy": "sma_crossover",
+                "symbol": "RELIANCE",
+                "allocated_capital": 100000,
+                "mode": "live",
+                "execution_broker": "dhan",
+                "source": "dhan",
+            },
+        )
+        body = resp.get_json()
+        assert resp.status_code in (200, 201), body
+        runner = body.get("runner") or body
+        assert runner["execution_broker"] == "dhan"
+        assert runner["broker"] == "dhan"
+    finally:
+        mgr.shutdown()
+        reset_portfolio_manager(auto_start_feed=False, tick_seconds=1.0)
+
+
+def test_create_runner_paper_with_dhan_source(api):
+    """source=dhan is a first-class runner source — a paper runner bars off
+    the Dhan feed while fills stay simulated (2026-10-01 unlock)."""
+    resp = api.post(
+        "/api/portfolio/runner/create",
+        json={
+            "name": "paper-dhan",
+            "strategy": "sma_crossover",
+            "symbol": "RELIANCE",
+            "allocated_capital": 100000,
+            "mode": "paper",
+            "source": "dhan",
+        },
+    )
+    body = resp.get_json()
+    assert resp.status_code in (200, 201), body
+    runner = body.get("runner") or body
+    assert runner["source"] == "dhan"
+    assert runner["broker"] == "paper"
+
+
+def test_create_runner_unknown_execution_broker_400(api):
+    resp = api.post(
+        "/api/portfolio/runner/create",
+        json={
+            "name": "bad-broker",
+            "strategy": "sma_crossover",
+            "symbol": "RELIANCE",
+            "allocated_capital": 100000,
+            "mode": "live",
+            "execution_broker": "zerodha",
+        },
+    )
+    assert resp.status_code == 400

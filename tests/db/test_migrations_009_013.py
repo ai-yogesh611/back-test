@@ -209,13 +209,13 @@ def test_store_runs_on_the_hand_migrated_database(sqlite_db: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_alembic_chain_009_to_015():
+def test_alembic_chain_009_to_016():
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config(str(REPO_ROOT / "alembic.ini")))
-    assert script.get_heads() == ["015"]
-    revs = ("009", "010", "011", "012", "013", "014", "015")
+    assert script.get_heads() == ["016"]
+    revs = ("009", "010", "011", "012", "013", "014", "015", "016")
     chain = {r: script.get_revision(r).down_revision for r in revs}
     assert chain == {
         "009": "008",
@@ -225,6 +225,7 @@ def test_alembic_chain_009_to_015():
         "013": "012",
         "014": "013",
         "015": "014",
+        "016": "015",
     }
 
 

@@ -546,21 +546,33 @@
                     </select>
                 </div>
             </div>
-            <!-- Multi-broker Phase B: runners are created INTO a segment (a
-                 capital partition mapped to a broker). Populated from
-                 GET /api/segments; hidden when no segments are configured. -->
-            <div class="two-col" id="spawn-segment-row" hidden>
-                <div class="form-row">
+            <!-- Multi-broker: two independent routing choices.
+                 Segment — a capital partition mapped to a broker (Phase B),
+                 populated from GET /api/segments; hidden when no segments are
+                 configured. Broker — the direct execution-venue choice; it
+                 feeds the runner's execution_broker, which wins over the
+                 segment's broker in the routing rules (PRD-001 §4.3). -->
+            <div class="two-col">
+                <div class="form-row" id="spawn-segment-row" hidden>
                     <label>Segment</label>
                     <select id="spawn-segment" class="input input-select">
                         <option value="">— none (legacy default) —</option>
                     </select>
                     <small id="spawn-segment-hint" class="muted"></small>
                 </div>
+                <div class="form-row" id="spawn-broker-row">
+                    <label>Broker <span class="muted">(orders route here when live)</span></label>
+                    <select id="spawn-broker" class="input input-select">
+                        <option value="">— default routing —</option>
+                    </select>
+                    <small id="spawn-broker-hint" class="muted"></small>
+                </div>
             </div>
             <small id="spawn-risk-hint" class="muted">
-                Paper = free-play caps; live = tight caps (10% per name, 10k value, 5 positions)
-                and only mstock data is accepted for real fills. Source is data trust.
+                Paper = free-play caps, simulated fills. Live = tight caps (10% per name, 10k value,
+                5 positions) with orders routed to the chosen broker — the runner pauses entries if
+                that broker's session expires. Data source is the feed bars come from; Broker is the
+                venue orders go to.
             </small>
             <div class="two-col">
                 <div class="form-row" id="spawn-symbol-row">
