@@ -59,6 +59,12 @@ default:
       certifiable: true
       note: "Live broker feed."
 
+    dhan:
+      enabled: true
+      label: "Broker (dhan)"
+      certifiable: true
+      note: "Live broker feed (second venue, Phase A multi-broker)."
+
     csv:
       enabled: true
       label: "CSV files"
@@ -80,4 +86,6 @@ profiles:
       db:
         enabled: false
       mstock:
+        enabled: false
+      dhan:
         enabled: false

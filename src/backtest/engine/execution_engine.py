@@ -24,10 +24,16 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
+from backtest.data.sources_policy import default_broker_source, synthetic_chain_generator
 from backtest.playbooks.models import Playbook
 from backtest.strategy.signal import RiskEnvelope, UnifiedSignal
 
 logger = logging.getLogger("backtest.engine.execution_engine")
+
+#: What ``_resolve_quote_source`` answers when there is no chain feed at all —
+#: a deployment with synthetic off and no broker session. ``execute`` turns it
+#: into a rejection instead of a fill on invented quotes.
+NO_SOURCE_LABEL = "no_data_source"
 
 # Re-export C3 constants from forward execution engine for canonical location
 try:
@@ -165,6 +171,7 @@ class ExecutionEngine:
           the QUOTE contract ``get_quote(token)`` + ``source_name``)
         - "synthetic-fallback" when source=mstock but no valid session, so we fall back to synthetic
           with a label on the result (so callers know it's fallback, not real live).
+        - :data:`NO_SOURCE_LABEL` when there is no chain feed to resolve at all.
 
         P1.1 seam fix: the live branch used to hand back ``MStockLiveFeed`` —
         a BAR feed (``latest_bar(symbol)``) — where every caller needs the
@@ -173,9 +180,15 @@ class ExecutionEngine:
         the gate is ``session_mgr.is_authenticated()`` and the provider is a
         ``LiveQuoteProvider`` over the session's order broker.
 
+        2026-09-30: the fallback is now policy-gated. This call site used to
+        construct ``SyntheticChainGenerator`` unconditionally, so a deployment
+        that disabled generated data still priced live-labelled orders off
+        invented chains. ``synthetic_chain_generator`` answers ``None`` there,
+        and :meth:`execute` refuses rather than filling.
+
         C2: Engine owns the feed — strategies never call broker APIs directly.
         """
-        source = (source or "synthetic").lower()
+        source = (source or default_broker_source()).lower()
         mode = (mode or "paper").lower()
 
         # Try live path only if source=mstock and mode=live and session valid
@@ -195,28 +208,16 @@ class ExecutionEngine:
                 # Per spec: live orders require an authenticated broker session,
                 # else OrderRejected("no_session")
                 # But for quote resolution, we return synthetic with fallback label
-                from backtest.options.quote_providers import SyntheticChainGenerator
-
-                gen = self.chain_generator or SyntheticChainGenerator()
-                return gen, "synthetic-fallback"
+                gen = self.chain_generator or synthetic_chain_generator("live quotes")
+                return (gen, "synthetic-fallback") if gen else (None, NO_SOURCE_LABEL)
             except Exception as exc:
-                logger.debug("Quote source resolution failed, using synthetic-fallback: %s", exc)
-                try:
-                    from backtest.options.quote_providers import SyntheticChainGenerator
-
-                    gen = self.chain_generator or SyntheticChainGenerator()
-                    return gen, "synthetic-fallback"
-                except Exception:
-                    return None, "synthetic-fallback"
+                logger.debug("Quote source resolution failed: %s", exc)
+                gen = self.chain_generator or synthetic_chain_generator("live quotes")
+                return (gen, "synthetic-fallback") if gen else (None, NO_SOURCE_LABEL)
 
         # Default synthetic path
-        try:
-            from backtest.options.quote_providers import SyntheticChainGenerator
-
-            gen = self.chain_generator or SyntheticChainGenerator()
-            return gen, "synthetic"
-        except Exception:
-            return None, "synthetic"
+        gen = self.chain_generator or synthetic_chain_generator("paper quotes")
+        return (gen, "synthetic") if gen else (None, NO_SOURCE_LABEL)
 
     # ------------------------------------------------------------------
     # Lot size resolution — from instrument master, never from playbook
@@ -452,7 +453,7 @@ class ExecutionEngine:
         playbook: Optional[Playbook] = None,
         runner_config: Optional[Dict[str, Any]] = None,
         mode: str = "paper",
-        source: str = "synthetic",
+        source: str = "",
         current_positions: int = 0,
     ) -> ExecutionResult:
         """Execute a signal per U2.1 spec.
@@ -478,7 +479,7 @@ class ExecutionEngine:
         Fill | OrderRejected | RiskHalted — dataclasses, not exceptions
         """
         mode = (mode or "paper").lower()
-        source = (source or "synthetic").lower()
+        source = (source or default_broker_source()).lower()
 
         # C2: Data-ownership — strategies never call broker/quote APIs
         # All market data (bars, chain snapshots) flow engine → strategy
@@ -493,6 +494,19 @@ class ExecutionEngine:
 
         # Resolve quote source with fallback label
         quote_provider, data_source_label = self._resolve_quote_source(source, mode)
+        if data_source_label == NO_SOURCE_LABEL:
+            # No chain feed and no policy permission to invent one. Refuse —
+            # a fill labelled "no data" would still be a real order in the book.
+            self.rejected_count += 1
+            return OrderRejected(
+                reason="data_source_disabled",
+                data_source=data_source_label,
+                detail=(
+                    f"source={source} has no quote feed and synthetic (generated) chains "
+                    "are disabled in config/data_sources.yaml — authenticate the broker "
+                    "session or run this on a source the policy allows"
+                ),
+            )
 
         # Resolve lot size from instrument master — never from playbook
         lot_size = self._resolve_lot_size(signal.underlying)

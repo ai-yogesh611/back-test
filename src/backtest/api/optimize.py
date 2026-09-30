@@ -98,6 +98,22 @@ def _ok(payload: dict | list, status: int = 200) -> Tuple[Response, int]:
     return jsonify(clean_json({"success": True, **body})), status
 
 
+def _service_default_source() -> str:
+    """What the optimizer loads candles from, for a run that never recorded it.
+
+    A run created through the service always carries ``backtestConfig.source``;
+    this only speaks for older or test-built records that predate that. It is
+    the deployment's configured source — never the literal ``"synthetic"``,
+    which claimed generated data for runs that read real candles.
+    """
+    try:
+        svc = _service()
+    except Exception:  # noqa: BLE001 — no service means no better answer
+        svc = None
+    named = getattr(svc, "default_source", None) if svc is not None else None
+    return str(named or current_app.config.get("BACKTEST_SOURCE") or "")
+
+
 def _run_provenance(run: dict) -> dict:
     """The data provenance block for a stored optimize run.
 
@@ -125,7 +141,11 @@ def _run_provenance(run: dict) -> dict:
     bt = dict(run.get("backtest_config") or {})
     stats = dict((run.get("analysis") or {}).get("stats") or {})
     record = build_provenance(
-        source=bt.get("source") or "synthetic",
+        # The search records no source of its own, so the next honest answer is
+        # the source the engine actually loads candles from — not a hard-coded
+        # "synthetic", which used to stamp generated-data provenance on runs
+        # that read the database.
+        source=bt.get("source") or _service_default_source(),
         engine=bt.get("engine") or "driver",
         symbol=bt.get("symbol") or "",
         timeframe=bt.get("timeframe") or "",
@@ -162,6 +182,30 @@ def _user() -> str | None:
         or (request.get_json(silent=True) or {}).get("user")
         or None
     )
+
+
+def _option_refusal(doc: Any) -> Tuple[Response, int] | None:
+    """A 400 when the config names an options strategy, else ``None``.
+
+    Optimization runs on DB candles and the DB stores no historical option
+    chains, so an option robustness score would be Black-Scholes over prices
+    nobody traded. The evaluator refuses at the dispatch
+    (:mod:`backtest.optimization.evaluator`); this is the same rule at the
+    request boundary, where it costs a status code instead of a dead run.
+    """
+    if not isinstance(doc, dict):
+        return None
+    sid = str(doc.get("strategyId") or doc.get("strategy_id") or "").strip()
+    if not sid:
+        return None
+    try:
+        from backtest.api.backtest import _refuse_option_in_backtest
+        from backtest.strategy.registry import get_strategy
+
+        message = _refuse_option_in_backtest(get_strategy(sid), "optimize")
+    except Exception:  # noqa: BLE001 — an unknown id is the endpoint's to report
+        return None
+    return _error(message) if message else None
 
 
 def _handle(fn):
@@ -281,7 +325,11 @@ def estimate() -> Tuple[Response, int]:
     if _refused:
         return _refused  # type: ignore[return-value]
     svc = _service()
-    cfg = svc.parse(request.get_json(silent=True) or {})
+    doc = request.get_json(silent=True) or {}
+    refused = _option_refusal(doc)
+    if refused:
+        return refused  # type: ignore[return-value]
+    cfg = svc.parse(doc)
     return _ok({"estimate": svc.estimate(cfg), "config": cfg.to_dict()})
 
 
@@ -323,6 +371,9 @@ def create_run() -> Tuple[Response, int]:
         return _refused  # type: ignore[return-value]
     svc = _service()
     doc = request.get_json(silent=True) or {}
+    refused = _option_refusal(doc)
+    if refused:
+        return refused  # type: ignore[return-value]
     start = bool(doc.pop("start", True)) if isinstance(doc, dict) else True
     run = svc.submit(doc, created_by=_user(), start=start)
     return _ok({"run": run, "run_id": run["run_id"]}, 201)

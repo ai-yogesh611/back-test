@@ -20,9 +20,12 @@ from decimal import Decimal
 
 from backtest.options.quote_providers import SyntheticChainGenerator
 
-# A fixed mid-month anchor: the September 2026 monthly expiry is Thu 24th.
+# A fixed mid-month anchor. NSE moved index F&O expiries from the last
+# Thursday to the last Tuesday of the month with effect from September 2025,
+# so September 2026's monthly expiry is Tue 29th — the calendar the generator
+# delegates to, not a weekday it computes for itself.
 PINNED = datetime(2026, 9, 10, 9, 15)
-SEP_EXPIRY = date(2026, 9, 24)
+SEP_EXPIRY = date(2026, 9, 29)
 
 
 class TestDefaultIsWallClock:
@@ -88,8 +91,9 @@ class TestPinnedReference:
 class TestPrecedence:
     def test_explicit_argument_beats_the_pin(self):
         gen = SyntheticChainGenerator(reference=PINNED)
-        # Last Thursday of November 2026 is the 26th.
-        assert gen.next_monthly_expiry(date(2026, 11, 2)) == date(2026, 11, 26)
+        # Last Tuesday of November 2026 is the 24th (the NSE convention from
+        # September 2025 — a generator that assumed Thursday said the 26th).
+        assert gen.next_monthly_expiry(date(2026, 11, 2)) == date(2026, 11, 24)
         # And the pin still stands afterwards.
         assert gen.next_monthly_expiry() == SEP_EXPIRY
 

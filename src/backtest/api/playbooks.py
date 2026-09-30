@@ -147,7 +147,7 @@ def spawn_from_playbook(playbook_id: str) -> Tuple[Response, int]:
         "allocated_capital": 100000,
         "timeframe": "1hour",
         "mode": "paper",
-        "source": "synthetic",
+        "source": "mstock",
         "name": "optional override",
         "params": {"ema_period": 9}
     }
@@ -173,12 +173,17 @@ def spawn_from_playbook(playbook_id: str) -> Tuple[Response, int]:
         return _error("allocated_capital must be positive")
 
     # Build runner config from playbook — no side effects, just config
+    from backtest.api.portfolio import _default_runner_source
+
+    requested_source = str(data.get("source") or "").strip().lower()
     runner_config_dict = pb.to_runner_config(
         strategy_name=strategy_name,
         allocated_capital=capital,
         timeframe=str(data.get("timeframe", "1hour")),
         mode=data.get("mode") or "paper",
-        source=data.get("source") or "synthetic",
+        # No hard-coded synthetic: an unnamed source follows the same
+        # config-driven default the Portfolio spawn endpoint uses.
+        source=requested_source or _default_runner_source(),
         name=data.get("name"),
     )
     if data.get("params"):

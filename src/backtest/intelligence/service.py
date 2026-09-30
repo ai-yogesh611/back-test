@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from backtest.alerts.broker import AlertBroker, get_alert_broker
 from backtest.alerts.catalog import context_for
 from backtest.alerts.types import AlertType, Severity
+from backtest.data.sources_policy import default_broker_source
 from backtest.intelligence.collectors import collect_legs
 from backtest.intelligence.concentration import ConcentrationMonitor
 from backtest.intelligence.config import IntelligenceConfig, load_config
@@ -717,7 +718,10 @@ class PortfolioIntelligence:
         for iid, r in roster.items():
             if r.get("status") != "RUNNING":
                 continue
-            source = str(r.get("source") or "synthetic").lower()
+            # A runner row with no recorded source is this deployment's broker
+            # feed (config/data_sources.yaml), never a named synthetic one —
+            # the literal here chose the alert path by accident.
+            source = str(r.get("source") or default_broker_source()).lower()
             if source in BROKER_SOURCES:
                 if market_open is None:
                     market_open = self._market_open()

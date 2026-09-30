@@ -266,7 +266,7 @@ def test_compare_controller_sends_the_right_request():
     assert (
         result.returncode == 0
     ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    assert "13 tests passed" in result.stdout
+    assert "14 tests passed" in result.stdout
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not available")

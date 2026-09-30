@@ -64,9 +64,14 @@ def test_only_db_and_mstock_are_certifiable():
 
 
 def test_the_whole_vocabulary_is_described():
-    """A source that silently vanishes is impossible to debug."""
+    """A source that silently vanishes is impossible to debug.
+
+    ``dhan`` joined the vocabulary with the multi-broker feed: it is a real
+    broker source a runner can name, so the config has to describe it — an
+    undescribed source is one the policy cannot refuse or allow on purpose.
+    """
     names = {row["name"] for row in SHIPPED.describe()}
-    assert names == {"synthetic", "csv", "db", "mstock"}
+    assert names == {"synthetic", "csv", "db", "mstock", "dhan"}
 
 
 def test_disabled_sources_are_still_listed():

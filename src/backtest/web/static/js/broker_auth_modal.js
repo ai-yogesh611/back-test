@@ -370,6 +370,45 @@ const BrokerAuthUI = (() => {
     // ---- logout ------------------------------------------------------------
 
     async function handleLogout() {
+        // Check if data fetch is running and warn user
+        try {
+            const statusResp = await fetch('/api/data/status');
+            const statusData = await statusResp.json();
+            
+            if (statusData.status === 'running') {
+                const shouldProceed = confirm(
+                    `A data fetch is currently running (${statusData.fetched || 0}/${statusData.total || 0} symbols).\n\n` +
+                    `It will continue in the background after logout.\n\n` +
+                    `Do you want to stop it first?`
+                );
+                
+                if (!shouldProceed) {
+                    // User cancelled logout
+                    return;
+                }
+                
+                // User wants to stop the fetch first
+                try {
+                    const stopResp = await fetch('/api/data/stop', { method: 'POST' });
+                    const stopData = await stopResp.json();
+                    
+                    if (stopResp.ok) {
+                        alert('Data fetch stopped. You can now logout safely.');
+                    } else {
+                        alert('Could not stop fetch: ' + (stopData.error || 'Unknown error'));
+                    }
+                } catch (err) {
+                    alert('Error stopping fetch: ' + err.message);
+                }
+                
+                // Don't proceed with logout yet - let user click again
+                return;
+            }
+        } catch (err) {
+            // If status check fails, proceed with logout anyway
+            console.warn('Could not check data fetch status:', err);
+        }
+        
         if (BrokerStatus && typeof BrokerStatus.expectLogout === "function") {
             BrokerStatus.expectLogout();
         }

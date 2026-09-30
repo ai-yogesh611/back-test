@@ -181,11 +181,25 @@ Results include:
 - a 0–10 robustness score and plain-English overfitting warnings;
 - a baseline-vs-optimized comparison and CSV export.
 
-One click applies the winner to a paper runner (new, A/B, or restart of an
-existing one), recorded in an audit trail with rollback. Applying to **live**
-is gated: it needs explicit confirmation plus walk-forward validation, and is
-refused for overfitted runs. Storage is PostgreSQL (migrations 009–013) or
-the dev SQLite profile. See [docs/OPTIMIZATION-ENGINE.md](docs/OPTIMIZATION-ENGINE.md).
+One click applies the winner to a runner through a **3-step wizard**: review
+the validation checks (walk-forward, robustness, deflated Sharpe, Monte Carlo,
+data source, trade count — each ✅/⚠️/❌), choose the target (new paper runner,
+replace existing, A/B, or live with an inline explanation of the ≥30-days
+paper-history gate), then confirm by typing CONFIRM. Every apply is recorded
+in an audit trail with rollback, and names the originating backtest when the
+run came from one. Applying to **live** is gated: it needs explicit
+confirmation plus walk-forward validation, and is refused for overfitted runs.
+Storage is PostgreSQL (migrations 009–015) or the dev SQLite profile. See
+[docs/OPTIMIZATION-ENGINE.md](docs/OPTIMIZATION-ENGINE.md) and
+[docs/backTest-enhance.md](docs/backTest-enhance.md).
+
+### Data sources
+
+The app runs on **real data by default**: if the configured source is disabled
+(e.g. synthetic), it falls back to the best enabled source — DB bars from
+`market_data_cache` first, then broker feeds, then CSV. Synthetic candles are
+never used as a silent fallback. A symbol must have data before it appears in
+the Backtest/Optimize/Compare dropdowns; fetch it on the Data tab first.
 
 ## Data Sources
 

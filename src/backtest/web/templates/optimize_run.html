@@ -252,45 +252,83 @@
     </section>
 </div>
 
-<!-- Apply modal -->
+<!-- Apply modal — PRD backTest-enhance §5: a 3-step wizard.
+     Step 1 REVIEW shows the validation checks table, Step 2 CHOOSE TARGET
+     carries the live 30-day paper-history gate, Step 3 CONFIRM has the
+     type-"CONFIRM" handshake. The Apply button itself is never disabled:
+     "not certifiable" is communicated in the checks table and the inline
+     live-gate explanation, not by a dead control. -->
 <div id="applyModal" class="modal-overlay" hidden>
     <div class="modal opt-apply-modal" role="dialog" aria-modal="true" aria-labelledby="applyTitle">
         <div class="modal-head"><h3 id="applyTitle">Apply parameters</h3><button class="modal-close" data-close>✕</button></div>
         <div class="modal-body">
-            <!-- PRD §6 reverse flow: where these parameters came from. -->
-            <div id="applyChain" class="opt-chain"></div>
-            <!-- PRD Part 2 §4's gate. Appears only once Monte Carlo has been
-                 run; a flag that must be acknowledged, not a hard block. -->
-            <div id="applyMcGate" class="opt-mc-gate" hidden></div>
-            <div id="applyParams" class="opt-apply-params"></div>
-            <div class="form-row">
-                <label>Target</label>
-                <div class="opt-target-group">
-                    <label><input type="radio" name="applyTarget" value="none" checked> Record only <small class="muted">(audit + preset, no runner change)</small></label>
-                    <label><input type="radio" name="applyTarget" value="paper"> Paper runner <small class="muted">(restart an existing one, or spawn new)</small></label>
-                    <label><input type="radio" name="applyTarget" value="ab_test"> A/B test <small class="muted">(new paper runner beside the current one)</small></label>
-                    <label><input type="radio" name="applyTarget" value="live"> Live runner <small class="neg">(real capital)</small></label>
+            <!-- STEP 1 — review the validation state of the result -->
+            <div class="opt-apply-step" data-step="1">
+                <div class="opt-apply-step-title">Step 1 of 3 · Review results</div>
+                <div id="applyReviewSummary" class="opt-review-summary"></div>
+                <table class="data-table opt-compact opt-checks-table" id="applyChecksTable">
+                    <thead><tr><th>Check</th><th>Result</th><th>Status</th></tr></thead>
+                    <tbody id="applyChecksBody"></tbody>
+                </table>
+                <!-- PRD §6 reverse flow: where these parameters came from. -->
+                <div id="applyChain" class="opt-chain"></div>
+                <!-- PRD Part 2 §4's gate. Appears only once Monte Carlo has been
+                     run; a flag that must be acknowledged, not a hard block. -->
+                <div id="applyMcGate" class="opt-mc-gate" hidden></div>
+                <div id="applyParams" class="opt-apply-params"></div>
+            </div>
+
+            <!-- STEP 2 — choose the target runner -->
+            <div class="opt-apply-step" data-step="2" hidden>
+                <div class="opt-apply-step-title">Step 2 of 3 · Choose target</div>
+                <div class="form-row">
+                    <label>Where should these parameters be applied?</label>
+                    <div class="opt-target-group">
+                        <label><input type="radio" name="applyTarget" value="paper"> New Paper Runner <span class="pos small">(recommended first step)</span></label>
+                        <label><input type="radio" name="applyTarget" value="paper_replace" data-maps-to="paper"> Replace existing paper runner: <span id="applyPaperSelectWrap"></span></label>
+                        <label><input type="radio" name="applyTarget" value="ab_test"> A/B test <small class="muted">(new paper runner beside the current one)</small></label>
+                        <label><input type="radio" name="applyTarget" value="none"> Record only <small class="muted">(audit + preset, no runner change)</small></label>
+                        <label class="opt-target-live">
+                            <input type="radio" name="applyTarget" value="live"> Apply to LIVE runner <span class="neg">⚠ Real money</span>
+                            <div class="small muted opt-live-note" id="applyLiveHistoryNote"></div>
+                        </label>
+                    </div>
+                </div>
+                <div class="form-row" id="applyRunnerRow" hidden>
+                    <label for="applyRunner">Runner</label>
+                    <select id="applyRunner" class="input"></select>
+                    <div class="hint muted small" id="applyRunnerHint"></div>
+                </div>
+                <div id="applyLiveBox" class="opt-live-box" hidden>
+                    <div id="applyLiveGate" class="small"></div>
+                    <label class="small"><input type="checkbox" id="applyAllowUnvalidated"> apply even though this run was not walk-forward validated</label>
+                    <label class="small"><input type="checkbox" id="applyConfirmLive"> I understand this changes a LIVE strategy trading real money</label>
                 </div>
             </div>
-            <div class="form-row" id="applyRunnerRow" hidden>
-                <label for="applyRunner">Runner</label>
-                <select id="applyRunner" class="input"></select>
-                <div class="hint muted small" id="applyRunnerHint"></div>
+
+            <!-- STEP 3 — confirm & audit -->
+            <div class="opt-apply-step" data-step="3" hidden>
+                <div class="opt-apply-step-title">Step 3 of 3 · Confirm &amp; audit</div>
+                <div id="applyChainConfirm" class="opt-chain"></div>
+                <div id="applyParamsConfirm" class="opt-apply-params"></div>
+                <div class="form-row">
+                    <label for="applyNotes">Notes (audit trail)</label>
+                    <input id="applyNotes" class="input" maxlength="500" placeholder="why this change?">
+                </div>
+                <p class="small muted">This action will be logged in the audit trail. You can rollback once via Audit → Rollback.</p>
+                <div class="form-row opt-confirm-row">
+                    <label for="applyConfirmText">Type "CONFIRM" to proceed</label>
+                    <input id="applyConfirmText" class="input" autocomplete="off" spellcheck="false" placeholder="CONFIRM">
+                </div>
             </div>
-            <div id="applyLiveBox" class="opt-live-box" hidden>
-                <div id="applyLiveGate" class="small"></div>
-                <label class="small"><input type="checkbox" id="applyAllowUnvalidated"> apply even though this run was not walk-forward validated</label>
-                <label class="small"><input type="checkbox" id="applyConfirmLive"> I understand this changes a LIVE strategy trading real money</label>
-            </div>
-            <div class="form-row">
-                <label for="applyNotes">Notes (audit trail)</label>
-                <input id="applyNotes" class="input" maxlength="500" placeholder="why this change?">
-            </div>
+
             <div id="applyError" class="opt-errors"></div>
         </div>
-        <div class="modal-foot">
+        <div class="modal-foot opt-apply-foot">
             <button class="btn btn-ghost" data-close>Cancel</button>
-            <button class="btn btn-primary" id="applyConfirm">Apply</button>
+            <button class="btn btn-ghost" id="applyBack" hidden>← Back</button>
+            <button class="btn btn-primary" id="applyNext">Continue to Step 2 →</button>
+            <button class="btn btn-primary" id="applyConfirm" hidden>Apply</button>
         </div>
     </div>
 </div>

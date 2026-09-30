@@ -37,28 +37,67 @@ def active_policy() -> SourcePolicy:
 
 
 def data_source_status() -> dict[str, Any]:
-    """The whole picture, for the UI to render."""
+    """The whole picture, for the UI to render.
+
+    ``active`` is the source the app RESOLVED to run on (see
+    ``app.resolve_source``): a disabled configured source falls back to the
+    best enabled one, so the ordinary deployment — synthetic disabled on
+    purpose, real sources enabled — shows a green "Data source: Real Data
+    (PostgreSQL)" badge instead of a ⛔ banner blocking both tabs. The
+    original request is kept under ``requested`` for provenance.
+    """
     policy = active_policy()
-    name = _configured_name()
-    return {
+    name = _resolved_name()
+    requested = _requested_name()
+    status = {
         "active": name,
+        "requested": requested,
+        "fell_back": bool(requested) and requested != name,
         "allowed": policy.is_enabled(name),
         "certifiable": policy.is_certifiable(name),
         "refusal": policy.refusal_for(name),
         "sources": policy.describe(),
     }
+    if status["fell_back"]:
+        status["fallback_note"] = (
+            f"Requested source '{requested}' is disabled — running on '{name}' instead."
+        )
+    return status
 
 
-def _configured_name() -> str:
+def _resolved_name() -> str:
+    """The source this app instance actually runs on (post-fallback).
+
+    There is no default. An instance that never resolved a source has none to
+    guard, and ``refusal_for("")`` reads that as unknown — the app refuses
+    rather than inventing a source to run on.
+    """
     try:
-        return str(current_app.config.get("BACKTEST_SOURCE", "synthetic") or "synthetic")
+        return str(current_app.config.get("BACKTEST_SOURCE") or "")
+    except RuntimeError:  # outside an app context
+        return ""
+
+
+def _requested_name() -> str:
+    """What the deployment asked for, before any fallback (for provenance)."""
+    try:
+        return str(
+            current_app.config.get("BACKTEST_SOURCE_REQUESTED")
+            or current_app.config.get("BACKTEST_SOURCE")
+            or ""
+        )
     except RuntimeError:
-        return "synthetic"
+        return ""
 
 
 def guard_source() -> Optional[Tuple[Any, int]]:
-    """Return a refusal response if the configured source is not allowed."""
-    refusal = active_policy().refusal_for(_configured_name())
+    """Return a refusal response if the resolved source is not allowed.
+
+    With the fallback in place this only fires when NO enabled source exists
+    at all (``resolve_source`` kept the requested name as a last resort) —
+    the app refuses to run rather than pretending a source is fine.
+    """
+    refusal = active_policy().refusal_for(_resolved_name())
     if not refusal:
         return None
     return (

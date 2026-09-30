@@ -1,20 +1,25 @@
 # PRD — Backtest & Compare / Optimize Enhancements
 
-> **Implementation status** (updated 2026-09-29). Implemented one section at a
+> **Implementation status** (updated 2026-09-30). Implemented one section at a
 > time, "bugs first" as §1 asks.
 >
 > | Section | Status |
 > |---|---|
 > | Part 1 §1.1 Engine consistency | ✅ Done — driver stays the default, `quick_screen` is an explicit **Fast Preview** opt-in, permanent Engine badge, yellow approximate warning, `mixed` stamp when Compare slots disagree |
-> | Part 1 §1.2 Data source visibility | ✅ Done — permanent Data badge, red non-real-data banner, `provenance` record on every backtest / compare-slot / optimize-run payload |
-> | Part 1 §1.3 Symbol picker + coverage | ✅ Done — `GET /api/data/coverage`, shared picker on all three pages, no-data rows listed-and-explained, All/Equity/Index/F&O tabs |
+> | Part 1 §1.2 Data source visibility | ✅ Done — permanent Data badge, red non-real-data banner, `provenance` record on every backtest / compare-slot / optimize-run payload. **Updated 2026-09-30**: a disabled configured source no longer blocks the tabs — `app.resolve_source` falls back to the best enabled source (db → mstock → dhan → csv), the gate badge stays green with one informational fallback line, and no ⛔ banner is shown |
+> | Part 1 §1.3 Symbol picker + coverage | ✅ Done — `GET /api/data/coverage`, shared picker on all three pages, All/Equity/Index/F&O tabs. **Updated 2026-09-30**: the run pages' dropdowns list only symbols WITH data (`available=1`) with readable `SYMBOL (name) — bars` labels, and the search box was removed (a symbol without data is no longer selectable at all — fetch it on the Data tab first) |
 > | Part 1 §1.4 Timeframe reality + `periods_per_year` | ✅ Done — `data.base.periods_per_year()` (252 × bars/day, weekly 52) reaches the engine, the optimizer and the UI; dropdowns offer only real granularities |
 > | Part 1 §2 Richer metrics | ✅ Done — `engine/metrics_risk.py` (Omega, skew, excess kurtosis, CVaR, Ulcer, drawdown episodes, streaks, Sharpe SE), `Trade.bars_held` for real durations, `trade_count_flag` ok/warn/insufficient, four collapsible sections + the insufficient-sample banner on the Backtest result page, all keys in `BacktestAdapter.to_all()` |
 > | Part 1 §3 Benchmark / cost shock / Monte Carlo | ✅ Done — `engine/benchmark.py` (buy-and-hold metrics, alpha, beta), `engine/cost_shock.py` (1x/2x/3x slippage, green/yellow/red), `engine/monte_carlo.py` (reorder + bootstrap, trade concentration), `POST /api/backtest/monte-carlo`, three collapsible panels. **Two PRD rules replaced** — see the notes below |
 > | Part 1 §4 Compare enhancements | ⬜ Not started (Compare already applies one shared engine — see §1.1) |
-> | Part 1 §5 Certification readiness | ⬜ Not started (depends on §2/§3) |
-> | Part 1 §6 "Tune This" | ⬜ Not started |
-> | Part 2 §1–§6 Optimize | ⬜ Not started (§1.2 provenance already lands on the Optimize results page) |
+> | Part 1 §5 Certification readiness | ✅ Done — `engine/readiness.py` `build_readiness()`, 8 checks with ✅/⚠/❌, `tune_this_available` flag |
+> | Part 1 §6 "Tune This" | ✅ Done — `components/tune_this.js`, two-state button (never disabled), session-handle result id, walk-forward defaults. **Updated 2026-09-30**: the prefill now also carries `baselineMetrics` (Sharpe/Return/Trades for the §2 banner) and the `baselineFillExact` + `baselineRealData` flags |
+> | Part 2 §1 Receiving "Tune This" | ✅ Done — prefill banner on the Optimize setup form. **Updated 2026-09-30**: the banner quotes the baseline performance (Sharpe / Return / Trades); when the origin ran fill-exact on real data the banner says the baseline is imported instead of re-run, the run stores `baselineImported` + `baselineMetrics` so the search skips the redundant baseline evaluation, and the audit row names the originating backtest (`originated_from_backtest_id`) |
+> | Part 2 §2 Data source lock + attestation | ✅ Done — migration 015, measured attestation on the run, data confirmation box on the setup form |
+> | Part 2 §3 Deflated Sharpe | ✅ Done — migration 014, `optimization/deflation.py`, best-result panel + sort column |
+> | Part 2 §4 Monte Carlo on the winner | ✅ Done — `POST /api/optimize/runs/<id>/monte-carlo`, apply-gate acknowledgement (a flag to read, not a block) |
+> | Part 2 §5 Cleaner Apply-to-Paper Gate | ✅ Done (2026-09-30) — the apply modal is now the PRD's 3-step wizard: **Step 1 Review** with the checks table (walk-forward run/pass, robustness, deflated Sharpe, Monte Carlo P(profit), data source, trade count — each ✅/⚠️/❌; a missing check renders ⚠ "not run", never a pass); **Step 2 Choose Target** with New-Paper-Runner recommended by default, replace-existing inline picker, A/B, and the LIVE option kept clickable with an inline explanation of the ≥30-days paper-history gate instead of a dead control; **Step 3 Confirm & Audit** with the chain, the parameter diff, and a type-"CONFIRM" handshake replacing the old checkbox. Back/Continue navigation throughout |
+> | Part 2 §6 Regime breakdown + warning panel | ✅ Done — regime table on the best result, sticky warning-signs panel |
 >
 > Implementation notes live in `PROJECT-CONTEXT.md` under "Backtest & Compare —
 > Engine & Data Provenance" and "Single-Run Checks (§3)". Deviations from the

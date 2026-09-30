@@ -32,11 +32,15 @@ def test_convert_pine_script():
     
     python_code, metadata = converter.convert(SAMPLE_PINE)
     
-    # Check generated code structure
+    # Check generated code structure. The plugin surface is entries()/exits()
+    # — the Strategy base class derives generate_signals() from them, so a
+    # hand-written `calculate` is no longer what codegen emits.
     assert "class EmaCrossTest" in python_code
-    assert "def calculate" in python_code
-    assert "self.ema" in python_code
-    assert "crossed_above" in python_code or "ta.crossover" in python_code
+    assert "def entries" in python_code
+    # Indicators come out as module-level helpers (`_ema`), crossover as
+    # `_cross_above` — there is no `self.ema`/`crossed_above` in the surface.
+    assert "_ema(" in python_code
+    assert "_cross_above" in python_code
     
     # Check metadata
     assert metadata["original_name"] == "EmaCrossTest"

@@ -73,6 +73,17 @@ INDEX_UNIVERSE: tuple[tuple[str, str], ...] = (
     ("MIDCPNIFTY", "NIFTY MIDCAP 150"),
     ("SENSEX", "S&P BSE SENSEX"),
     ("INDIAVIX", "INDIA VIX"),
+    # Sectoral indices
+    ("NIFTYIT", "NIFTY IT"),
+    ("NIFTYAUTO", "NIFTY AUTO"),
+    ("NIFTYPHARMA", "NIFTY PHARMA"),
+    ("NIFTYMETAL", "NIFTY METAL"),
+    ("NIFTYREALTY", "NIFTY REALTY"),
+    ("NIFTYFMCG", "NIFTY FMCG"),
+    ("NIFTYENERGY", "NIFTY ENERGY"),
+    ("NIFTYMEDIA", "NIFTY MEDIA"),
+    ("NIFTYPSUBANK", "NIFTY PSU BANK"),
+    ("NIFTYINFRA", "NIFTY INFRA"),
 )
 
 #: Tooltip on a row that has no bars. Points at the tab that fixes it.

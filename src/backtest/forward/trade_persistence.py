@@ -22,6 +22,8 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+from backtest.data.sources_policy import default_broker_source
+
 logger = logging.getLogger(__name__)
 
 #: Runner-level dedupe key length — a natural key of exit_ts+symbol+pnl is
@@ -131,7 +133,11 @@ class LiveTradePersister:
                         or 0)
                 ),
                 mode="paper",
-                source=str(getattr(cfg, "source", "synthetic") or "synthetic"),
+                # Never a literal feed name: the runner's own source is already
+                # policy-resolved at construction, and if a legacy config
+                # somehow carries none, this writes the deployment's broker
+                # feed rather than stamping "synthetic" on a real book.
+                source=str(getattr(cfg, "source", "") or default_broker_source()),
             )
             session.add(row)
             session.flush()

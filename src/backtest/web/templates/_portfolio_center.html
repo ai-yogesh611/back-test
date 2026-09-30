@@ -541,7 +541,7 @@
                     <select id="spawn-source" class="input input-select">
                         {% for s in source_tags %}
                         <option value="{{ s }}"
-                            {% if s == 'synthetic' %}selected{% endif %}>{{ s | upper }}</option>
+                            {% if s == default_source_tag %}selected{% endif %}>{{ s | upper }}</option>
                         {% endfor %}
                     </select>
                 </div>

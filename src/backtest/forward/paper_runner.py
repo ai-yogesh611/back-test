@@ -53,6 +53,11 @@ import pandas as pd
 from backtest.data.base import CANONICAL_TIMEFRAMES, DataSource
 from backtest.data.frame_source import FrameSource
 from backtest.data.source_tags import SOURCE_TAG_VALUES, SOURCE_TAGS, source_tag_for
+from backtest.data.sources_policy import (
+    default_broker_source,
+    policy_key,
+    require_synthetic,
+)
 from backtest.data.universe import get_universe_symbols
 from backtest.forward.options_bridge import OptionsBridge
 from backtest.simulator.engine_loop import OrderQueue, run_engine_loop
@@ -858,14 +863,19 @@ class RunnerConfig:
     position_pct: Optional[float] = None  # fraction of bucket per entry
     instance_id: Optional[str] = None
     # Instance-level circuit breakers (fraction of allocation)
-    max_drawdown_pct: float = 0.25
+    max_drawdown_pct: float = 0.80  # 80% for paper trading
     daily_loss_limit_pct: float = 0.15
     allow_short: bool = False
     # Bucket classification for the portfolio UI (ticket P4.1):
     # 'paper' (simulated fills) or 'live' (broker execution — F-12 wiring).
     mode: str = "paper"
     # Canonical P1.1 source tag: synthetic / replay / mstock.
-    source: str = "synthetic"
+    # Resolved from config/data_sources.yaml at construction, never a literal:
+    # an omitted source means the deployment's **broker** feed (mStock), which
+    # is what paper and live runners are supposed to bar from. A process whose
+    # policy explicitly enables synthetic (the suite's ``testing`` profile)
+    # still gets synthetic by omission, so no test has to name a source.
+    source: str = field(default_factory=default_broker_source)
     # Instrument config (Gap G3.2): {"type": "equity"} keeps the classic
     # flow; {"type": "option", "expression": {...}} routes bars through the
     # options expression layer via an OptionsBridge.
@@ -991,6 +1001,24 @@ class StrategyRunner:
         self.ledger = ledger
         self.broker = broker or PaperBroker(ledger)
 
+        # Data-source policy (2026-09-30). A config that names no source gets
+        # the policy's broker feed here, once, so the runner's own label, the
+        # gate below, the ledger rows and the persisted state all describe the
+        # same feed — and none of them can fall back to a literal.
+        if not str(config.source or "").strip():
+            config.source = default_broker_source()
+
+        # A runner is a long-lived thing that books P&L the operator reads as
+        # real, so the source it bars from is checked the moment it is
+        # constructed — not at the first fill. With synthetic disabled in
+        # config/data_sources.yaml a ``source=synthetic`` runner (including one
+        # restored from an old state file) cannot be built at all: it refuses,
+        # instead of quietly trading a random walk under a "paper/MSTOCK" label.
+        # Only the synthetic substitution is gated — an mstock/replay runner is
+        # legitimate even when its feed is momentarily unreachable.
+        if policy_key(config.source) == "synthetic":
+            require_synthetic(f"runner {config.name}")
+
         # 2026-09-24: for option runners, the strategy's free-text
         # ``underlying`` param is FORCED to the runner symbol BEFORE the
         # strategy instance is built — the options bridge prices the chain
@@ -1020,7 +1048,12 @@ class StrategyRunner:
             initial_capital=config.allocated_capital,
             limits=PortfolioLimits(allow_short=config.allow_short),
             mode="paper",
-            source="synthetic",
+            # The ledger row's data-source tag used to be the literal
+            # "synthetic" for every runner, so a real mStock runner was
+            # recorded as generated data (and the reverse: nothing tied the
+            # label to the feed actually driving it). It now names the feed the
+            # runner bars from — normalised above, so it is never empty.
+            source=str(config.source),
         )
         self.executor = free_executor(self.portfolio)
         self.closed_trades_cache: List[Dict[str, Any]] = []
@@ -1034,7 +1067,10 @@ class StrategyRunner:
         # contract registry + pricing clock).
         self.options_bridge: Optional["OptionsBridge"] = None
         self._chain_released = True  # U6.2 guard; flipped when a bridge takes its subscription
-        self._chain_source = "synthetic"  # P1.1: release must match the acquire source
+        # P1.1: release must match the acquire source. The bridge branch below
+        # overwrites this with the store the acquire actually landed in; the
+        # starting value is the runner's own (already policy-resolved) source.
+        self._chain_source = str(config.source)
         if str(config.instrument.get("type", "equity")) == "option":
             from backtest.forward.feed_registry import option_quote_provider_for
 
@@ -1262,6 +1298,127 @@ class StrategyRunner:
     # Lifecycle
     # ------------------------------------------------------------------ #
 
+    def _maybe_upgrade_to_live_chain(self) -> None:
+        """Upgrade a synthetic-priced option runner to its live chain (bug #2).
+
+        A restored mstock/dhan option runner resolves its quote provider ONCE,
+        in ``__init__``. If the broker session was not yet authenticated at
+        that moment it silently fell back to the labelled synthetic chain
+        (``"synthetic:bs"``) — and never re-checked. So a runner that was
+        restored before the operator logged into mStock stays synthetic for
+        its whole life even though ``mode/source`` reads ``paper/mstock``: real
+        bars in, MOCK-token prices out. This is the "random expiry / random
+        tick / random PnL" the owner reported.
+
+        Called from :meth:`resume` (restored runners come back PAUSED) and from
+        :meth:`start`. It is a no-op unless every guard passes:
+
+        * it is an option runner currently on a SYNTHETIC chain whose
+          ``config.source`` is a live broker (mstock/dhan);
+        * that broker is authenticated RIGHT NOW (pre-checked via
+          ``_default_quote_broker`` so a still-missing session never triggers a
+          second synthetic acquire inside ``option_quote_provider_for``);
+        * the bridge has NO open structure — a live swap would orphan the
+          MOCK-token legs (they don't resolve on the real chain), so we refuse
+          and log, advising flatten-then-resume.
+
+        On success: release the synthetic ChainBus entry, acquire the live one
+        (``option_quote_provider_for`` does the acquire), swap the bridge's
+        quote provider, and re-point ``_chain_source`` so ``stop()`` releases
+        the entry we now hold. State is only mutated after the live acquire
+        succeeds, so a failure leaves the runner exactly as it was.
+        """
+        bridge = self.options_bridge
+        if bridge is None:
+            return
+        src = str(self.config.source or "").lower()
+        if src not in ("mstock", "dhan"):
+            return
+        if self._chain_source != "synthetic":
+            return  # already live (or never fell back) — nothing to upgrade
+
+        try:
+            from backtest.forward.feed_registry import (
+                _default_quote_broker,
+                get_chain_bus,
+                option_quote_provider_for,
+            )
+        except Exception:  # noqa: BLE001 — registry import must never break resume
+            logger.debug("chain registry unavailable for %s", self.instance_id[:8], exc_info=True)
+            return
+
+        # Pre-check auth BEFORE option_quote_provider_for: with no session that
+        # helper falls through to a SECOND synthetic acquire (refcount leak).
+        if _default_quote_broker(src) is None:
+            logger.info(
+                "Runner %s (%s) still has no authenticated %s session — "
+                "keeping synthetic chain",
+                self.instance_id[:8],
+                self.config.name,
+                src,
+            )
+            return
+
+        # Never swap the pricing source under an open structure: its legs carry
+        # MOCK tokens that don't exist on the live chain.
+        try:
+            if bridge._has_open_structure():
+                logger.warning(
+                    "Runner %s (%s) has an OPEN structure — refusing synthetic→"
+                    "live chain upgrade (MOCK-token legs won't price on the "
+                    "live chain). Flatten the position, then pause/resume to "
+                    "re-price live.",
+                    self.instance_id[:8],
+                    self.config.name,
+                )
+                return
+        except Exception:  # noqa: BLE001 — structure probe must never block resume
+            logger.debug("open-structure probe failed for %s", self.instance_id[:8], exc_info=True)
+            return
+
+        try:
+            provider, label = option_quote_provider_for(src, self._chain_underlying)
+        except Exception:  # noqa: BLE001 — a failed upgrade keeps the runner synthetic
+            logger.exception(
+                "live chain acquire failed for %s — staying synthetic",
+                self.instance_id[:8],
+            )
+            return
+
+        if label != f"live:{src}":
+            # Session vanished between the pre-check and the acquire; the helper
+            # already re-acquired synthetic, so release that extra ref and bail.
+            try:
+                get_chain_bus().release(self._chain_underlying, source="synthetic")
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "synthetic re-release failed for %s", self.instance_id[:8], exc_info=True
+                )
+            logger.info(
+                "Runner %s (%s) live chain not available (%s) — staying synthetic",
+                self.instance_id[:8],
+                self.config.name,
+                label,
+            )
+            return
+
+        # Live acquire succeeded — now drop the synthetic entry we were holding.
+        try:
+            get_chain_bus().release(self._chain_underlying, source="synthetic")
+        except Exception:  # noqa: BLE001 — release must never block the upgrade
+            logger.exception("synthetic chain release failed for %s", self.instance_id[:8])
+
+        bridge.quote_provider = provider
+        self._chain_source = src
+        self._chain_released = False  # we now hold the live entry; stop() releases it
+        logger.info(
+            "Runner %s (%s) upgraded synthetic→live chain (%s) on %s",
+            self.instance_id[:8],
+            self.config.name,
+            label,
+            self._chain_underlying,
+        )
+
     def start(self) -> None:
         with self._lock:
             if self.status == STATUS_RUNNING:
@@ -1283,6 +1440,9 @@ class StrategyRunner:
                     self._chain_released = False
                 except Exception:  # noqa: BLE001 — acquire must never block start
                     logger.exception("chain bus acquire failed for %s", self.instance_id[:8])
+            # Bug #2: a runner built while the broker was logged out is stuck on
+            # the synthetic chain — try to upgrade it now that we're (re)starting.
+            self._maybe_upgrade_to_live_chain()
             logger.info(
                 "Runner %s (%s) started: %s on %s",
                 self.instance_id[:8],
@@ -1300,6 +1460,10 @@ class StrategyRunner:
     def resume(self) -> None:
         with self._lock:
             if self.status == STATUS_PAUSED:
+                # Bug #2: restored runners come back PAUSED on whatever chain
+                # they resolved at construction. If the broker is authenticated
+                # now, upgrade synthetic→live before we start pricing again.
+                self._maybe_upgrade_to_live_chain()
                 self.status = STATUS_RUNNING
                 self.error = None
                 logger.info("Runner %s resumed", self.instance_id[:8])

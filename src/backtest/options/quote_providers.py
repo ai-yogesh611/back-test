@@ -156,7 +156,13 @@ class SyntheticChainGenerator:
         return self.spots.get(underlying, self.DEFAULT_SPOTS.get(underlying, 100.0))
 
     def next_monthly_expiry(self, reference: date | None = None) -> date:
-        """Last Thursday of the month of ``reference`` (next month if passed).
+        """NSE monthly expiry for the month of ``reference`` (next month if passed).
+
+        Last Tuesday from September 2025 onward, last Thursday before that —
+        delegated to :func:`backtest.instruments.expiry_calendar.monthly_expiry`
+        so the forward chain generator and the option backtest driver can never
+        drift apart on the convention (the bug that produced a 2026-10-29
+        "expiry" instead of the real 2026-10-27).
 
         Month arithmetic goes through :meth:`_first_of_month`, which rolls the
         year over: the old ``ref.month + 2`` form raised
@@ -164,13 +170,15 @@ class SyntheticChainGenerator:
         for a December one — reachable as soon as the expiry calendar follows
         the replay clock (forward testing task B1) instead of ``date.today()``.
         """
+        from backtest.instruments.expiry_calendar import monthly_expiry
+
         ref = self._reference_date(reference)
-        expiry = self._last_thursday_of(ref.year, ref.month)
+        expiry = monthly_expiry(ref.year, ref.month)
         if expiry < ref:
             # This month's expiry has passed — the nearest remaining one is
             # NEXT month's (the old two-month jump skipped a whole expiry).
             first_next = self._first_of_month(ref, months_ahead=1)
-            expiry = self._last_thursday_of(first_next.year, first_next.month)
+            expiry = monthly_expiry(first_next.year, first_next.month)
         return expiry
 
     @staticmethod
@@ -178,13 +186,6 @@ class SyntheticChainGenerator:
         """First day of the month ``months_ahead`` from ``ref`` (year-safe)."""
         index = ref.year * 12 + (ref.month - 1) + months_ahead
         return date(index // 12, index % 12 + 1, 1)
-
-    @classmethod
-    def _last_thursday_of(cls, year: int, month: int) -> date:
-        """Last Thursday of a calendar month (NSE monthly expiry convention)."""
-        last_day = cls._first_of_month(date(year, month, 1), months_ahead=1) - timedelta(days=1)
-        offset = (last_day.weekday() - 3) % 7  # Thursday == 3
-        return last_day - timedelta(days=offset)
 
     def generate_chain(
         self,

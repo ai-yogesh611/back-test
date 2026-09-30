@@ -69,7 +69,7 @@
         </select></div>
         <div class="form-row"><label>Data source</label><select id="dataSource" class="input">
             {% for s in source_tags %}
-            <option value="{{ s }}" {% if s == 'synthetic' %}selected{% endif %}>{{ s | upper }}</option>
+            <option value="{{ s }}" {% if s == default_source_tag %}selected{% endif %}>{{ s | upper }}</option>
             {% endfor %}
         </select></div>
         <div class="form-row" style="grid-column: 1 / -1;">

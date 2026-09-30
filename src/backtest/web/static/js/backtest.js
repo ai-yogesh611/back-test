@@ -344,7 +344,9 @@ async function init() {
     // load strategies
     let strategies = [];
     try {
-        strategies = await fetchJSON("/api/strategies");
+        // venue=backtest: the server omits option strategies, because a
+        // backtest runs on DB candles and the DB holds no historical chains.
+        strategies = await fetchJSON("/api/strategies?venue=backtest");
         $("strategy").innerHTML = strategies
             .map((s) => `<option value="${s.name}">${s.name}</option>`).join("");
     } catch (err) {

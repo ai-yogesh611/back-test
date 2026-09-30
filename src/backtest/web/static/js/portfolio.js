@@ -228,8 +228,8 @@
   const SOURCE_LABELS = { synthetic: "SYNTH", mstock: "MSTOCK", replay: "REPLAY" };
   function badgeHtml(mode, source) {
     const m = (mode || "paper").toUpperCase();
-    const raw = (source || "synthetic").toLowerCase();
-    const s = (SOURCE_LABELS[raw] || raw).toUpperCase();
+    const raw = String(source || "").toLowerCase();
+    const s = raw ? (SOURCE_LABELS[raw] || raw).toUpperCase() : "UNKNOWN";
     const cls = mode === "live" ? "badge-live" : "badge-paper";
     return '<span class="badge ' + cls + '">' + m + "/" + s + "</span>";
   }
@@ -1006,7 +1006,10 @@
       // to the page's bucket, but the landing page sends the explicit choice
       // too (never an implicit backend default the user didn't see).
       mode: $("spawn-mode") ? $("spawn-mode").value : (PAGE_MODE || "paper"),
-      source: $("spawn-source") ? $("spawn-source").value : "synthetic",
+      // Empty when the control is absent: the server's data policy then picks
+      // the broker feed. A literal "synthetic" here was a client-side default
+      // that could name a source the deployment has switched off.
+      source: $("spawn-source") ? $("spawn-source").value : "",
       // Multi-broker Phase B: the segment routes this runner's orders to
       // its broker; empty string → no segment (legacy default path).
       segment: $("spawn-segment") ? ($("spawn-segment").value || null) : null,

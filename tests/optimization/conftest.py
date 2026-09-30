@@ -41,8 +41,12 @@ def fake_manager():
 
 @pytest.fixture()
 def service(store, fake_manager):
+    # Named on purpose: a service with no default source used to have the
+    # provenance layer quietly write "synthetic" for it. Here that IS the
+    # truth - synthetic_loader generates the candles - so say it outright.
     return OptimizationService(store, workers=1, loader=synthetic_loader,
-                               manager_getter=lambda: fake_manager)
+                               manager_getter=lambda: fake_manager,
+                               default_source="synthetic")
 
 
 @pytest.fixture()

@@ -40,7 +40,9 @@ let currentBuckets = null;   // {mode, source} of the running session
 function runSelection() {
     return {
         mode: $("runMode")?.value || "paper",
-        source: $("dataSource")?.value || "synthetic",
+        // Empty means "the server decides from config/data_sources.yaml" —
+        // never a client-side guess at a source the deployment may have off.
+        source: $("dataSource")?.value || "",
     };
 }
 

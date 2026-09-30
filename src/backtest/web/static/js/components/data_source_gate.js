@@ -1,12 +1,21 @@
 /**
- * Data-source gate — say what the run is measured on, and block when that
- * source is disabled (config/data_sources.yaml).
+ * Data-source gate — say what the run is measured on.
  *
  *   DataSourceGate.mount("dataSourceGate", { blockIds: ["runBtn"] })
  *
- * The server is the authority; this only makes its answer visible and stops
- * the click. A 409 from the API is still what actually refuses the run, so a
- * page that loads without this script is protected — it is just less clear.
+ * PRD change of direction (2026-09-30): the app RESOLVES its source before
+ * the page renders (app.resolve_source falls back to the best enabled
+ * source), so the disabled-synthetic case reaches the browser as an allowed
+ * fallback. This component therefore shows three states:
+ *
+ *   • allowed           → a quiet green badge naming the source
+ *   • allowed + fell_back → same green badge, plus one line saying what was
+ *                          requested instead — informational, never a ⛔
+ *                          banner, never blocking (a banner punishing an
+ *                          operator for a deliberate config choice taught
+ *                          them to ignore it)
+ *   • NOT allowed        → the only blocking state: no enabled source exists
+ *                          at all. The server 409 remains the authority.
  */
 (function (global) {
     "use strict";
@@ -31,8 +40,14 @@
             const cert = status.certifiable
                 ? '<span class="pos">certification-grade</span>'
                 : '<span class="muted">not certification-grade</span>';
+            // A fallback is stated in one quiet line under the badge —
+            // provenance the operator can see, without alarm styling.
+            const fallback = status.fell_back
+                ? `<div class="dsg-fallback muted small">Requested source '${esc(status.requested)}' is disabled — running on '
+                   + '${esc(labelFor(status))}' instead.</div>`
+                : '';
             el.innerHTML = `<div class="dsg dsg--ok">Data source:
-                <strong>${esc(labelFor(status))}</strong> · ${cert}</div>`;
+                <strong>${esc(labelFor(status))}</strong> · ${cert}</div>${fallback}`;
             return true;
         }
 

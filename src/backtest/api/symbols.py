@@ -23,6 +23,17 @@ _FALLBACK_LOT_SIZES: dict[str, int] = {
     "FINNIFTY": 60,
     "MIDCPNIFTY": 120,
     "SENSEX": 20,
+    # Sectoral indices (lot sizes for index options)
+    "NIFTYIT": 60,
+    "NIFTYAUTO": 50,
+    "NIFTYPHARMA": 60,
+    "NIFTYMETAL": 50,
+    "NIFTYREALTY": 50,
+    "NIFTYFMCG": 40,
+    "NIFTYENERGY": 50,
+    "NIFTYMEDIA": 50,
+    "NIFTYPSUBANK": 60,
+    "NIFTYINFRA": 50,
 }
 _CACHED_LOT_SIZES: dict[str, int] | None = None
 
@@ -86,7 +97,7 @@ def lot_sizes() -> tuple:
 @symbols_bp.get("/api/symbols")
 def list_symbols() -> tuple:
     """Return available DB symbols when source=db; otherwise empty list."""
-    source = current_app.config.get("BACKTEST_SOURCE", "synthetic")
+    source = current_app.config["BACKTEST_SOURCE"]
     timeframe = "day"
 
     if source != "db":

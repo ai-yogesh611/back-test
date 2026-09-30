@@ -40,7 +40,7 @@ import pandas as pd
 # ``periods_per_year`` PARAMETER of the same name, and shadowing it would make
 # the derived value unreachable inside its own default.
 from backtest.data.base import periods_per_year as annualisation_factor
-from backtest.engine.backtester import BacktestConfig, BacktestResult
+from backtest.engine.backtester import BacktestResult
 from backtest.engine.metrics import compute_metrics
 from backtest.engine.trades import walk_trades
 from backtest.optimization.regimes import regime_breakdown
@@ -386,24 +386,21 @@ def evaluate(
     timeframe = str(settings.get("timeframe", "1day"))
     try:
         if settings.get("engine") == "options":
-            equity, pnls, extra = _run_options_engine(
-                candles, settings, strategy, sparams, eparams, window
+            # Refused here, at the dispatch, rather than by deleting the engine:
+            # the option driver prices chains off ``SyntheticChainGenerator`` +
+            # Black-Scholes, so an optimized option score would be a robustness
+            # number over generated premiums. The DB holds candles and no
+            # historical chains, so there is nothing real to price against in a
+            # backtest. :func:`_run_options_engine` is deliberately left in the
+            # tree, unreferenced, for the day a real chain source exists;
+            # options run in Forward Testing and the Portfolio, off the
+            # broker's live chain (operator rule, 2026-09-30).
+            raise ValueError(
+                f"options cannot be backtested or optimized on this data source: the DB "
+                f"stores candles, not option chains, so an option backtest would price "
+                f"Black-Scholes against a generated chain. Run '{strategy}' in Forward "
+                f"Testing or the Portfolio, where the chain comes from the broker live."
             )
-            if equity.empty:
-                raise ValueError("options backtest produced no equity points")
-            returns = equity.pct_change().fillna(0.0)
-            dummy = BacktestResult(
-                equity=equity, returns=returns,
-                position=pd.Series(0.0, index=equity.index),
-                candles=None,
-                config=BacktestConfig(
-                    initial_capital=float(settings["capital"]),
-                    periods_per_year=annualisation_factor(timeframe),
-                ),
-                metrics={},
-            )
-            base = compute_metrics(dummy)
-            base.update(extra)
         else:
             result = _run_equity_engine(candles, settings, strategy, sparams, window)
             equity, returns = result.equity, result.returns

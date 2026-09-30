@@ -36,6 +36,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Mapping, Protocol
 
+from backtest.data.sources_policy import default_source_tag
 from backtest.reporting.records import (
     FEE_BASIS_ESTIMATED,
     FEE_BASIS_NONE,
@@ -203,7 +204,11 @@ class DatabaseTradeSource:
                         "portfolio_id": str(trade.portfolio_id),
                         "portfolio_name": str(portfolio.name or ""),
                         "portfolio_mode": str(portfolio.mode or "paper"),
-                        "portfolio_source": str(portfolio.source or "synthetic"),
+                        # An unrecorded source resolves through the policy;
+                        # a report must not name a data source by literal.
+                        "portfolio_source": (
+                            str(portfolio.source or default_source_tag())
+                        ),
                         "symbol": str(trade.symbol or ""),
                         "strategy_name": str(trade.strategy_name or ""),
                         "direction": str(trade.direction or "long"),

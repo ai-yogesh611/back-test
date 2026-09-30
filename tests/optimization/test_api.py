@@ -31,7 +31,8 @@ def env():
     store.ensure_schema()
     fake = FakeManager()
     service = OptimizationService(store, workers=1, loader=synthetic_loader,
-                                  manager_getter=lambda: fake)
+                                  manager_getter=lambda: fake,
+                                  default_source="synthetic")
     app = create_app(source="synthetic")
     app.config.update(TESTING=True, OPTIMIZATION_SERVICE=service)
     yield {"app": app, "client": app.test_client(), "service": service, "fake": fake}
@@ -84,6 +85,24 @@ def test_estimate_and_validation_errors(client):
                                                       "objectiveFunction": "luck"})
     assert bad.status_code == 400
     assert {"method", "objectiveFunction"} <= set(bad.get_json()["errors"])
+
+
+def test_option_strategies_are_refused_before_the_run_starts(client):
+    """Backtests and optimizations read DB candles; the DB has no option chains.
+
+    The evaluator refuses at the dispatch too, but a refusal at the boundary is
+    what keeps an option out of the run history in the first place.
+    """
+    doc = {**SMA_DOC, "strategyId": "directional_options"}
+    r = client.post("/api/optimize/runs", json=doc)
+    assert r.status_code == 400
+    assert "options" in r.get_json()["error"].lower()
+    listed = client.get("/api/optimize/runs").get_json()["runs"]
+    assert [x for x in listed if x.get("strategy_id") == "directional_options"] == []
+
+    est = client.post("/api/optimize/estimate", json=doc)
+    assert est.status_code == 400
+    assert "options" in est.get_json()["error"].lower()
 
 
 def test_runners_endpoint_lists_fake_manager_runners(env, client):

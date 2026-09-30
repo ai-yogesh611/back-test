@@ -114,7 +114,13 @@ function boot({ slotsResponse } = {}) {
             addEventListener: (evt, fn) => { if (evt === "DOMContentLoaded") sandbox.__boot = fn; },
         },
         fetch: async (url, opts) => {
-            if (url === "/api/strategies") return { ok: true, status: 200, json: async () => STRATEGIES };
+            // The Compare page asks for the compare venue, which is what keeps
+            // option strategies out of its list; the stub answers either form
+            // and records what was asked so a test can pin the venue.
+            if (url === "/api/strategies" || url.startsWith("/api/strategies?")) {
+                log.strategyUrl = url;
+                return { ok: true, status: 200, json: async () => STRATEGIES };
+            }
             if (url.startsWith("/api/strategies/")) {
                 const name = decodeURIComponent(url.split("/")[3]);
                 return { ok: true, status: 200, json: async () => paramsDoc[name] || { fields: [] } };
@@ -176,6 +182,13 @@ const tests = [];
 function test(name, fn) { tests.push([name, fn]); }
 
 // ---------------------------------------------------------------- §4.1
+test("the strategy list is fetched for the compare venue", async () => {
+    // Options cannot be compared back here (the DB has candles, no chains), so
+    // the page must ask the server for the compare-venue list, not the full one.
+    const env = await ready(boot());
+    assert.match(env.log.strategyUrl || "", /[?&]venue=compare\b/);
+});
+
 test("every slot is sent the shared timeframe, never one of its own", async () => {
     const env = await ready(boot({ slotsResponse: { results: { 1: okResult(), 2: okResult() } } }));
     // Point the two slots at different granularities by hand — the controller

@@ -44,7 +44,7 @@ class GlobalRiskConfig:
     """
 
     daily_loss_limit: float = 250_000.0  # absolute account currency
-    max_drawdown_pct: float = 0.25  # fraction of peak equity
+    max_drawdown_pct: float = 0.80  # fraction of peak equity (80% for paper trading)
     max_leverage: float = 1.0  # V1 telemetry
     breach_mode: str = HALT_PAUSE  # daily-loss response mode
     correlation_warning_threshold: int = 3

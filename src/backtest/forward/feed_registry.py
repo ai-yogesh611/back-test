@@ -54,6 +54,13 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from backtest.data.sources_policy import (
+    SourceDisabledError,
+    default_broker_source,
+    policy_key,
+    require_synthetic,
+    synthetic_enabled,
+)
 from backtest.forward.feed_quality import get_quality_monitor
 from backtest.options.quote_providers import (
     SyntheticChainGenerator,
@@ -180,37 +187,60 @@ class ChainBus:
     def acquire(
         self,
         underlying: str,
-        source: str = "synthetic",
+        source: str = "",
         broker: Any = None,
     ) -> Any:
-        """Return the shared generator for ``underlying``, +1 subscriber.
+        """Return the shared feed for ``underlying``, +1 subscriber.
 
-        ``source="synthetic"`` → the classic shared ``SyntheticChainGenerator``.
-        ``source="mstock"`` → the shared :class:`LiveChainProvider`; needs a
-        broker client exposing ``get_option_chain`` / ``get_option_quote``.
+        A broker source (mstock/dhan) → the shared :class:`LiveChainProvider`;
+        needs a broker client exposing ``get_option_chain`` /
+        ``get_option_quote``, and there is no silent synthetic substitution.
+        No source named → the data-source policy's default feed, never a
+        hard-coded one, so a caller that forgets ``source=`` on a deployment
+        with synthetic off cannot quietly end up on generated candles.
         """
         key = str(underlying).upper()
+        source_key = self._resolve_source(source)
         with self._lock:
-            if str(source).lower() == "mstock":
-                if broker is None:
-                    raise ValueError(
-                        "ChainBus.acquire(source='mstock') requires a quote "
-                        "broker client — no silent synthetic substitution"
-                    )
-                entry = self._live.get(key)
-                if entry is None:
-                    from backtest.options.quote_providers import LiveChainProvider
+            if source_key == "synthetic":
+                return self._acquire_synthetic(key)
+            if broker is None:
+                raise ValueError(
+                    f"ChainBus.acquire(source={source_key!r}) requires a quote "
+                    "broker client — no silent synthetic substitution"
+                )
+            entry = self._live.get(key)
+            if entry is None:
+                from backtest.options.quote_providers import LiveChainProvider
 
-                    entry = _FeedEntry(
-                        feed=LiveChainProvider(broker), key=(key, "mstock", "")
-                    )
-                    self._live[key] = entry
-                    logger.info("live chain provider registered: %s", key)
-                entry.subscribers += 1
-                return entry.feed
-            return self._acquire_synthetic(key)
+                entry = _FeedEntry(
+                    feed=LiveChainProvider(broker), key=(key, source_key, "")
+                )
+                self._live[key] = entry
+                logger.info("live chain provider registered: %s (%s)", key, source_key)
+            entry.subscribers += 1
+            return entry.feed
+
+    @staticmethod
+    def _resolve_source(source: str) -> str:
+        """Canonical source key for a bus call, answered by the policy.
+
+        ``None``/"" (the caller named nothing) resolves to the deployment's
+        default broker feed. When the policy enables nothing at all the answer
+        stays synthetic — which is only reachable through
+        :meth:`_acquire_synthetic`, and that refuses.
+        """
+        key = policy_key(source)
+        if key:
+            return key
+        return default_broker_source() or "synthetic"
 
     def _acquire_synthetic(self, key: str) -> SyntheticChainGenerator:
+        # The single place a shared generated chain is ever built, so the
+        # policy gate lives here rather than at each call site: with synthetic
+        # disabled in config/data_sources.yaml this raises instead of handing
+        # back a generator that produces candles nobody asked for.
+        require_synthetic(f"chain feed for {key}")
         with self._lock:
             entry = self._generators.get(key)
             if entry is None:
@@ -220,11 +250,15 @@ class ChainBus:
             entry.subscribers += 1
             return entry.feed
 
-    def release(self, underlying: str, source: str = "synthetic") -> int:
+    def release(self, underlying: str, source: str = "") -> int:
         """Drop one subscriber; evict the generator at zero."""
         key = str(underlying).upper()
         with self._lock:
-            store = self._live if str(source).lower() == "mstock" else self._generators
+            store = (
+                self._generators
+                if self._resolve_source(source) == "synthetic"
+                else self._live
+            )
             entry = store.get(key)
             if entry is None:
                 return 0
@@ -235,9 +269,13 @@ class ChainBus:
                 return 0
             return entry.subscribers
 
-    def subscriber_count(self, underlying: str, source: str = "synthetic") -> int:
+    def subscriber_count(self, underlying: str, source: str = "") -> int:
         with self._lock:
-            store = self._live if str(source).lower() == "mstock" else self._generators
+            store = (
+                self._generators
+                if self._resolve_source(source) == "synthetic"
+                else self._live
+            )
             entry = store.get(str(underlying).upper())
             return entry.subscribers if entry else 0
 
@@ -293,10 +331,17 @@ def option_quote_provider_for(
       name (explicit or via the session manager) → the shared
       :class:`LiveChainProvider` (``"live:<broker>"``): real chains, real
       LTP, one API budget per underlying (ChainBus refcount).
-    * otherwise → the synthetic pair (``"synthetic:bs"``). The fallback is
-      **deliberate and labelled** — every surface that shows the runner also
-      shows the label, so a synthetic-priced run is never mistaken for a
-      live one (the honesty rule; runner summaries carry ``quote_source``).
+    * otherwise → the synthetic pair (``"synthetic:bs"``), **but only if the
+      data-source policy allows synthetic at all**.
+
+    The fallback used to be unconditional: ask for mStock with no session and
+    you got Black-Scholes chains, labelled honestly but trading anyway — which
+    is how a `paper/MSTOCK` runner ended up showing P&L on prices nobody ever
+    quoted (2026-09-30). With ``config/data_sources.yaml`` shipped as it is —
+    synthetic off — a runner with no authenticated session now **refuses to
+    build a bridge** instead. Operators who genuinely want a synthetic demo
+    (or the test suite) get the old labelled fallback back by setting
+    ``BACKTEST_DATA_PROFILE=testing``; nothing else about this function changes.
     """
     underlying = str(underlying).upper()
     source_key = str(source).lower()
@@ -309,12 +354,27 @@ def option_quote_provider_for(
         if broker is not None and (name is None or name == source_key):
             provider = get_chain_bus().acquire(underlying, source=source_key, broker=broker)
             return provider, getattr(provider, "source_name", f"live:{source_key}")
+        if not synthetic_enabled():
+            raise SourceDisabledError(
+                f"option runner on {underlying} asked for source={source_key} but there is "
+                f"no authenticated {source_key} session, and synthetic chains are disabled "
+                f"in config/data_sources.yaml — so there is nothing to fall back to. "
+                f"Authenticate {source_key} in Settings, then start or resume the runner "
+                f"(it upgrades to the live chain on resume). Refusing to price on "
+                f"generated candles is the point: a fake chain shows fake P&L."
+            )
         logger.warning(
             "option runner on %s requested source=%s but no authenticated "
             "%s session — using synthetic chain (labelled)",
             underlying,
             source_key,
             source_key,
+        )
+    elif not synthetic_enabled():
+        raise SourceDisabledError(
+            f"option runner on {underlying} requested source={source_key!r}, which "
+            f"is not a broker feed, and synthetic chains are disabled in "
+            f"config/data_sources.yaml — option runners must be created on mstock or dhan."
         )
     generator = get_chain_bus().acquire(underlying)
     return option_quote_provider(generator), "synthetic:bs"
@@ -446,6 +506,11 @@ class _BrokerBarFeedBase:
         if bar is None:
             monitor.observe_poll_no_data("unparseable bar row")
         else:
+            # Source tag for the manager's source-isolated fan-out: a live bar
+            # may only drive runners whose config.source matches this feed's
+            # broker (2026-09-30) — keeps synthetic bars out of mstock/dhan
+            # runners and vice versa.
+            bar["_source"] = self.broker_name
             monitor.observe_bar(bar["ts"])
         return bar
 

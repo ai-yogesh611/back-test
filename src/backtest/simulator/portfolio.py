@@ -78,6 +78,20 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _default_run_source() -> str:
+    """The ``source`` tag for a portfolio whose own source was never recorded.
+
+    Imported lazily (the data layer reaches into the simulator elsewhere) and
+    answered by ``config/data_sources.yaml``: the literal ``"synthetic"`` this
+    used to carry stamped a real mStock book as generated data — and names a
+    feed a deployment may have switched off. Reading the policy is one call;
+    naming a data source here is not allowed.
+    """
+    from backtest.data.sources_policy import default_source_tag
+
+    return default_source_tag()
+
+
 class PortfolioStatus:
     """Lifecycle states, matching ``portfolios.status`` in the schema."""
 
@@ -1047,7 +1061,7 @@ class Portfolio:
             base_currency=payload.get("base_currency", "INR"),
             limits=PortfolioLimits.from_dict(payload.get("limits") or {}),
             mode=payload.get("mode", "paper"),
-            source=payload.get("source", "synthetic"),
+            source=payload.get("source") or _default_run_source(),
             created_at=(
                 datetime.fromisoformat(payload["created_at"]) if payload.get("created_at") else None
             ),
@@ -1265,7 +1279,7 @@ class Portfolio:
                 base_currency=row.base_currency,
                 created_at=row.created_at,
                 mode=getattr(row, "mode", None) or "paper",
-                source=getattr(row, "source", None) or "synthetic",
+                source=getattr(row, "source", None) or _default_run_source(),
             )
 
             open_rows = session.scalars(

@@ -681,7 +681,13 @@
                 const attLine = att
                     ? ` <span class="${att.data_source_real ? 'muted' : 'neg'}" title="${C.escapeHtml(att.date_from || '')} → ${C.escapeHtml(att.date_to || '')}">${C.escapeHtml(att.data_source_label || att.data_source || '')}</span>`
                     : '';
-                return `<tr><td class="small">${C.fmtDate(a.timestamp)}</td><td>${C.escapeHtml(a.action)}${d.rolled_back ? ' <span class="muted small">(rolled back)</span>' : ''}${attLine}</td>
+                // PRD Part 2 §1: the audit row is where the full chain is
+                // readable years later — the origin handle is shown as a
+                // session handle (it is one), not as a record id.
+                const originLine = d.originated_from_backtest_id
+                    ? ` <span class="muted small" title="Session handle from the Backtest page">← BT ${C.escapeHtml(d.originated_from_backtest_id)}</span>`
+                    : '';
+                return `<tr><td class="small">${C.fmtDate(a.timestamp)}</td><td>${C.escapeHtml(a.action)}${d.rolled_back ? ' <span class="muted small">(rolled back)</span>' : ''}${attLine}${originLine}</td>
                     <td class="small">${C.escapeHtml(d.target || a.applied_to_mode || '—')}${d.new_instance_id ? ` · ${C.escapeHtml(String(d.new_instance_id).slice(0, 8))}` : ''}</td>
                     <td class="small">${C.escapeHtml(diff || '—')}</td><td class="small">${C.escapeHtml(a.user_id || '—')}</td>
                     <td>${canRollback ? `<button class="btn btn-sm" data-rollback="${a.audit_id}">↶ Rollback</button>` : ''}</td></tr>`;
@@ -760,19 +766,148 @@
 
     async function openApply(params) {
         state.applyParams = params || state.run.best_params;
+        state.applyStep = 1;
+        renderApplyChecks();
         renderChain();
         renderMonteCarloGate();
         $('applyParams').innerHTML = paramsPreview(state.applyParams);
         $('applyError').innerHTML = '';
         $('applyConfirmLive').checked = false;
         $('applyAllowUnvalidated').checked = false;
-        document.querySelector('input[name="applyTarget"][value="none"]').checked = true;
+        $('applyConfirmText').value = '';
+        $('applyNotes').value = '';
+        // PRD §5 step 2: default to the recommended first step (new paper
+        // runner), not "record only" — the modal exists to get a validated
+        // result onto paper, and pre-selecting the do-nothing option made
+        // most applies two clicks of pure ceremony away from that.
+        document.querySelector('input[name="applyTarget"][value="paper"]').checked = true;
         $('applyModal').hidden = false;
         try {
             const res = await C.api(`/api/optimize/runners?strategy=${encodeURIComponent(state.run.strategy_id)}`);
             state.runners = res.runners || [];
         } catch (_) { state.runners = []; }
         syncApplyTarget();
+        syncApplyStep();
+    }
+
+    // ------------------------------------------------------------------------
+    // PRD backTest-enhance §5 — the 3-step wizard.
+    // Step 1 REVIEW: the checks table. Step 2 TARGET: where, with the live
+    // 30-day paper-history gate as an inline explanation. Step 3 CONFIRM:
+    // chain + diff + type-"CONFIRM" handshake. The Apply button is never
+    // disabled; unreadiness is a visible table row, not a dead control.
+    // ------------------------------------------------------------------------
+
+    const APPLY_STEPS = 3;
+
+    function syncApplyStep() {
+        const step = state.applyStep || 1;
+        document.querySelectorAll('#applyModal .opt-apply-step').forEach((el) => {
+            el.hidden = Number(el.dataset.step) !== step;
+        });
+        $('applyBack').hidden = step === 1;
+        $('applyNext').hidden = step === APPLY_STEPS;
+        $('applyConfirm').hidden = step !== APPLY_STEPS;
+        $('applyNext').textContent = step === 1 ? 'Continue to Step 2 →' : 'Continue to Step 3 →';
+        if (step === 3) {
+            renderChain();
+            // Confirm-step chain + diff render into their own nodes so going
+            // Back to Step 2 and changing the target re-renders them.
+            const chain3 = $('applyChainConfirm');
+            if (chain3) chain3.innerHTML = $('applyChain').innerHTML;
+            $('applyParamsConfirm').innerHTML = paramsPreview(state.applyParams);
+            $('applyConfirmText').focus();
+        }
+        $('applyError').innerHTML = '';
+    }
+
+    function applyStepNext() {
+        const step = state.applyStep || 1;
+        if (step === 2) {
+            const t = applyTarget();
+            if (t === 'live' && !$('applyConfirmLive').checked) {
+                $('applyError').innerHTML = '<div>Tick the live acknowledgement in Step 2 first — these parameters would trade real money.</div>';
+                return;
+            }
+            if ((t === 'paper' || t === 'ab_test') && $('applyRunnerRow').hidden === false && !$('applyRunner').value && t === 'live') {
+                $('applyError').innerHTML = '<div>Select a live runner.</div>';
+                return;
+            }
+        }
+        state.applyStep = Math.min(APPLY_STEPS, step + 1);
+        syncApplyStep();
+    }
+
+    function applyStepBack() {
+        state.applyStep = Math.max(1, (state.applyStep || 1) - 1);
+        syncApplyStep();
+    }
+
+    /**
+     * §5 step 1: the checks table. Rows are assembled from what this run
+     * actually carries — walk-forward, robustness, deflated Sharpe, Monte
+     * Carlo, data source, trade count — with ✅/⚠/❌ per row. A missing check
+     * renders as ⚠ "not run", never as a pass.
+     */
+    function renderApplyChecks() {
+        const body = $('applyChecksBody');
+        const summary = $('applyReviewSummary');
+        if (!body) return;
+        const r = state.run || {};
+        const wf = r.walk_forward_results || {};
+        const att = r.data_attestation || {};
+        const metrics = r.best_metrics || {};
+        const mc = (state.monteCarlo && state.monteCarlo.available) ? state.monteCarlo : null;
+        const rows = [
+            {
+                label: 'Walk-forward run',
+                value: r.walk_forward_enabled ? 'Yes' : 'No',
+                cls: r.walk_forward_enabled ? 'ok' : 'warn',
+            },
+            {
+                label: 'Walk-forward pass',
+                value: r.walk_forward_enabled && C.isNum(wf.efficiency) ? `${C.fmtNum(wf.efficiency, 2)} eff` : 'not run',
+                cls: !r.walk_forward_enabled ? 'warn'
+                    : (wf.overfitted === true ? 'bad' : (wf.overfitted === false && C.isNum(wf.efficiency) && wf.efficiency >= 0.5 ? 'ok' : 'warn')),
+            },
+            {
+                label: 'Robustness score',
+                value: C.isNum(r.robustness_score) ? `${C.fmtNum(r.robustness_score, 1)}/10` : 'not scored',
+                cls: C.isNum(r.robustness_score) ? (r.robustness_score >= 6 ? 'ok' : 'warn') : 'warn',
+            },
+            {
+                label: 'Deflated Sharpe',
+                value: C.isNum(r.deflated_sharpe) ? C.fmtNum(r.deflated_sharpe, 2) : 'not computed',
+                cls: C.isNum(r.deflated_sharpe) ? (r.deflated_sharpe >= 0.5 ? 'ok' : 'warn') : 'warn',
+            },
+            {
+                label: 'Monte Carlo P(profit)',
+                value: mc ? `${C.fmtNum((mc.bootstrap || {}).profit_probability_pct, 0)}%` : 'not run',
+                cls: mc ? (((mc.bootstrap || {}).profit_probability_pct >= 60) ? 'ok' : 'warn') : 'warn',
+            },
+            {
+                label: 'Data source',
+                value: att.data_source_label || att.data_source || r.data_source || 'unknown',
+                cls: att.data_source_real || r.data_source_real ? 'ok' : 'warn',
+            },
+            {
+                label: 'Trade count',
+                value: String(C.isNum(metrics.total_trades) ? metrics.total_trades : (r.best_score != null && metrics.total_trades === undefined ? '—' : '—')),
+                cls: (metrics.total_trades >= 30) ? 'ok' : 'warn',
+            },
+        ];
+        const bad = rows.filter((x) => x.cls === 'bad').length;
+        const warn = rows.filter((x) => x.cls === 'warn').length;
+        body.innerHTML = rows.map((x) => `
+            <tr><td>${C.escapeHtml(x.label)}</td><td>${C.escapeHtml(x.value)}</td>
+            <td class="opt-check-${x.cls}">${x.cls === 'ok' ? '✅' : x.cls === 'bad' ? '❌' : '⚠️'}</td></tr>`).join('');
+        if (summary) {
+            summary.innerHTML = bad
+                ? `<span class="neg">${bad} check${bad > 1 ? 's' : ''} failed — review before applying anywhere, and do not apply to live.</span>`
+                : warn
+                    ? `<span class="opt-warn-text">${warn} check${warn > 1 ? 's' : ''} incomplete or weak — readable as “not certifiable yet”, not as a block.</span>`
+                    : `<span class="pos">All checks passed.</span>`;
+        }
     }
 
     /**
@@ -806,25 +941,36 @@
     }
 
     function applyTarget() {
-        return (document.querySelector('input[name="applyTarget"]:checked') || {}).value || 'none';
+        const raw = (document.querySelector('input[name="applyTarget"]:checked') || {}).value || 'none';
+        // §5 step 2 splits "paper" into new vs replace for presentation; the
+        // API vocabulary is still (none | paper | ab_test | live).
+        return raw === 'paper_replace' ? 'paper' : raw;
     }
 
     function syncApplyTarget() {
+        const raw = (document.querySelector('input[name="applyTarget"]:checked') || {}).value || 'none';
         const t = applyTarget();
         const row = $('applyRunnerRow');
         const sel = $('applyRunner');
         renderChain();
         const wantMode = t === 'live' ? 'live' : 'paper';
         const runners = state.runners.filter((r) => r.mode === wantMode);
-        row.hidden = t === 'none';
+        // §5 step 2: the replace option carries its own runner picker inline;
+        // new-paper and A/B never show one.
+        const replaceMode = raw === 'paper_replace';
+        row.hidden = !(replaceMode || t === 'live');
         let opts = runners.map((r) => `<option value="${C.escapeHtml(r.instance_id)}">${C.escapeHtml(r.name)} · ${C.escapeHtml(r.status)} · ${C.escapeHtml((r.symbols || []).join(','))}</option>`).join('');
-        if (t === 'paper' || t === 'ab_test') opts = `<option value="">${t === 'ab_test' ? '— no control runner —' : 'Spawn a NEW paper runner'}</option>${opts}`;
-        sel.innerHTML = opts || '<option value="">No matching live runner</option>';
+        if (t === 'paper' && !replaceMode) opts = '';
+        if (t === 'live') opts = opts || '<option value="">No matching live runner</option>';
+        sel.innerHTML = opts || '<option value="">No matching paper runner</option>';
         $('applyRunnerHint').textContent = {
-            paper: 'Selecting a runner flattens it and restarts it with the new parameters.',
-            ab_test: 'A new paper runner (B) is spawned; the selected runner (A) is left untouched as the control.',
+            paper: replaceMode
+                ? 'Selecting a runner flattens it and restarts it with the new parameters.'
+                : 'A new paper runner is created with these parameters.',
+            ab_test: 'A new paper runner (B) is spawned; the existing runner (A) is left untouched as the control.',
             live: 'The live runner is flattened and restarted with the new parameters.',
         }[t] || '';
+        renderLiveHistoryNote();
         const r = state.run;
         $('applyLiveBox').hidden = t !== 'live';
         if (t === 'live') {
@@ -837,7 +983,42 @@
         }
     }
 
+    /**
+     * §5 step 2's live gate, as an INLINE EXPLANATION rather than a dead
+     * control: the LIVE radio is never disabled, but the note under it says
+     * exactly why the result is not live-ready — no paper runner for this
+     * strategy with ≥30 days of history. The server still enforces the real
+     * gate; this is the part the operator reads.
+     */
+    function renderLiveHistoryNote() {
+        const el = $('applyLiveHistoryNote');
+        if (!el) return;
+        const paperRunners = state.runners.filter((r) => r.mode === 'paper');
+        const qualified = paperRunners.filter((r) => {
+            const started = r.created_ts ? Date.parse(r.created_ts) : NaN;
+            return isFinite(started) && (Date.now() - started) >= 30 * 86400000;
+        });
+        if (qualified.length) {
+            el.innerHTML = `✓ Paper history available: ${qualified.length} paper runner${qualified.length > 1 ? 's' : ''} with ≥ 30 days of history for this strategy.`;
+            el.classList.remove('neg');
+        } else if (paperRunners.length) {
+            el.innerHTML = `⚠ Not ready: no paper runner for this strategy has ≥ 30 days of history yet. Test on paper first — the server will refuse a live apply without it.`;
+            el.classList.add('opt-warn-text');
+        } else {
+            el.innerHTML = `⚠ Not ready: this strategy has no paper runner at all. “New Paper Runner” above is the recommended first step.`;
+            el.classList.add('opt-warn-text');
+        }
+    }
+
     async function confirmApply() {
+        // §5 step 3: the type-"CONFIRM" handshake replaces the old checkbox.
+        // A checkbox is one reflexive click; typing a word is a decision.
+        // The comparison is case-insensitive on purpose: what matters is that
+        // the operator typed the word, not their shift-key discipline.
+        if (String($('applyConfirmText').value || '').trim().toUpperCase() !== 'CONFIRM') {
+            $('applyError').innerHTML = '<div>Type CONFIRM to apply these parameters.</div>';
+            return;
+        }
         const t = applyTarget();
         // The Monte Carlo acknowledgement is required only when it is on
         // screen and unchecked. A checkbox nobody was shown must not become a
@@ -910,6 +1091,11 @@
         $('btnMonteCarlo').addEventListener('click', () => runMonteCarlo());
         $('btnPreset').addEventListener('click', () => openPreset());
         $('applyConfirm').addEventListener('click', confirmApply);
+        $('applyNext').addEventListener('click', applyStepNext);
+        $('applyBack').addEventListener('click', applyStepBack);
+        $('applyConfirmText').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && state.applyStep === APPLY_STEPS) confirmApply();
+        });
         $('presetConfirm').addEventListener('click', confirmPreset);
         document.querySelectorAll('input[name="applyTarget"]').forEach((r) => r.addEventListener('change', syncApplyTarget));
         $('applyRunner').addEventListener('change', renderChain);

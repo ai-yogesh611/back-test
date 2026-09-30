@@ -56,6 +56,10 @@ APP_SOURCE_TAGS: dict[str, str] = {
     "synthetic": "synthetic",
     "csv": "synthetic",
     "mstock": "mstock",
+    # Any authenticated broker feed is the live-feed class of trust; dhan was
+    # missing, so a dhan runner tagged as ``synthetic`` — the one label this
+    # deployment refuses to hand out by accident.
+    "dhan": "mstock",
     "db": "replay",
 }
 

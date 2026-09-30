@@ -15,6 +15,14 @@ build synthetic series on purpose. What changed is that the *app* will not
 serve a backtest or an optimization on a disabled source, and will say why
 instead of returning results that look real.
 
+Since 2026-09-30 the policy is enforced at **every** source decision, not just
+the run endpoints: :func:`require_enabled` guards
+:attr:`backtest.data.source_registry.SourceRegistry` and the forward runner's
+feed routing, and :func:`synthetic_enabled` is what an option runner asks
+before it is allowed to substitute a Black-Scholes chain for the broker's.
+With synthetic off there is no fallback path left — the runner refuses to
+start, it does not trade a guess.
+
 A missing or broken config is not fatal — it falls back to
 :data:`FALLBACK_SOURCES`, which is the conservative choice: synthetic off, real
 sources on. A typo in a YAML file should not be the thing that quietly re-enables
@@ -35,7 +43,19 @@ logger = logging.getLogger("backtest")
 __all__ = [
     "SourceSpec",
     "SourcePolicy",
+    "SourceDisabledError",
     "source_policy",
+    "require_enabled",
+    "require_synthetic",
+    "synthetic_enabled",
+    "default_backtest_source",
+    "default_broker_source",
+    "default_source_tag",
+    "synthetic_chain_generator",
+    "policy_key",
+    "SOURCE_KEY_ALIASES",
+    "POLICY_VOCABULARY",
+    "CHAIN_SOURCES",
     "reset_source_policy",
     "FALLBACK_SOURCES",
     "PROFILE_ENV",
@@ -51,8 +71,61 @@ FALLBACK_SOURCES: dict[str, dict[str, Any]] = {
     "synthetic": {"enabled": False, "label": "Synthetic (random walk)", "certifiable": False},
     "db": {"enabled": True, "label": "Real Data (PostgreSQL)", "certifiable": True},
     "mstock": {"enabled": True, "label": "Broker (mstock)", "certifiable": True},
+    "dhan": {"enabled": True, "label": "Broker (dhan)", "certifiable": True},
     "csv": {"enabled": True, "label": "CSV files", "certifiable": False},
 }
+
+
+#: Sources that can carry a real *option chain* (not just candles) into a
+#: backtest. Deliberately empty as of 2026-09-30: the DB holds bars, the broker
+#: holds live chains, and neither is historical option-chain storage. Backtests
+#: and compare-backtests are therefore equity-only, which is the operator's
+#: stated rule — options belong to forward testing and the portfolio, where the
+#: chain comes from mStock live.
+CHAIN_SOURCES: tuple[str, ...] = ()
+
+#: Runner/feed source name -> the key that describes it in this policy.
+#:
+#: The app speaks two vocabularies and they are not the same size. A runner's
+#: ``config.source`` is a *feed* name (``mstock``, ``dhan``, ``replay``,
+#: ``synthetic``); this file keys on *data sources* (``db``, ``mstock``,
+#: ``synthetic``, ``csv``). ``replay`` means "historical DB bars replayed at a
+#: clock", so it is ``db`` as far as provenance goes; ``dhan`` is a second
+#: broker feed and gets its own row. Without this map, checking a runner's
+#: source against the policy would report ``replay``/``dhan`` as unknown and
+#: refuse a perfectly real broker runner — a false alarm that would get the
+#: control switched back off again.
+SOURCE_KEY_ALIASES: dict[str, str] = {
+    "synthetic": "synthetic",
+    "generated": "synthetic",
+    "replay": "db",
+    "historical": "db",
+    "db": "db",
+    "postgres": "db",
+    "csv": "csv",
+    "mstock": "mstock",
+    "dhan": "dhan",
+}
+
+#: Every source name the policy can meaningfully describe. The vocabulary the
+#: config file is cross-checked against (:func:`_warn_about_vocabulary`) — a
+#: row here that no profile describes is a silent hole in the control.
+POLICY_VOCABULARY: frozenset[str] = frozenset(SOURCE_KEY_ALIASES.values())
+
+
+def policy_key(name: str) -> str | None:
+    """The policy key for a source/feed name, or ``None`` if unrecognized."""
+    raw = str(name or "").strip().lower()
+    return SOURCE_KEY_ALIASES.get(raw)
+
+
+class SourceDisabledError(ValueError):
+    """A run/runner asked for a source this deployment disables.
+
+    ``ValueError`` on purpose: the API layer already maps that onto a 4xx with
+    the message shown verbatim, so the operator reads *which* source is off and
+    *how* to enable it instead of getting a stack trace.
+    """
 
 
 class SourceSpec:
@@ -124,6 +197,19 @@ class SourcePolicy:
     def is_enabled(self, name: str) -> bool:
         spec = self._sources.get(str(name or "").strip().lower())
         return bool(spec and spec.enabled)
+
+    def option_backtest_allowed(self) -> bool:
+        """May an options chain be priced at all in a backtest?
+
+        PRD 2026-09-30: the deployment's data sources are **DB candles only** —
+        ``market_data_cache`` holds no historical option chains, so a backtested
+        option P&L can only ever be Black-Scholes off a generated chain. The
+        option paths therefore require a source that is *both* enabled and
+        explicitly allowed to carry chains, and no deployment today satisfies
+        that. When a real chain source is added to the vocabulary, list its name
+        in ``CHAIN_SOURCES`` and enable it; the backtest gate opens with it.
+        """
+        return any(self.is_enabled(name) for name in CHAIN_SOURCES)
 
     def is_certifiable(self, name: str) -> bool:
         spec = self._sources.get(str(name or "").strip().lower())
@@ -207,7 +293,7 @@ def _warn_about_vocabulary(specs: Mapping[str, SourceSpec]) -> None:
     enabled: true`` reads as real data, matches nothing, and silently leaves
     the real source disabled.
     """
-    known = set(APP_SOURCE_TAGS)
+    known = POLICY_VOCABULARY | set(APP_SOURCE_TAGS)
     unknown = sorted(set(specs) - known)
     if unknown:
         logger.warning(
@@ -240,3 +326,147 @@ def reset_source_policy() -> None:
     """Drop the cache — for tests, and for anything that edits the config."""
     global _POLICY
     _POLICY = None
+
+
+# -- the enforcement helpers (2026-09-30) ------------------------------------
+# The policy used to be consulted only at the backtest/optimize request
+# boundary (``api.data_guard``). Every OTHER place that picks a data source —
+# the (mode, source) registry, a forward runner's bar feed, an option runner's
+# chain provider — still had its own hard-coded ``or "synthetic"`` default or
+# its own labelled fallback, so a deployment with synthetic switched OFF could
+# still end up pricing and filling on generated candles. These two helpers are
+# the single check those call sites share.
+
+
+def require_enabled(name: str, *, where: str = "") -> str:
+    """Return ``name`` (normalised) when the policy allows it.
+
+    Raises :class:`SourceDisabledError` carrying the policy's own refusal
+    sentence otherwise. ``where`` names the call site in the message when the
+    refusal needs extra context (e.g. "this runner asked for mStock but no
+    session is authenticated").
+
+    Feed names are resolved through :data:`SOURCE_KEY_ALIASES` first, so a
+    runner saying ``replay`` is judged as the ``db`` source it actually bars
+    from. A name with no alias is refused rather than waved through — an
+    unrecognised source is exactly the thing this policy exists to catch.
+    """
+    key = str(name or "").strip().lower()
+    resolved = policy_key(key)
+    if resolved is None:
+        raise SourceDisabledError(
+            f"Unknown data source '{name}' — config/data_sources.yaml describes: "
+            f"{', '.join(sorted(SOURCE_KEY_ALIASES))}. "
+            f"Nothing runs on a source the policy cannot name. [{where}]".strip()
+        )
+    refusal = source_policy().refusal_for(resolved)
+    if refusal is not None:
+        raise SourceDisabledError(f"{refusal}{f' [{where}]' if where else ''}")
+    return key
+
+
+def synthetic_enabled() -> bool:
+    """Is the synthetic source allowed for this process?
+
+    Named for the one question the fallback sites actually ask — they do not
+    branch on db/mstock, they branch on "may I substitute generated data at
+    all?". Default deployments say no; ``tests/conftest.py`` (and
+    ``BACKTEST_DATA_PROFILE=testing``) say yes.
+    """
+    return source_policy().is_enabled("synthetic")
+
+
+def require_synthetic(where: str = "") -> None:
+    """Refuse, in words, to substitute generated data at this call site.
+
+    :func:`require_enabled` judges a source the caller has *chosen*; this one
+    guards the places that were about to *fall back* to synthetic without
+    anyone choosing it (an option runner with no broker session, an equity
+    runner whose source string was not ``mstock``). Those sites only ever need
+    the yes/no on synthetic, and gating the real sources here instead would
+    break the test suite's ability to build a ``DbSource`` for an unreachable
+    database — availability is not the same question as legitimacy.
+
+    Raises :class:`SourceDisabledError` (a ``ValueError``) when the policy has
+    synthetic off.
+    """
+    if synthetic_enabled():
+        return
+    raise SourceDisabledError(
+        "Synthetic (generated) data is disabled in config/data_sources.yaml, so there is "
+        "no fallback source to use here. Run this on a real source — mstock/dhan for live "
+        "and paper, db for backtests — and authenticate the broker first. The test suite "
+        "opts back into synthetic through the policy's own 'testing' profile "
+        "(BACKTEST_DATA_PROFILE=testing)."
+        + (f" [{where}]" if where else "")
+    )
+
+
+# -- "nothing was named" answers, so no call site needs its own literal ------
+#
+# Every default that used to read ``or "synthetic"`` is replaced by one of
+# these two. Both put synthetic FIRST and only when the policy enables it, so
+# the test profile keeps its source-less convenience while a deployment with
+# the flag off can never be answered with a generated feed. The order of the
+# real candidates mirrors ``backtest.web.app.resolve_source`` — db first for
+# historical runs, the broker feeds first for trading.
+
+def _first_enabled(candidates: tuple[str, ...]) -> str:
+    policy = source_policy()
+    for candidate in candidates:
+        if policy.is_enabled(candidate):
+            return candidate
+    return ""
+
+
+def default_backtest_source() -> str:
+    """The source a *historical* run (backtest, compare, optimization, CLI)
+    gets when nothing names one — the database, unless the policy says
+    generated data is fine."""
+    return _first_enabled(("synthetic", "db", "csv"))
+
+
+def default_broker_source() -> str:
+    """The source a *trading* path (runner, forward run, live papertrade) gets
+    when nothing names one — the broker feed, never an unnamed synthetic one."""
+    return _first_enabled(("synthetic", "mstock", "dhan"))
+
+
+def default_source_tag() -> str:
+    """The taxonomy tag (``synthetic|replay|mstock``) for the default feed.
+
+    For the places that only ever *label* a run — a ledger row, a persisted
+    portfolio row, the source dropdown's pre-selection. Those defaults used to
+    read the literal ``"synthetic"`` for every run, which mislabelled a real
+    mStock book as generated data and left a deployment with synthetic off
+    naming a feed it had switched off. ``replay`` is the fallback when the
+    policy enables nothing at all: an unrecorded provenance is historical
+    data, never a claim about a disabled feed.
+    """
+    from backtest.data.source_tags import app_source_tag
+
+    return app_source_tag(default_broker_source(), default="replay")
+
+
+def synthetic_chain_generator(where: str = "") -> Any | None:
+    """A generated option-chain feed, or ``None`` when the policy forbids one.
+
+    Both execution engines used to say ``self.chain_generator or
+    SyntheticChainGenerator()`` — a constructor that asked the policy nothing,
+    so a live-labelled run with no broker session priced itself on
+    Black-Scholes strikes and expiries the market never listed. Callers treat
+    ``None`` as "there is no chain feed here" and refuse the order; the label
+    they carry says why.
+
+    ``where`` only names the call site in the refusal log line.
+    """
+    if synthetic_enabled():
+        from backtest.options.quote_providers import SyntheticChainGenerator
+
+        return SyntheticChainGenerator()
+    logger.warning(
+        "[data-policy] no chain feed for %s: synthetic is disabled in "
+        "config/data_sources.yaml and there is no broker chain to use instead.",
+        where or "this run",
+    )
+    return None

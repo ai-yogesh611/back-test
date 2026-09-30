@@ -321,12 +321,21 @@ class TestRunnerRowContract:
 
 
 class TestMatrixRendering:
-    def test_the_row_shows_the_structure_and_premium_at_risk(self, rendered):
+    def test_the_row_shows_the_structure_and_premium_at_risk(
+        self, rendered, snapshots
+    ):
         matrix = rendered["MATRIX"]
         assert "badge-option" in matrix
         assert "Bull call spread" in matrix
         assert "premium at risk" in matrix
-        assert "exp 29 Oct" in matrix.replace("Oct", "Oct")  # expiry of the open structure
+        # The label must match the expiry the fixture actually opened. Derived,
+        # not hard-coded: this assertion used to read "exp 29 Oct" because the
+        # generator assumed a Thursday monthly expiry, and it went stale the day
+        # the calendar switched to the last Tuesday (Oct 2026 → the 27th).
+        expiry = date.fromisoformat(
+            snapshots["row"]["options"]["open_structures_detail"][0]["expiry"]
+        )
+        assert f"exp {expiry.day} {expiry.strftime('%b')}" in matrix
         assert "24,950/25,000 CE" in matrix or "/" in matrix
 
     def test_the_positions_cell_counts_structures_with_legs_underneath(self, rendered):

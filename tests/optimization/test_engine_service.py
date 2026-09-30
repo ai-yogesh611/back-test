@@ -86,13 +86,22 @@ def test_parallel_pool_matches_inline(candles):
     assert inline == pytest.approx(pooled)
 
 
-def test_options_engine_smoke():
+def test_options_engine_is_refused_in_optimization():
+    """Options do not run in the optimizer/backtest path (2026-09-30 rule).
+
+    The option driver prices chains off the synthetic generator, and the DB
+    data source holds candles and no historical chains — so an option "score"
+    here would be a number over generated premiums. The engine refuses and says
+    why, and the error comes back in the payload the way every other evaluation
+    failure does (``evaluate`` never raises).
+    """
     nifty = _candles("NIFTY", "2024-01-01", "2024-06-30", "1day")
     settings = {**SETTINGS, "symbol": "NIFTY", "engine": "options"}
     out = evaluate(nifty, settings, "directional_options",
                    {"scale_points": 2, "engine.max_open_structures": 1})
-    assert out["error"] is None, out.get("error")
-    assert "total_trades" in out["metrics"]
+    assert out["error"] is not None
+    assert "cannot be backtested or optimized" in out["error"]
+    assert "Forward Testing" in out["error"], "the refusal must name where options DO run"
 
 
 def test_walk_forward_end_to_end(candles):

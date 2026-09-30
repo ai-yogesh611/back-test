@@ -42,7 +42,7 @@ def _alert_refresh_interval() -> float:
         return 1.0
 
 
-app = create_app(source=os.getenv("BACKTEST_SOURCE", "synthetic"))
+app = create_app(source=os.getenv("BACKTEST_SOURCE", ""))
 app.config["PORTFOLIO_INTELLIGENCE_ENABLED"] = _portfolio_intelligence_enabled()
 start_portfolio_intelligence(
     app.config["PORTFOLIO_INTELLIGENCE_ENABLED"], _alert_refresh_interval()

@@ -33,6 +33,7 @@
     // tuned on the canonical engine (§1.1 was entirely about that mismatch).
     let engine = 'driver';
     let sourceBacktestId = null;   // §6 reverse-flow audit chain, first link
+    let prefillBaseline = null;    // §1: origin's engine/data flags + baseline metrics
     let prefill = null;            // the §6 hand-off, consumed once
 
     const CONSTRAINT_LABELS = {
@@ -76,7 +77,9 @@
                 .map((o) => `<option value="${o.id}">${C.escapeHtml(o.label)}</option>`).join('');
         } catch (e) { C.toast(`Could not load options: ${e.message}`, 'error'); }
         try {
-            const res = await fetch('/api/strategies');
+            // venue=backtest: optimization drives the same DB-bar backtest
+            // engine, so option strategies are not offered here either.
+            const res = await fetch('/api/strategies?venue=backtest');
             state.strategies = await res.json();
         } catch (e) { state.strategies = []; }
         const sel = $('optStrategy');
@@ -132,6 +135,11 @@
         applyParamOverrides(pf.params || {});
         engine = pf.engine || 'driver';
         sourceBacktestId = pf.resultId || null;
+        prefillBaseline = {
+            baselineFillExact: !!pf.baselineFillExact,
+            baselineRealData: !!pf.baselineRealData,
+            baselineMetrics: pf.baselineMetrics || null,
+        };
         renderPrefillNotice(pf);
         onChange();
     }
@@ -152,14 +160,35 @@
         const el = $('optPrefillNotice');
         if (!el) return;
         const same = !pf.source || pf.source === root.dataset.source;
+        // PRD Part 2 §1: the banner quotes the originating backtest's baseline
+        // performance, so the user can judge every optimizer result against
+        // the number they started from.
+        const bm = pf.baselineMetrics || {};
+        const C = globalThis.OptCommon;
+        const baselineLine = C && C.isNum(bm.sharpe)
+            ? `<br><span class="small">Baseline performance: <strong>Sharpe ${C.fmtNum(bm.sharpe, 2)}</strong>`
+              + (C.isNum(bm.total_return_pct) ? ` · Return <strong>${C.fmtPct(bm.total_return_pct)}</strong>` : '')
+              + (C.isNum(bm.total_trades) ? ` · Trades <strong>${bm.total_trades}</strong>` : '')
+              + `</span>`
+            : '';
+        // §1 skip-baseline: redundant only when the origin already ran the
+        // canonical fill-exact engine on real data over the same range. The
+        // run is told via baseline_imported; the search itself does not skip
+        // anything until the server agrees the origin qualifies.
+        const skipBaseline = pf.baselineFillExact && pf.baselineRealData && same;
+        const skipLine = skipBaseline
+            ? `<br><span class="pos small">✓ Origin ran the fill-exact engine on real data — the optimizer imports this result as the baseline instead of re-running it.</span>`
+            : '';
         el.hidden = false;
         el.className = 'opt-prefill-notice' + (same ? '' : ' opt-prefill-warn');
-        el.innerHTML = `⚙ Carried over from backtest result <code>${C.escapeHtml(pf.resultId || '—')}</code>`
+        el.innerHTML = `📎 Pre-filled from backtest result <code>${C.escapeHtml(pf.resultId || '—')}</code>`
             + ` · engine <strong>${C.escapeHtml(pf.engineLabel || pf.engine)}</strong>`
             + ` · data source <strong>${C.escapeHtml(pf.source || root.dataset.source || 'default')}</strong>`
+            + baselineLine
             + (same ? ''
                 : ` — <span class="neg">this is a different source from the one this page uses, `
                   + `so the search will not be comparable.</span>`)
+            + skipLine
             + `<br><span class="muted small">Nothing has been run. Review the form, then press Start. `
             + `Walk-forward is ${$('optWfEnabled').checked ? 'on' : 'off'}.</span>`;
     }
@@ -360,6 +389,13 @@
                 source: root.dataset.source || undefined,
                 // §6 reverse flow: link 1 of backtest -> optimize -> runner.
                 sourceBacktestId: sourceBacktestId || undefined,
+                // §1: recorded on the run so the audit row can name the
+                // originating backtest, and so the optimizer can skip its own
+                // baseline pass when the origin already ran fill-exact on
+                // real data (baselineImported flags that at run time).
+                baselineImported: !!(prefillBaseline && prefillBaseline.baselineFillExact
+                    && prefillBaseline.baselineRealData),
+                baselineMetrics: prefillBaseline ? prefillBaseline.baselineMetrics || null : null,
             },
             walkForward: {
                 enabled: $('optWfEnabled').checked,

@@ -89,6 +89,7 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 
 import pandas as pd
 
+from backtest.data.sources_policy import synthetic_enabled
 from backtest.simulator.engine_loop import Bar, to_python_scalar
 from backtest.simulator.errors import ValidationError
 from backtest.simulator.money import ZERO, money
@@ -232,6 +233,17 @@ class DataConfig:
         if self.mode == "paper" and self.source not in {"synthetic", "mstock"}:
             raise ValidationError(
                 f"paper mode needs source 'synthetic' or 'mstock', got {self.source!r}"
+            )
+        # The source *default* above is "synthetic" for historical reasons, and
+        # a deployment that disabled generated data must not inherit it. The
+        # policy is the authority: with synthetic off, an unset/stale synthetic
+        # source is a configuration error, not a run on fake bars.
+        if self.source == "synthetic" and not synthetic_enabled():
+            raise ValidationError(
+                "source='synthetic' is disabled by config/data_sources.yaml — run this "
+                "mode='paper', source='mstock' (broker data, paper risk), or "
+                "mode='backtest' (DB bars). Tests opt back into synthetic through the "
+                "policy's 'testing' profile."
             )
         self.symbols = [str(s).strip().upper() for s in self.symbols]
         if not self.symbols:

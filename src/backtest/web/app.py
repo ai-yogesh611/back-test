@@ -39,10 +39,10 @@ from backtest.api.optimize import optimize_bp
 from backtest.pine.api import pine_bp
 from backtest.api.playbooks import playbooks_bp
 from backtest.api.segments import segments_bp
-from backtest.api.portfolio import list_instances
+from backtest.api.portfolio import _default_runner_source, list_instances
 from backtest.api.symbols import symbols_bp
 from backtest.brokers.session_manager import get_session_manager
-from backtest.data.source_tags import SOURCE_TAG_VALUES
+from backtest.data.source_tags import SOURCE_TAG_VALUES, app_source_tag
 from backtest.data.sources_policy import build_policy
 from backtest.logging_config import (
     bind_request_id,
@@ -54,6 +54,19 @@ from backtest.logging_config import (
 from backtest.simulator.bucket_risk import BUCKET_RISK_LIMITS
 
 logger = get_logger(__name__)
+
+
+def _default_source_tag() -> str:
+    """The source the dropdowns pre-select — derived, never a literal.
+
+    A page that opens on a source its own policy would refuse is a form whose
+    first submission is an error, so the selection follows exactly what the
+    runner API picks when the client names nothing
+    (:func:`backtest.api.portfolio._default_runner_source`), mapped into the
+    run-taxonomy vocabulary the selects are built from.
+    """
+    return app_source_tag(_default_runner_source())
+
 
 #: Re-exported for /api/config so the UI can show what the active source honours.
 try:
@@ -267,13 +280,81 @@ def _warn_if_source_disabled(policy: Any, source: str) -> None:
         )
 
 
+#: Preference order for the automatic fallback. ``db`` first (real, certifiable,
+#: already on disk), then the broker feeds, then CSV. Synthetic is deliberately
+#: NOT in this list: an operator who disabled it did so on purpose, and silently
+#: serving generated candles as a "fallback" would defeat the whole policy.
+_FALLBACK_PREFERENCE = ("db", "mstock", "dhan", "csv")
+
+
+def resolve_source(policy: Any, requested: str) -> str:
+    """The source the app will actually run on.
+
+    PRD change of direction (2026-09-30): a disabled configured source used to
+    block the Backtest and Optimize tabs behind a ⛔ banner. That punished the
+    ordinary case — synthetic disabled on purpose, real sources enabled — for
+    nothing. When the requested source is disabled the app now falls back to
+    the best *enabled* one (``_FALLBACK_PREFERENCE`` order), logs the
+    substitution loudly, and the UI's source badge simply says what is in use.
+
+    Only an explicit request for a specific source keeps its refusal meaning:
+    if every fallback candidate is also disabled, the requested source is kept
+    and the 409 path still guards it — the app refuses to run rather than
+    pretending a source is fine.
+
+    An empty request (no ``$BACKTEST_SOURCE``) is not a request for synthetic;
+    it means "whatever the config enables", resolved in the same order.
+    """
+    requested = str(requested or "").strip().lower()
+    if policy.is_enabled(requested):
+        return requested
+    if not requested:
+        # Nothing was asked for: take the first source the config enables.
+        # Synthetic leads because it is the historical default and the test
+        # profile's choice — and it can only be chosen by a deployment that
+        # sets ``synthetic: enabled: true``, so production, where the flag is
+        # off, lands on db/mstock exactly as before.
+        for candidate in ("synthetic",) + _FALLBACK_PREFERENCE:
+            if policy.is_enabled(candidate):
+                logger.info(
+                    "[data-policy] no source requested — running on source=%s "
+                    "(enabled sources: %s)",
+                    candidate,
+                    ", ".join(policy.enabled_names()),
+                )
+                return candidate
+        logger.error(
+            "[data-policy] no source requested and NO source is enabled — run "
+            "endpoints will refuse with 409."
+        )
+        return ""
+    for candidate in _FALLBACK_PREFERENCE:
+        if candidate != requested and policy.is_enabled(candidate):
+            logger.warning(
+                "[data-policy] requested source=%s is disabled — falling back to "
+                "source=%s (enabled sources: %s)",
+                requested,
+                candidate,
+                ", ".join(policy.enabled_names()),
+            )
+            return candidate
+    logger.error(
+        "[data-policy] source=%s is disabled and NO enabled fallback exists "
+        "(enabled: %s) — run endpoints will refuse with 409.",
+        requested,
+        ", ".join(policy.enabled_names()) or "none",
+    )
+    return requested
+
+
 def create_app(
-    source: str = "synthetic",
+    source: str = "",
     *,
     log_level: str | int | None = None,
     log_file: str | None = None,
     currency: str | None = None,
     replay_speed: float | None = None,
+    data_source_policy: Any | None = None,
     **overrides: Any,
 ) -> Flask:
     """Create the unified Flask app.
@@ -281,8 +362,10 @@ def create_app(
     Parameters
     ----------
     source:
-        Default candle data source for backtest endpoints
-        (``synthetic`` | ``csv`` | ``mstock`` | ``db``).
+        Candle data source for backtest endpoints (``db`` | ``csv`` | ``mstock``
+        | ``synthetic``). Empty — the default — asks the policy to pick, which
+        is what keeps ``$BACKTEST_SOURCE`` out of the picture as a hidden
+        synthetic switch.
     log_level:
         Logging level for the whole process; ``None`` → ``$BACKTEST_LOG_LEVEL``
         → INFO. ``log_file`` (``None`` → ``$BACKTEST_LOG_FILE``) mirrors output
@@ -314,11 +397,24 @@ def create_app(
         template_folder=_TEMPLATE_DIR,
         static_folder=_STATIC_DIR,
     )
-    app.config["BACKTEST_SOURCE"] = source
     # Resolved once here so a test can substitute a policy without touching the
     # module-level cache, and so the refusal message is identical everywhere.
-    app.config["DATA_SOURCE_POLICY"] = build_policy()
-    _warn_if_source_disabled(app.config["DATA_SOURCE_POLICY"], source)
+    # ``data_source_policy`` exists because the resolution two lines down has to
+    # use THE SAME policy the request guard will use. A caller that set
+    # ``app.config["DATA_SOURCE_POLICY"]`` after this function returned got an
+    # app that had already resolved its source against the on-disk profile — so
+    # ``BACKTEST_SOURCE`` and the policy disagreed about what the app runs on,
+    # and a guard checking the resolved name refused a source the injected
+    # policy happily allowed (or, worse, allowed one it did not describe).
+    app.config["DATA_SOURCE_POLICY"] = (
+        data_source_policy if data_source_policy is not None else build_policy()
+    )
+    # A disabled configured source falls back to the best enabled one rather
+    # than blocking both tabs (see resolve_source). The REQUESTED source is
+    # remembered under BACKTEST_SOURCE_REQUESTED so provenance labels can
+    # distinguish "asked for synthetic" from "running db instead".
+    app.config["BACKTEST_SOURCE_REQUESTED"] = source
+    app.config["BACKTEST_SOURCE"] = resolve_source(app.config["DATA_SOURCE_POLICY"], source)
     money = _resolve_currency(currency)
     app.config["CURRENCY"] = money["code"]
     app.config["CURRENCY_SYMBOL"] = money["symbol"]
@@ -350,6 +446,7 @@ def create_app(
             "replay_speed": app.config["FORWARD_REPLAY_BARS_PER_SECOND"],
             "bucket_modes": sorted(BUCKET_RISK_LIMITS),
             "source_tags": sorted(SOURCE_TAG_VALUES),
+            "default_source_tag": _default_source_tag(),
         }
 
     _register_request_logging(app)
@@ -357,7 +454,7 @@ def create_app(
 
     logger.info(
         "app created: source=%s currency=%s(%s) replay_speed=%s bars/s log_level=%s python=%s",
-        source,
+        app.config["BACKTEST_SOURCE"],
         app.config["CURRENCY"],
         app.config["CURRENCY_SYMBOL"],
         app.config["FORWARD_REPLAY_BARS_PER_SECOND"],
@@ -439,7 +536,7 @@ def create_app(
         return render_template(
             "backtest.html",
             active="backtest",
-            source=app.config.get("BACKTEST_SOURCE", "synthetic"),
+            source=app.config["BACKTEST_SOURCE"],
             data_sources=data_source_status(),
         )
 
@@ -448,7 +545,7 @@ def create_app(
         return render_template(
             "backtest.html",
             active="backtest",
-            source=app.config.get("BACKTEST_SOURCE", "synthetic"),
+            source=app.config["BACKTEST_SOURCE"],
             data_sources=data_source_status(),
         )
 
@@ -473,7 +570,7 @@ def create_app(
             "optimize.html",
             active="optimize",
             selected_strategy=request.args.get("strategy") or "",
-            source=app.config.get("BACKTEST_SOURCE", "synthetic"),
+            source=app.config["BACKTEST_SOURCE"],
             data_sources=data_source_status(),
         )
 
@@ -629,7 +726,7 @@ def start_portfolio_intelligence(enabled: bool = True, interval: "float | None" 
 def run_app(
     host: str = "0.0.0.0",
     port: int = 5000,
-    source: str = "synthetic",
+    source: str = "",
     debug: bool = False,
     log_level: "str | int | None" = None,
     log_file: "str | None" = None,
@@ -671,11 +768,14 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=5000)
     parser.add_argument(
         "--source",
-        default="synthetic",
-        choices=["synthetic", "csv", "mstock", "dhan", "db", "mock_broker"],
+        default=os.getenv("BACKTEST_SOURCE", ""),
+        choices=["", "synthetic", "csv", "mstock", "dhan", "db", "mock_broker"],
         help=(
-            "Data source: synthetic | csv | mstock | dhan | db | mock_broker "
-            "(mock_broker = synthetic data + zero-credential dry-run broker, Gap-PRD P5)"
+            "Data source: synthetic | csv | mstock | dhan | db | mock_broker. "
+            "Empty (the default) lets config/data_sources.yaml choose, so no "
+            "source hides in a CLI default; a disabled choice falls back per "
+            "the data policy. (mock_broker = synthetic data + zero-credential "
+            "dry-run broker, Gap-PRD P5)"
         ),
     )
     parser.add_argument("--debug", action="store_true")

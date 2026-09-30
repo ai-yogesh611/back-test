@@ -37,6 +37,7 @@ from typing import Any, Callable
 import pandas as pd
 
 from backtest.data.base import periods_per_year as annualisation_factor
+from backtest.data.sources_policy import default_backtest_source, default_broker_source
 from backtest.engine.monte_carlo import DEFAULT_SIMULATIONS, monte_carlo_trade_order
 from backtest.optimization import analysis as an
 from backtest.optimization.attestation import (
@@ -120,7 +121,9 @@ def default_loader(cfg: OptimizationConfig) -> pd.DataFrame:
     from backtest.runner import build_source
 
     bt = cfg.backtest
-    source = build_source(bt.source or "synthetic")
+    # An unnamed source resolves through the policy (db in a real deployment,
+    # synthetic only for a profile that enables it) instead of a literal.
+    source = build_source(bt.source or default_backtest_source())
     return source.get_candles(bt.symbol, bt.start_date, bt.end_date, bt.timeframe)
 
 
@@ -736,8 +739,10 @@ class OptimizationService:
                 measured["acknowledged"] = True
                 measured["acknowledged_at"] = previous.get("acknowledged_at")
             self.store.update_run(run_id, **attestation_columns(measured))
+            attestation = measured
         except Exception:  # noqa: BLE001
             log.warning("[attestation] could not record data provenance", exc_info=True)
+            attestation = {}
         if candles is None or len(candles) == 0:
             raise ValueError(
                 f"no candles for {cfg.backtest.symbol} {cfg.backtest.start_date}→"
@@ -776,9 +781,51 @@ class OptimizationService:
             pause_event=job.pause,
         ) as ev:
             # -- baseline (current params) ---------------------------------
-            self._set_phase(job, "baseline", "current parameters")
-            base_payload = ev.evaluate_batch([cfg.baseline_params], keep_curve=True)[0]
-            baseline = self._score_payload(job, base_payload)
+            # PRD Part 2 §1: the origin's own baseline can be skipped when it
+            # already ran the canonical fill-exact engine on real data over the
+            # same range — re-running the identical evaluation is wasted work
+            # the user waits on. The claim is RE-CHECKED here against what this
+            # run actually loaded, not trusted from the browser: a flag only
+            # the client sets is a suggestion. Anything that fails the check
+            # (approximate engine, synthetic data, source mismatch) runs the
+            # baseline as usual, and the run records which path it took.
+            origin_bt = (self.store.get_run(run_id) or {}).get("backtest_config") or {}
+            origin_claims_fill_exact = bool(cfg.backtest.baseline_imported)
+            origin_fill_exact = (
+                settings.get("engine") == "driver"
+                and bool(attestation.get("data_source_real"))
+            )
+            if origin_claims_fill_exact and origin_fill_exact:
+                quoted = dict(cfg.backtest.baseline_metrics or {})
+                baseline = {
+                    "params": dict(cfg.baseline_params or {}),
+                    "metrics": quoted
+                    or {"imported_from_backtest": origin_bt.get("sourceBacktestId")},
+                    "score": None,
+                    "constraints_met": True,
+                    "violations": [],
+                    "error": None,
+                    "elapsed_ms": 0,
+                    "imported": True,
+                }
+                log.info(
+                    "[optimize] run %s: baseline imported from backtest %s "
+                    "(fill-exact on real data) — re-run skipped",
+                    run_id[:8],
+                    origin_bt.get("sourceBacktestId") or "unknown",
+                )
+            else:
+                self._set_phase(job, "baseline", "current parameters")
+                base_payload = ev.evaluate_batch([cfg.baseline_params], keep_curve=True)[0]
+                baseline = self._score_payload(job, base_payload)
+                if origin_claims_fill_exact:
+                    log.info(
+                        "[optimize] run %s: baseline import requested but origin "
+                        "did not qualify (engine=%s real_data=%s) — baseline re-run",
+                        run_id[:8],
+                        settings.get("engine"),
+                        attestation.get("data_source_real"),
+                    )
             with job.lock:
                 job.done_evals += 1
             self.store.update_run(
@@ -1181,6 +1228,10 @@ class OptimizationService:
         # opened is worse than one that admits it was a handle.
         origin = (run.get("backtest_config") or {}).get("sourceBacktestId") or None
         details: dict[str, Any] = {"target": target, "notes": notes}
+        # PRD Part 2 §1: the audit row names the originating backtest so the
+        # full chain — Backtest [id] → Optimize [id] → Runner [id] — is
+        # readable from the audit trail alone, without opening the run page.
+        details["originated_from_backtest_id"] = origin
         # PRD Part 2 §4's gate is a flag, not a block — the browser requires
         # the acknowledgement. Recording both the fact and the number means the
         # audit trail can show later that the check WAS run and what it said,
@@ -1242,7 +1293,9 @@ class OptimizationService:
                     timeframe=str(bt.get("timeframe") or "1day"),
                     strategy_params=strategy_params,
                     mode="paper",
-                    source=str(bt.get("source") or "synthetic"),
+                    # A runner is a trading path: an unnamed source means the
+                    # broker feed, not a literal generated-data one.
+                    source=str(bt.get("source") or default_broker_source()),
                 )
                 new_id = manager.add_runner(new_cfg, start=True)
                 details.update(
@@ -1443,7 +1496,7 @@ def build_default_service(app_config: dict | None = None) -> OptimizationService
         manager.connect()
         store = OptimizationStore(manager)
         store.ensure_schema()
-        source = (app_config or {}).get("BACKTEST_SOURCE", "synthetic")
+        source = (app_config or {}).get("BACKTEST_SOURCE") or default_backtest_source()
         service = OptimizationService(store, default_source=source)
         log.info(
             "[optimize] engine attached (%s, %d workers)", manager.config.safe_url, service.workers

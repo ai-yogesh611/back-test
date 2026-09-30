@@ -412,7 +412,9 @@ async function init() {
     applySharedTimeframe();
 
     try {
-        strategies = await fetchJSON("/api/strategies");
+        // venue=compare: option strategies are not offered here — a backtest
+        // runs on DB candles and the DB holds no historical option chains.
+        strategies = await fetchJSON("/api/strategies?venue=compare");
     } catch (err) {
         showToast("Could not load strategies", "error");
         strategies = [];

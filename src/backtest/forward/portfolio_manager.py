@@ -25,6 +25,7 @@ from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Deque, Dict, List, Optional
 
+from backtest.data.sources_policy import policy_key, synthetic_enabled
 from backtest.forward.feed import SyntheticFeed
 from backtest.forward.feed_registry import get_chain_bus, get_feed_registry
 from backtest.forward.state_store import (
@@ -52,6 +53,7 @@ from backtest.forward.paper_runner import (
 )
 from backtest.forward.risk_supervisor import (
     HALT_FLATTEN,
+    HALT_PAUSE,
     STATE_HALTED,
     GlobalRiskConfig,
     RiskSupervisor,
@@ -78,6 +80,18 @@ class PortfolioManager:
         self.ledger = OrderLedger()
         self.broker = PaperBroker(self.ledger)
         self.supervisor = RiskSupervisor(risk_config or GlobalRiskConfig())
+
+        # Separate risk configs for paper and live modes (per-mode independent limits)
+        self._risk_configs: Dict[str, GlobalRiskConfig] = {
+            "paper": risk_config or GlobalRiskConfig(max_drawdown_pct=0.80),  # 80% for paper
+            "live": GlobalRiskConfig(
+                daily_loss_limit=50_000.0,
+                max_drawdown_pct=0.25,
+                max_leverage=1.0,
+                breach_mode=HALT_PAUSE,
+                correlation_warning_threshold=3
+            ),
+        }
 
         self._runners: Dict[str, StrategyRunner] = {}
         self._lock = threading.RLock()
@@ -115,13 +129,22 @@ class PortfolioManager:
         # breakers ARE the bucket machinery, applied to a narrower slice.
         self._segment_supervisors: Dict[str, RiskSupervisor] = {}
 
-        # Feed
-        self.feed = SyntheticFeed(
-            on_bar=self._on_bar,
-            tick_seconds=tick_seconds,
-            warmup_bars=warmup_bars,
-            on_tick_end=self._on_tick_end,
-        )
+        # Feed — config-gated (2026-09-30). The random-walk feed used to be
+        # built unconditionally, so a deployment with synthetic disabled still
+        # had a live generator thread sitting there ready to drive any runner
+        # whose source was anything other than "mstock". When the policy says
+        # no, the object is simply never constructed: ``self.feed is None`` and
+        # every routing check below refuses instead of subscribing to it.
+        # Tests opt back in via the policy's ``testing`` profile.
+        self._synthetic_allowed = synthetic_enabled()
+        self.feed: Optional[SyntheticFeed] = None
+        if self._synthetic_allowed:
+            self.feed = SyntheticFeed(
+                on_bar=self._on_bar,
+                tick_seconds=tick_seconds,
+                warmup_bars=warmup_bars,
+                on_tick_end=self._on_tick_end,
+            )
         self._auto_start_feed = auto_start_feed
 
         # U6.2 shared data bus: every runner's symbols + option underlyings
@@ -731,6 +754,42 @@ class PortfolioManager:
         )
         return result
 
+    def _feed_for(self, source: str):
+        """The bar feed a runner with ``source`` may subscribe to.
+
+        The old routing was ``mstock_feed if source == "mstock" else self.feed``
+        — a catch-all that handed *anything* not exactly "mstock" (dhan, replay,
+        a typo, an unset default) to the synthetic random-walk feed. That is how
+        a runner labelled ``paper/MSTOCK`` ended up trading generated candles.
+        Routing is now explicit per source and refuses instead of substituting.
+
+        Raises ``ValueError`` (→ 409 at the API) when the source has no feed or
+        when the only candidate is synthetic and the policy has it disabled.
+        """
+        key = str(source or "").strip().lower()
+        if key in ("mstock", "dhan"):
+            feed = self.mstock_feed if key == "mstock" else self.dhan_feed
+            if feed is None:
+                raise ValueError(
+                    f"source={key} needs a {key} broker feed — none is configured "
+                    f"on this portfolio manager"
+                )
+            return feed
+        if policy_key(key) == "synthetic" or not key:
+            if not self._synthetic_allowed:
+                raise ValueError(
+                    f"source={key or 'unset'!r} would run on the synthetic feed, which "
+                    f"config/data_sources.yaml disables — forward runners must be created "
+                    f"with source=mstock (or dhan). Synthetic stays available to the test "
+                    f"suite via BACKTEST_DATA_PROFILE=testing, not to a deployment."
+                )
+            assert self.feed is not None  # built iff _synthetic_allowed
+            return self.feed
+        raise ValueError(
+            f"no bar feed for source={source!r} on a forward runner — this manager "
+            f"feeds runners from mstock, dhan, or (policy permitting) synthetic"
+        )
+
     def add_runner(
         self,
         config: RunnerConfig,
@@ -763,9 +822,11 @@ class PortfolioManager:
             # subscription was already taken by StrategyRunner's constructor
             # (the bridge needs its generator at build time), so the manager
             # must NOT acquire again — one runner, one chain subscription.
-            # Gap #1: source routes the feed — mstock runners bar off the
-            # shared live poll thread, everything else off the synthetic feed.
-            feed = self.mstock_feed if config.source == "mstock" else self.feed
+            # Gap #1: source routes the feed — mstock/dhan runners bar off the
+            # shared live poll thread. Synthetic only exists when the policy
+            # enables it; ``_feed_for`` refuses every other case instead of
+            # defaulting to the random-walk feed.
+            feed = self._feed_for(config.source)
             for sym in config.symbols:
                 self.feed_registry.subscribe(config.source, sym, config.timeframe, feed=feed)
             feed.add_symbols(config.symbols)
@@ -822,7 +883,12 @@ class PortfolioManager:
             # per acquire, owned by the runner.)
             for sym in runner.config.symbols:
                 self.feed_registry.release(runner.config.source, sym, runner.config.timeframe)
-            feed = self.mstock_feed if runner.config.source == "mstock" else self.feed
+            # A runner whose feed no longer exists (policy flipped mid-life)
+            # must not break removal — positions/ledger state matters more.
+            try:
+                feed = self._feed_for(runner.config.source)
+            except ValueError:
+                feed = self.mstock_feed
             feed.remove_symbols(runner.config.symbols)
             self._sync_mstock_thread()
             self.total_capital -= runner.config.allocated_capital
@@ -1655,6 +1721,38 @@ class PortfolioManager:
         except Exception:  # noqa: BLE001 — a config save must never 500 the API
             logger.exception("risk config persist failed")
 
+    def get_risk_config(self, mode: str = "paper") -> GlobalRiskConfig:
+        """Get risk config for specific mode (paper or live)."""
+        return self._risk_configs.get(mode, self.supervisor.config)
+
+    def set_risk_config(self, mode: str, values: Dict[str, Any]) -> List[str]:
+        """Update risk config for specific mode and return changed fields."""
+        if mode not in ("paper", "live"):
+            raise ValueError(f"Invalid mode: {mode}. Must be 'paper' or 'live'")
+
+        config = self._risk_configs[mode]
+        changed = config.update_limits(values)
+
+        # If this is the active mode, update the supervisor too
+        # (for now, supervisor uses paper config by default)
+        if mode == "paper":
+            self.supervisor.config = config
+
+        return changed
+
+    def get_all_risk_configs(self) -> Dict[str, Dict[str, Any]]:
+        """Get all risk configs as dicts for API response."""
+        result = {}
+        for mode, config in self._risk_configs.items():
+            result[mode] = {
+                "daily_loss_limit": config.daily_loss_limit,
+                "max_drawdown_pct": config.max_drawdown_pct,
+                "max_leverage": config.max_leverage,
+                "breach_mode": config.breach_mode,
+                "correlation_warning_threshold": config.correlation_warning_threshold,
+            }
+        return result
+
     def _persist_state(self) -> None:
         if self._restoring:
             return  # never re-write the file we are reading from
@@ -1780,20 +1878,49 @@ class PortfolioManager:
                     self._bucket_day[mode] = bar_date
                     self._bucket_day_start[mode] = self._bucket_equity(mode)
 
+            # SOURCE ISOLATION (2026-09-30): every feed stamps its bars with
+            # ``_source`` ("synthetic" | "mstock" | "dhan"). A bar may only
+            # drive runners whose ``config.source`` matches — otherwise the
+            # 1s synthetic random-walk feed (started by ANY synthetic-source
+            # runner on a symbol) sprays fake bars into every paper/mstock
+            # runner on that same symbol, marking their option books off a
+            # synthetic spot and manufacturing phantom P&L. ``bar_source is
+            # None`` (hand-built bars in tests / legacy callers) preserves the
+            # old symbol-only behaviour. Popped so the tag never leaks into a
+            # runner's candle buffer / DataFrame / persisted state.
+            bar_source = bar.pop("_source", None)
             for runner in self._runners.values():
-                if symbol.upper() in [s.upper() for s in runner.config.symbols]:
-                    runner.process_candle_event(symbol, bar)
+                if symbol.upper() not in [s.upper() for s in runner.config.symbols]:
+                    continue
+                if not self._source_matches(runner, bar_source):
+                    continue
+                runner.process_candle_event(symbol, bar)
 
             # GAP-4: flush closed trades the moment they close (a bar can exit
             # a structure). The persister's dedupe makes this cheap — already-
             # flushed trades are skipped in memory without touching the DB.
             if self._trade_persister is not None and not self._restoring:
                 for runner in self._runners.values():
-                    if symbol.upper() in [s.upper() for s in runner.config.symbols]:
-                        try:
-                            self._trade_persister.flush_runner(runner)
-                        except Exception:  # noqa: BLE001 — never break the bar
-                            logger.exception("trade flush failed for %s", runner.instance_id)
+                    if symbol.upper() not in [s.upper() for s in runner.config.symbols]:
+                        continue
+                    if not self._source_matches(runner, bar_source):
+                        continue
+                    try:
+                        self._trade_persister.flush_runner(runner)
+                    except Exception:  # noqa: BLE001 — never break the bar
+                        logger.exception("trade flush failed for %s", runner.instance_id)
+
+    @staticmethod
+    def _source_matches(runner: "StrategyRunner", bar_source: Optional[str]) -> bool:
+        """True when ``bar_source`` may drive ``runner`` (see _on_bar_core).
+
+        ``bar_source is None`` → no tagging (legacy/test bars) → deliver to any
+        runner holding the symbol. Otherwise the runner's configured source
+        must equal the bar's originating feed source.
+        """
+        if bar_source is None:
+            return True
+        return str(getattr(runner.config, "source", "")).lower() == str(bar_source).lower()
 
     def _on_tick_end(self, tick_ts: str) -> None:
         """All symbols have their bar for this tick: run pool scans + risk."""
@@ -2465,6 +2592,11 @@ class PortfolioManager:
 
     def tick(self, **bar_kwargs: Any) -> None:
         """Advance one synthetic feed tick synchronously (used in tests)."""
+        if self.feed is None:
+            raise ValueError(
+                "no synthetic feed on this manager — source=synthetic is disabled by "
+                "config/data_sources.yaml; tests opt in via BACKTEST_DATA_PROFILE=testing"
+            )
         self.feed.emit_one(**bar_kwargs)
 
     def shutdown(self) -> None:
@@ -2483,7 +2615,8 @@ class PortfolioManager:
                     self.intelligence.unregister_runner(iid, runner)
             except Exception:  # noqa: BLE001
                 logger.debug("intelligence shutdown failed", exc_info=True)
-        self.feed.stop()
+        if self.feed is not None:
+            self.feed.stop()
         self.mstock_feed.stop()
         with self._lock:
             for runner in self._runners.values():

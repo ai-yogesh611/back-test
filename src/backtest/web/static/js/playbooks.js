@@ -176,7 +176,8 @@
           strategy: strategy,
           allocated_capital: parseFloat(capital) || 100000,
           mode: "paper",
-          source: "synthetic",
+          // No source: the server's data policy picks the broker feed. A
+          // literal here would be a synthetic default in disguise.
         });
 
         // New API returns runner_config, old returned runner — handle both

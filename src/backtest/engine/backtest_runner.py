@@ -232,10 +232,13 @@ def run_backtest(
     # Ticket #9 — the canonical backtest is a paper-bucket run (simulated
     # fills): risk limits resolve from the same classification the forward
     # engine uses, never a hardcoded global knob. ``FrameSource`` is not a
-    # registered SOURCE_TAGS class, so it classifies as the canonical
-    # default (synthetic). Paper defaults are permissive, so historical
-    # P&L is unchanged.
-    _, paper_bucket = resolve_bucket_risk("paper", "synthetic")
+    # registered SOURCE_TAGS class, so the tag is named here: a backtest
+    # replays historical candles (the ratified source is the DB), which is
+    # ``replay`` — not ``synthetic``, a word that must never be written into a
+    # source slot by default now that synthetic is a config-gated feed. Both
+    # tags sit inside the paper bucket's allowed sources, so the limits — and
+    # therefore historical P&L — are identical either way.
+    _, paper_bucket = resolve_bucket_risk("paper", "replay")
     portfolio.limits = paper_bucket.to_portfolio_limits()
     # Built ONCE, up front: the executor copies its slippage calculator into
     # the fill provider in __init__, so slippage set afterwards is ignored.

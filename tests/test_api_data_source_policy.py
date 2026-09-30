@@ -101,9 +101,17 @@ class TestWhatKeepsWorking:
 
 class TestTheOptIn:
     def test_an_enabled_source_runs_normally(self):
-        app = create_app(source="db")
-        app.config["DATA_SOURCE_POLICY"] = SourcePolicy(
-            {"db": SourceSpec("db", enabled=True)}, profile="unit"
+        # The policy goes in THROUGH create_app, not onto app.config afterwards:
+        # create_app resolves BACKTEST_SOURCE against its policy, and the guard
+        # judges that resolved name. Injecting after the fact left the app
+        # running on a source its own policy did not describe (db asked, csv
+        # resolved under the on-disk testing profile, then "unknown source" —
+        # a 409 the test is explicitly asserting must not happen).
+        app = create_app(
+            source="db",
+            data_source_policy=SourcePolicy(
+                {"db": SourceSpec("db", enabled=True)}, profile="unit"
+            ),
         )
         reset_source_policy()
         # No 409 — whether the run itself succeeds depends on there being a
@@ -111,10 +119,51 @@ class TestTheOptIn:
         r = app.test_client().post(
             "/api/backtest/run", json={"strategy": "sma_crossover", "symbol": "X"}
         )
-        assert r.status_code != 409
+        assert r.status_code != 409, r.get_json()
         reset_source_policy()
 
     def test_a_missing_config_file_still_refuses_synthetic(self, tmp_path):
         policy = build_policy(path=tmp_path / "absent.yaml", profile="default", env={})
         assert policy.is_enabled("synthetic") is False
         assert policy.refusal_for("synthetic")
+
+
+class TestNothingDefaultsToSynthetic:
+    """The old ``source="synthetic"`` argument default was a hidden switch.
+
+    An unset source is now "whatever the config enables", so a deployment that
+    turns synthetic off cannot reach it by omission — and the test suite, whose
+    profile turns it on, still gets it without every test having to name it.
+    """
+
+    REAL_ONLY = SourcePolicy(
+        {
+            "db": SourceSpec("db", enabled=True, certifiable=True),
+            "synthetic": SourceSpec("synthetic", enabled=False),
+        },
+        profile="unit",
+    )
+
+    def test_an_unset_source_resolves_to_an_enabled_one(self):
+        app = create_app(source="", data_source_policy=self.REAL_ONLY)
+        reset_source_policy()
+        assert app.config["BACKTEST_SOURCE"] == "db"
+
+    def test_a_disabled_source_never_survives_resolution(self):
+        app = create_app(source="synthetic", data_source_policy=self.REAL_ONLY)
+        reset_source_policy()
+        assert app.config["BACKTEST_SOURCE"] == "db"
+
+    def test_the_testing_profile_still_selects_synthetic(self):
+        """conftest sets BACKTEST_DATA_PROFILE=testing, where synthetic is on."""
+        app = create_app(source="")
+        assert app.config["BACKTEST_SOURCE"] == "synthetic"
+
+    def test_no_requested_source_means_no_fallback_claim(self):
+        """``fell_back`` is about a substitution, not about the default."""
+        app = create_app(source="", data_source_policy=self.REAL_ONLY)
+        reset_source_policy()
+        status = app.test_client().get("/api/data-sources").get_json()
+        assert status["active"] == "db"
+        assert status["fell_back"] is False
+        assert "fallback_note" not in status

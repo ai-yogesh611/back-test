@@ -87,6 +87,32 @@ body {
 }
 .broker-status:hover { color: var(--text); border-color: var(--primary); }
 .broker-dot { line-height: 1; font-size: .8rem; }
+
+/* Data Fetch Status Indicator */
+.data-fetch-indicator {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: #f59e0b; color: white;
+    border-radius: 999px;
+    padding: 6px 12px; font-size: .85rem; font-weight: 600;
+    cursor: pointer;
+    animation: pulse 2s ease-in-out infinite;
+    margin-left: 8px;
+}
+.data-fetch-indicator:hover {
+    background: #dc2626;
+}
+#data-fetch-spinner {
+    display: inline-block;
+    animation: spin 1.5s linear infinite;
+}
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
 body[data-active="dashboard"] .nav-link[data-key="dashboard"],
 body[data-active="backtest"]  .nav-link[data-key="backtest"],
 body[data-active="compare"]   .nav-link[data-key="compare"],
@@ -1231,8 +1257,27 @@ body[data-active="portfolio"] .nav-link[data-key="portfolio"] {
 .opt-row-actions { display: flex; gap: 4px; }
 .opt-pager { display: flex; gap: 10px; align-items: center; justify-content: flex-end; margin-top: 10px; }
 
-.opt-apply-modal { max-width: 620px; }
+.opt-apply-modal { max-width: 640px; }
 .opt-apply-params { margin-bottom: 14px; max-height: 220px; overflow-y: auto; }
+
+/* §5 wizard: three steps inside one modal. Only the active step shows. */
+.opt-apply-step[hidden] { display: none; }
+.opt-apply-step-title {
+    font-size: .72rem; text-transform: uppercase; letter-spacing: .07em;
+    color: #64748b; margin-bottom: 12px;
+}
+.opt-review-summary { margin-bottom: 10px; font-size: .85rem; }
+.opt-checks-table { margin-bottom: 14px; }
+.opt-checks-table td { font-size: .82rem; }
+.opt-check-ok { color: #7fc8a0; }
+.opt-check-warn { color: #fbbf24; }
+.opt-check-bad { color: #e0938f; }
+.opt-target-live { border-top: 1px dashed var(--border, #1f2937); padding-top: 8px; margin-top: 4px; }
+.opt-live-note { margin-left: 20px; margin-top: 2px; }
+.opt-confirm-row label { font-weight: 600; }
+.opt-apply-foot { justify-content: flex-end; }
+.opt-apply-foot #applyBack { margin-right: auto; }
+
 .opt-target-group { display: flex; flex-direction: column; gap: 6px; }
 .opt-target-group label { display: block; color: var(--text) !important; font-size: .88rem !important; cursor: pointer; }
 .opt-live-box { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--danger); border-radius: 8px; background: rgba(190, 92, 88, .06); margin-bottom: 14px; }
@@ -1945,6 +1990,8 @@ select.input option.sym-no-data:disabled { cursor: not-allowed; }
    reason). There is no "warning" state — a source is either permitted to
    produce results or it is not. */
 .dsg { margin-bottom: 12px; font-size: .8rem; line-height: 1.55; }
+/* Fallback note: informational, deliberately quiet — see data_source_gate.js */
+.dsg-fallback { margin-top: 3px; }
 .dsg--ok {
     padding: 6px 10px;
     border: 1px solid rgba(148, 163, 184, .28);

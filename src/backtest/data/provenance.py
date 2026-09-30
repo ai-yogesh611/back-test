@@ -150,6 +150,7 @@ def describe_engine(engine: Any) -> dict[str, Any]:
 SOURCE_LABELS: dict[str, str] = {
     "db": "Real (PostgreSQL)",
     "mstock": "Live (mStock)",
+    "dhan": "Live (Dhan)",
     "synthetic": "Synthetic",
     "csv": "CSV",
 }
@@ -172,7 +173,9 @@ def source_is_real(name: Any) -> bool:
 
 def describe_source(name: Any) -> dict[str, Any]:
     """Data half of a provenance record."""
-    key = str(name or "").strip().lower() or "synthetic"
+    # An unnamed source is labelled "Unknown", never defaulted to synthetic —
+    # a provenance badge that guesses is worse than one that admits a gap.
+    key = str(name or "").strip().lower()
     real = source_is_real(key)
     return {
         "data_source": key,

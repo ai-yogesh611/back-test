@@ -52,7 +52,7 @@ from backtest.engine.readiness import build_readiness
 from backtest.logging_config import get_logger, timed
 from backtest.api.data_guard import guard_source
 from backtest.runner import build_source
-from backtest.strategy.registry import get_strategy
+from backtest.strategy.registry import get_strategy, signal_kind
 
 backtest_bp = Blueprint("backtest_api", __name__)
 log = get_logger(__name__)
@@ -65,7 +65,9 @@ WARMUP_BARS = 0
 
 
 def _source() -> Any:
-    name = current_app.config.get("BACKTEST_SOURCE", "synthetic")
+    # No default: the source comes from the deployment config alone. A missing
+    # key is a misconfiguration and must raise, not quietly become synthetic.
+    name = current_app.config["BACKTEST_SOURCE"]
     log.debug("[data] building source %r", name)
     return build_source(name)
 
@@ -172,6 +174,36 @@ def _resolve_strategy(name: str):
         return get_strategy(name)
     except KeyError as exc:
         return str(exc)
+
+
+#: The one question a backtest asks about a strategy before running it.
+#:
+#: Options are forward-only in this deployment (operator rule, 2026-09-30):
+#: ``market_data_cache`` stores **bars**, not historical chains, so an option
+#: "backtest" could only ever be Black-Scholes off a generated chain — a P&L
+#: curve nobody can check against a chart. The option engines
+#: (:class:`~backtest.engine.option_backtest_driver.OptionBacktestDriver`) stay
+#: in the tree for the forward/paper paths, where the chain comes from mStock
+#: live, but a backtest or compare run that names an option strategy is refused
+#: with the reason rather than answered with a synthetic number.
+OPTION_IN_BACKTEST_MESSAGE = (
+    "'{name}' is an options strategy, and options cannot be backtested here: the data "
+    "source for backtests is DB candles, and the DB holds no historical option chains — a "
+    "backtested option P&L would be Black-Scholes off a generated chain, not real prices. "
+    "Run it in Forward Testing or the Portfolio instead, where the chain comes from mStock "
+    "live. Equity strategies are unaffected."
+)
+
+
+def _refuse_option_in_backtest(cls, where: str = "backtest") -> str | None:
+    """Message when ``cls`` is an option strategy, else ``None``."""
+    if cls is None:
+        return None
+    if signal_kind(cls) != "option":
+        return None
+    name = getattr(cls, "name", None) or getattr(cls, "__name__", "strategy")
+    log.warning("[%s] refused options strategy %s — backtests are equity-only", where, name)
+    return OPTION_IN_BACKTEST_MESSAGE.format(name=name)
 
 
 def _provenance_log(prov: dict, label: str) -> None:
@@ -288,6 +320,9 @@ def run_backtest_endpoint() -> tuple:
     if isinstance(resolved, str):
         log.warning("[run] rejected: %s (body keys=%s)", resolved, sorted(data))
         return jsonify({"error": resolved}), 400
+    _option_refusal = _refuse_option_in_backtest(resolved, "run")
+    if _option_refusal:
+        return jsonify({"error": _option_refusal}), 400
 
     symbol = data.get("symbol", "DEMO")
     from_date = data.get("from_date") or data.get("from")
@@ -375,7 +410,7 @@ def run_backtest_endpoint() -> tuple:
     )
     payload["provenance"] = _provenance(
         candles_full,
-        source_name=current_app.config.get("BACKTEST_SOURCE", "synthetic"),
+        source_name=current_app.config["BACKTEST_SOURCE"],
         engine=engine,
         symbol=symbol,
         timeframe=timeframe,
@@ -595,7 +630,7 @@ def run_many() -> tuple:
         ),
     )
 
-    source_name = current_app.config.get("BACKTEST_SOURCE", "synthetic")
+    source_name = current_app.config["BACKTEST_SOURCE"]
 
     # Calculate warmup start date
     warmup_start = resolve_warmup_start(
@@ -700,7 +735,7 @@ def run_many() -> tuple:
     _provenance_log(shared_provenance, "run-many")
 
     comparison = _comparison_block(
-        results, jobs, current_app.config.get("BACKTEST_SOURCE", "synthetic")
+        results, jobs, current_app.config["BACKTEST_SOURCE"]
     )
     return (
         jsonify({"results": results, "provenance": shared_provenance, "comparison": comparison}),
@@ -744,13 +779,16 @@ def run_single_backtest(params: dict) -> dict:
         resolution = _resolve_strategy(strategy)
         if isinstance(resolution, str):
             raise ValueError(resolution)
+        _option_refusal = _refuse_option_in_backtest(resolution, f"slot {sid}")
+        if _option_refusal:
+            raise ValueError(_option_refusal)
         slot_params = params.get("params") or {}
         timeframe = params.get("timeframe", "1D")
         interval = resolve_interval(timeframe)
         mode = str(params.get("mode", "")).strip().lower()
         _check_params(resolution, slot_params, f"slot {sid}")
 
-        source = build_source(str(params.get("source_name", "synthetic")))
+        source = build_source(str(params["source_name"]))
         candles_full = source.get_candles(symbol, str(params["warmup_start"]), to_date, interval)
         log.debug(
             "[slot %s] %s: %d bars @ %s (%s)",
@@ -796,7 +834,7 @@ def run_single_backtest(params: dict) -> dict:
         )
         payload["provenance"] = _provenance(
             candles_full,
-            source_name=str(params.get("source_name", "synthetic")),
+            source_name=str(params["source_name"]),
             engine=engine,
             symbol=symbol,
             timeframe=timeframe,

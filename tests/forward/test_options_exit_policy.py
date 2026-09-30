@@ -458,29 +458,29 @@ class TestExpiryCalendar:
     generator = SyntheticChainGenerator()
 
     def test_november_reference_rolls_into_december(self):
-        """Nov's expiry (Nov 26) has passed on Nov 30 → December's, not January's."""
-        assert self.generator.next_monthly_expiry(date(2026, 11, 30)) == date(2026, 12, 31)
+        """Nov's expiry (Nov 24, last Tuesday) has passed on Nov 30 → December's, not January's."""
+        assert self.generator.next_monthly_expiry(date(2026, 11, 30)) == date(2026, 12, 29)
 
     def test_december_reference(self):
-        assert self.generator.next_monthly_expiry(date(2026, 12, 1)) == date(2026, 12, 31)
-        # Expiry day itself is still the nearest expiry...
-        assert self.generator.next_monthly_expiry(date(2026, 12, 31)) == date(2026, 12, 31)
-        # ...and the next day rolls the year over into January.
-        assert self.generator.next_monthly_expiry(date(2027, 1, 1)) == date(2027, 1, 28)
+        assert self.generator.next_monthly_expiry(date(2026, 12, 1)) == date(2026, 12, 29)
+        # Dec 29 has passed by Dec 31, so the nearest expiry rolls into January.
+        assert self.generator.next_monthly_expiry(date(2026, 12, 31)) == date(2027, 1, 26)
+        # ...and a New-Year reference gets January's expiry (last Tuesday).
+        assert self.generator.next_monthly_expiry(date(2027, 1, 1)) == date(2027, 1, 26)
 
     def test_every_month_of_a_year_is_computable(self):
         for month in range(1, 13):
             for day in (1, 15, 28):
                 expiry = self.generator.next_monthly_expiry(date(2026, month, day))
-                assert expiry.weekday() == 3  # Thursday
+                assert expiry.weekday() == 1  # Tuesday (NSE monthly expiry from Sep 2025)
                 assert expiry >= date(2026, month, day)
 
     def test_expiries_follow_the_reference_date(self):
         """A replay reference gets that era's expiries, not the wall clock's."""
         late = self.generator.available_expiries("NIFTY", reference=date(2026, 12, 20))
         assert late == sorted(late)
-        assert late[0] == date(2026, 12, 31)
-        assert late[1] == date(2027, 1, 28)
+        assert late[0] == date(2026, 12, 29)
+        assert late[1] == date(2027, 1, 26)
         # default = today
         assert self.generator.available_expiries("NIFTY")[0] == self.generator.next_monthly_expiry()
 

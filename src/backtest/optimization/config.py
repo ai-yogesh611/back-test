@@ -199,6 +199,14 @@ class BacktestSettings:
     #: Backtest page, not a stored backtest record — nothing about a completed
     #: backtest is persisted, and this field must not imply otherwise.
     source_backtest_id: str | None = None
+    #: PRD Part 2 §1. ``baseline_imported`` claims the originating backtest
+    #: already ran the canonical fill-exact engine on real data, so the
+    #: optimizer's own baseline pass would be a redundant re-run. The claim is
+    #: validated at run start (engine + data source are re-checked there) and
+    #: recorded either way. ``baseline_metrics`` quotes the origin's headline
+    #: numbers for the banner; informational only.
+    baseline_imported: bool = False
+    baseline_metrics: dict | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -300,6 +308,8 @@ class OptimizationConfig:
                 "source": self.backtest.source,
                 "selectorType": self.backtest.selector_type,
                 "sourceBacktestId": self.backtest.source_backtest_id,
+                "baselineImported": self.backtest.baseline_imported,
+                "baselineMetrics": self.backtest.baseline_metrics,
             },
             "walkForward": {
                 "enabled": self.walk_forward.enabled,
@@ -755,6 +765,12 @@ def parse_config(doc: dict[str, Any], *, default_source: str | None = None) -> O
             source=source,
             selector_type=selector_type,
             source_backtest_id=source_backtest_id,
+            baseline_imported=bool(
+                _pick(bt, "baselineImported", "baseline_imported", default=False)
+            ),
+            baseline_metrics=(lambda v: v if isinstance(v, dict) else None)(
+                _pick(bt, "baselineMetrics", "baseline_metrics", default=None)
+            ),
         ),
         walk_forward=walk_forward,
         method_settings=method_settings,

@@ -38,6 +38,12 @@
             <span id="broker-status-name">Brokers</span>
             <span class="broker-strip-caret">▾</span>
         </button>
+        
+        <!-- Data Fetch Status Indicator -->
+        <div id="data-fetch-indicator" class="data-fetch-indicator" hidden title="Data fetch in progress — click to stop">
+            <span id="data-fetch-spinner">⟳</span>
+            <span id="data-fetch-count">0/0</span>
+        </div>
     </nav>
 
     <!-- Tier 1: Sticky Risk Strip — always visible survival layer -->
@@ -88,6 +94,9 @@
 
     {% include "components/broker_auth_modal.html" %}
     {% include "components/broker_board.html" %}
+    
+    <!-- Global data fetch indicator script -->
+    <script src="{{ url_for('static', filename='js/data_fetch_indicator.js') }}"></script>
 
     <!-- Risk Flatten Confirmation Modal (Tier 1) -->
     <div id="risk-flatten-modal" class="modal-overlay" hidden>

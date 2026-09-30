@@ -10,6 +10,8 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Tuple
 
+from backtest.data.sources_policy import default_backtest_source
+
 
 class ConvertedStrategyValidator:
     """Validate converted strategy before allowing save.
@@ -71,7 +73,10 @@ class ConvertedStrategyValidator:
                 from_date=from_date,
                 to_date=to_date,
                 initial_capital=100000,
-                source="synthetic",  # Quick validation
+                # A quick validation run still honours the data policy: the
+                # deployment's historical source (db), or synthetic only when
+                # the policy enables it. Never a literal.
+                source=default_backtest_source(),
             )
 
         except Exception as e:

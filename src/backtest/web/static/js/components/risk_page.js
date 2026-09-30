@@ -186,11 +186,22 @@
       bucketForm.innerHTML = Object.entries(buckets).map(([mode, lim]) => `
         <div style="border:1px solid var(--border); border-radius:8px; padding:10px; margin-bottom:8px;">
           <strong>${mode.toUpperCase()}</strong>
-          <div class="risk-config-row"><label>Max Position %</label><input data-bucket="${mode}" data-field="max_position_pct" type="range" min="1" max="100" step="1" value="${(lim.max_position_pct||0.1)*100}" class="risk-slider"><span>${pct(lim.max_position_pct||0.1)}</span></div>
+          <div class="risk-config-row"><label>Max Position %</label><input data-bucket="${mode}" data-field="max_position_pct" type="range" min="1" max="100" step="1" value="${(lim.max_position_pct||0.1)*100}" class="risk-slider" id="slider-pos-${mode}"><span id="span-pos-${mode}">${pct(lim.max_position_pct||0.1)}</span></div>
           <div class="risk-config-row"><label>Max Position Value</label><input data-bucket="${mode}" data-field="max_position_value" type="number" value="${lim.max_position_value||10000}" class="input" style="max-width:140px;"><span>${fmtMoney(lim.max_position_value||0)}</span></div>
           <div class="risk-config-row"><label>Max Open Positions</label><input data-bucket="${mode}" data-field="max_open_positions" type="number" min="1" max="100" value="${lim.max_open_positions||''}" class="input" style="max-width:100px;"><span></span></div>
         </div>
       `).join("");
+      
+      // Bind position slider updates
+      Object.keys(buckets).forEach(mode => {
+        const slider = document.getElementById(`slider-pos-${mode}`);
+        const span = document.getElementById(`span-pos-${mode}`);
+        if (slider && span) {
+          slider.addEventListener("input", e => {
+            span.textContent = pct(parseFloat(e.target.value) / 100);
+          });
+        }
+      });
     }
 
     const corrEl = $("risk-correlation-config");

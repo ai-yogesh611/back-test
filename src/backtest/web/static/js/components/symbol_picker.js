@@ -63,7 +63,16 @@
     function makeOption(row) {
         const opt = document.createElement("option");
         opt.value = row.symbol;
-        opt.textContent = row.symbol;
+        // Readable label: "RELIANCE — 1day · 1,247 bars" when a display name
+        // is absent; "RELIANCE (name) — …" when the catalogue has one. Raw
+        // broker tokens (ISINs, NFO contract ids like 011NSETEST36DECFUT)
+        // used to flood the dropdown; the default query now asks the server
+        // for symbols WITH DATA only, which is exactly the set the user can
+        // actually run — and after a fetch those are the readable names.
+        const display = (row.name && row.name !== row.symbol && !/^[0-9A-Z]*[0-9][0-9A-Z]*$/.test(row.name))
+            ? `${row.symbol} (${row.name})`
+            : row.symbol;
+        opt.textContent = display;
         if (!row.data_available) {
             // Listed, but not selectable: the user can see it exists and is told
             // where to get it, instead of it silently not being there.
@@ -72,7 +81,7 @@
             opt.title = row.hint || NO_DATA_TITLE;
         } else {
             const detail = detailOf(row);
-            if (detail) opt.textContent = `${row.symbol} — ${detail}`;
+            if (detail) opt.textContent = `${display} — ${detail}`;
             opt.title = [row.name, detail].filter(Boolean).join(" · ");
         }
         return opt;
@@ -116,7 +125,15 @@
 
         async function load() {
             try {
-                const params = { limit: PAGE_SIZE };
+                // PRD change of direction (2026-09-30): the dropdown lists
+                // ONLY symbols that have data. 500 disabled no-data rows of
+                // broker catalogue noise made the readable symbols
+                // unfindable; "if data is not available we do not even let
+                // the user choose the symbol" is the requirement, and
+                // available=1 gives exactly that set. The Data tab's own
+                // coverage view remains the place to see what could be
+                // fetched.
+                const params = { limit: PAGE_SIZE, available: 1 };
                 if (search && search.value.trim()) params.q = search.value.trim();
                 if (state.tab) params.types = state.tab;
                 const data = await fetchCoverage(params);

@@ -104,6 +104,18 @@ def test_unknown_source_is_not_treated_as_real():
     assert source_label("some_new_feed") == "some_new_feed"
 
 
+def test_an_unnamed_source_is_not_labelled_synthetic():
+    """A provenance record that cannot say its source says Unknown.
+
+    The badge used to default an empty name to synthetic, which quietly
+    attached generated-data provenance to a run that never named its source.
+    """
+    assert source_label("") == "Unknown"
+    described = describe_source("")
+    assert described["data_source_label"] == "Unknown"
+    assert described["data_source_real"] is False
+
+
 # ---------------------------------------------------------------------------
 # Warnings
 # ---------------------------------------------------------------------------

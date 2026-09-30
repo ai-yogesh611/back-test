@@ -56,6 +56,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Deque, Optional
 
+from backtest.data.sources_policy import SourceDisabledError, synthetic_chain_generator
 from backtest.options.exit_policy import (
     EXIT_DTE,
     EXIT_MANUAL_STOP,
@@ -72,7 +73,6 @@ from backtest.options.expiry import EXIT_REASON_SETTLEMENT, ExpiryManager
 from backtest.options.expiry_policy import NearestExpiryPolicy
 from backtest.options.paper_trading import OptionPaperBroker
 from backtest.options.quote_providers import (
-    SyntheticChainGenerator,
     SyntheticQuoteProvider,
 )
 from backtest.options.selector import ATMSelector, DeltaSelector
@@ -135,8 +135,10 @@ class OptionsBridge:
         Structure selection config (see module docstring). ``None`` gives
         the direction-aware default.
     option_broker / quote_provider:
-        Injection points for tests; default to a fresh paper book and a
-        synthetic Black-Scholes feed.
+        Injection points for tests; the broker defaults to a fresh paper book.
+        The quote feed has no ungated default: with ``quote_provider=None`` the
+        bridge builds a synthetic Black-Scholes feed only while the data-source
+        policy enables synthetic, and raises ``SourceDisabledError`` otherwise.
     """
 
     def __init__(
@@ -148,9 +150,32 @@ class OptionsBridge:
     ) -> None:
         self.expression: dict[str, Any] = {**DEFAULT_EXPRESSION, **(expression or {})}
         self.option_broker = option_broker or OptionPaperBroker(capital=float(capital))
-        self.quote_provider: Any = quote_provider or SyntheticQuoteProvider()
-        if getattr(self.quote_provider, "generator", None) is None:
-            self.quote_provider.generator = SyntheticChainGenerator()
+        # Policy-gated feed construction (2026-09-30). This used to answer
+        # ``quote_provider=None`` with a fresh Black-Scholes book AND attach a
+        # generated chain to ANY provider that lacked a generator surface —
+        # so a live-labelled runner priced strikes and expiries the market
+        # never listed. The forward path hands in the provider that
+        # ``option_quote_provider_for`` resolved (already gated, and a
+        # ``LiveChainProvider`` exposes ``.generator`` = itself); with no
+        # provider and synthetic off, there is nothing to price on and this
+        # refuses instead of inventing one.
+        self.quote_provider: Any = quote_provider
+        if self.quote_provider is None:
+            generated = synthetic_chain_generator("options bridge quote feed")
+            if generated is None:
+                raise SourceDisabledError(
+                    "OptionsBridge was built with no quote provider while synthetic "
+                    "chains are disabled in config/data_sources.yaml. Pass the "
+                    "broker-backed provider from "
+                    "option_quote_provider_for(source, underlying); a generated "
+                    "feed only exists for a policy that enables synthetic (the "
+                    "test profile)."
+                )
+            self.quote_provider = SyntheticQuoteProvider(generated)
+        elif getattr(self.quote_provider, "generator", None) is None:
+            generated = synthetic_chain_generator("options bridge chain surface")
+            if generated is not None:
+                self.quote_provider.generator = generated
         # -- exit policy (task B1) ------------------------------------------
         self.exit_policy = ExitPolicy(ExitConfig.from_expression(self.expression.get("exit")))
         #: Minutes before the close at which the canonical expiry pipeline
@@ -1267,12 +1292,28 @@ class OptionsBridge:
                 return None
         return None
 
-    def _generator(self) -> SyntheticChainGenerator:
+    def _generator(self) -> Any:
+        """This bridge's chain surface — the broker's, else a policy-gated one.
+
+        ``LiveChainProvider`` answers ``.generator`` with itself, so a runner
+        on an authenticated broker feed never gets here. A provider that
+        exposes no chain surface used to be silently fitted with a generated
+        one; now that only happens when ``config/data_sources.yaml`` still
+        enables synthetic, and otherwise the trade refuses with the reason.
+        """
         generator = getattr(self.quote_provider, "generator", None) or getattr(
             getattr(self.quote_provider, "inner", None), "generator", None
         )
         if generator is None:
-            generator = SyntheticChainGenerator()
+            generator = synthetic_chain_generator(f"options bridge ({self.underlying})")
+            if generator is None:
+                raise SourceDisabledError(
+                    f"no option chain feed for {self.underlying}: the quote provider "
+                    f"({type(self.quote_provider).__name__}) exposes no chain surface, "
+                    f"and synthetic chains are disabled in config/data_sources.yaml. "
+                    f"Authenticate the broker the runner trades on so the chain comes "
+                    f"from the market."
+                )
             self.quote_provider.generator = generator
         return generator
 

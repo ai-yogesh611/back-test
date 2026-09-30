@@ -186,11 +186,13 @@ class UnifiedExecutionEngine:
         Strategies call this via ExecutionContext, never broker APIs directly.
         """
         if self.chain_generator is None:
-            try:
-                from backtest.options.quote_providers import SyntheticChainGenerator
+            # A chain generator is GENERATED data, so it is only ever built
+            # here when the data policy allows synthetic; a deployment with it
+            # off gets no snapshot rather than invented strikes and expiries.
+            from backtest.data.sources_policy import synthetic_chain_generator
 
-                self.chain_generator = SyntheticChainGenerator()
-            except Exception:
+            self.chain_generator = synthetic_chain_generator("forward chain snapshot")
+            if self.chain_generator is None:
                 return None
 
         try:

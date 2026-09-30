@@ -114,6 +114,12 @@
 
         const wf = walkForwardFor(from, to);
         const prov = run.result.provenance || {};
+        // PRD Part 1 §1 (receiving end): the baseline numbers travel with the
+        // hand-off so the Optimize banner can quote them, and the two flags
+        // below decide whether the optimizer may skip its own baseline run —
+        // the originating backtest already IS that baseline when it ran the
+        // canonical fill-exact engine on real data.
+        const m = run.result.metrics || {};
         return {
             resultId: run.resultId || mintResultId(),
             strategyId: strategy,
@@ -133,6 +139,16 @@
             // Purely informational: the panel's own words, carried so the
             // Optimize page can say why the result is not certifiable.
             readiness: run.result.readiness || null,
+            // §1 banner: baseline performance quoted in plain numbers.
+            baselineMetrics: {
+                sharpe: m.sharpe,
+                total_return_pct: m.total_return_pct,
+                total_trades: m.total_trades ?? m.closed_trades,
+            },
+            // §1 skip-baseline: both must hold for the optimizer's own
+            // baseline pass to be redundant.
+            baselineFillExact: engine === "driver",
+            baselineRealData: Boolean(prov.data_source_real),
         };
     }
 

@@ -143,7 +143,7 @@ def _open_option_structure(runner: StrategyRunner, spot: float = 24_800.0):
     # premium marks land knife-edge on the 50%/150% stop/target levels
     # (date-brittle failure, fixed 2026-09-28). Anchored, the whole test
     # runs in one deterministic replay world: BASE_DAY bars against the
-    # then-current 2026-09-24 expiry.
+    # monthly expiry the calendar selects for that month (Sep 2026 → Tue 29).
     from datetime import time as _time
 
     bar_dt = datetime.combine(BASE_DAY, _time(9, 15))
@@ -461,10 +461,22 @@ class TestOptionStructureControl:
     def test_a_structure_target_fires_on_the_mark_too(self):
         runner = _option_runner()
         structure = _open_option_structure(runner)
-        mark = runner.options_bridge._open_mark()
-        runner.set_position_rule(structure.structure_id, RULE_TARGET, round(mark * 1.5, 2))
+        bridge = runner.options_bridge
+        mark = bridge._open_mark()
+        # The level must be armed BEFORE the premium rises through it (a target
+        # below the current mark is refused outright), so derive it from what
+        # the structure can actually be worth. A bull call spread is capped at
+        # the strike gap, and the old fixed 1.5× entry premium sat right at the
+        # edge of that cap — ₹44.88 against the ₹43.75 this rally now marks,
+        # where it used to clear ₹46.0 with a 14-day expiry. Inside a third of
+        # the entry→cap band, the target is a real target and not a coin flip.
+        strikes = [leg.strike for leg in structure.legs]
+        cap = float(max(strikes) - min(strikes))
+        target = round(mark + (cap - mark) * 0.35, 2)
+        assert mark < target < cap
+        runner.set_position_rule(structure.structure_id, RULE_TARGET, target)
         _feed(runner, "NIFTY", [25_500.0], start_day=3)
-        assert runner.options_bridge.open_structure_id is None
+        assert bridge.open_structure_id is None  # closed by the target, not before
         assert runner.closed_option_trades[-1]["exit_reason"] == EXIT_MANUAL_TARGET
 
     def test_option_greeks_are_reported_when_the_model_has_inputs(self):

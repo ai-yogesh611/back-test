@@ -190,7 +190,7 @@ class Playbook:
         allocated_capital: float,
         timeframe: str = "1hour",
         mode: str = "paper",
-        source: str = "synthetic",
+        source: str = "",
         symbols: Optional[List[str]] = None,
         name: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -198,7 +198,15 @@ class Playbook:
 
         U3.4: snapshot playbook.to_expression() into runner config; running runners
         never mutate on playbook edit. Snapshot version displayed in instance detail.
+
+        An unnamed ``source`` is resolved by the data policy
+        (:func:`backtest.data.sources_policy.default_broker_source`), not by a
+        literal here: a playbook deployed in a real environment becomes a broker
+        runner, and only a profile that enables synthetic can produce a
+        generated-candle one.
         """
+        from backtest.data.sources_policy import default_broker_source
+
         expression = self.to_expression()
         return {
             "name": name or self.name,
@@ -209,7 +217,7 @@ class Playbook:
             "symbols": symbols or [self.underlying],
             "timeframe": timeframe,
             "mode": mode,
-            "source": source,
+            "source": str(source or "").strip().lower() or default_broker_source(),
             "instrument": {
                 "type": "option",
                 "expression": expression,

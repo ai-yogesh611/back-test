@@ -165,10 +165,21 @@ import numpy as np
         return True, ""
 
     def _sanitize_class_name(self, name: str) -> str:
-        """Convert 'EMA Cross' → 'EmaCross'."""
-        # Remove special chars, title case, remove spaces
+        """Convert 'EMA Cross' → 'EmaCross' and keep 'MyCustomStrategy' as typed.
+
+        ``word.capitalize()`` lower-cases everything after the first letter, so
+        a PascalCase name from the Strategy Builder's custom-name field came out
+        as "Mycustomstrategy". A word that is already mixed case is a legal
+        identifier the user chose — leave it alone (apart from the first letter).
+        """
         clean = re.sub(r"[^a-zA-Z0-9\s]", "", name)
-        return "".join(word.capitalize() for word in clean.split())
+        parts = []
+        for word in clean.split():
+            if word.isupper() or word.islower():
+                parts.append(word.capitalize())
+            else:
+                parts.append(word[0].upper() + word[1:])
+        return "".join(parts)
 
     def _extract_indicators_list(self, ast: Dict) -> list[str]:
         """Extract list of indicator names used."""

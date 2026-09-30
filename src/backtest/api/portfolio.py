@@ -15,6 +15,7 @@ from typing import Tuple
 from flask import Blueprint, Response, current_app, jsonify, request
 from flask import stream_with_context
 
+from backtest.data.sources_policy import default_broker_source
 from backtest.data.universe import (
     CORRELATION_GROUPS,
     correlation_group_for,
@@ -45,6 +46,22 @@ def list_instances(mode: str | None = None) -> list[dict]:
 def _error(message: str, status: int = 400) -> Tuple[Response, int]:
     log.warning("rejected (%d): %s", status, message)
     return jsonify({"success": False, "error": message}), status
+
+
+def _default_runner_source() -> str:
+    """What ``source=`` a runner gets when the client did not name one.
+
+    The policy answers it — ``default_broker_source()`` — never a literal here.
+    In a normal deployment synthetic is disabled, so an unnamed runner is a
+    **broker** runner, which is the portfolio's whole point (paper and live both
+    trade mStock data). A process whose policy explicitly enables synthetic (the
+    test suite's ``testing`` profile) keeps getting it by omission, so no test
+    has to name a source it does not care about.
+
+    An empty answer means the config enables no feed at all; callers must refuse
+    that rather than start a runner with nothing to bar from.
+    """
+    return default_broker_source()
 
 
 def _parse_target(data: dict) -> Tuple[str, list, str | None]:
@@ -431,7 +448,26 @@ def aggregated_trades() -> Tuple[Response, int]:
 @portfolio_bp.get("/api/portfolio/risk/config")
 def risk_config_view() -> Tuple[Response, int]:
     mgr = _manager()
-    sup_cfg = mgr.supervisor.config
+
+    # Get per-mode risk configs (new API)
+    if hasattr(mgr, 'get_all_risk_configs'):
+        all_configs = mgr.get_all_risk_configs()
+    else:
+        # Fallback for backward compatibility
+        sup_cfg = mgr.supervisor.config
+        all_configs = {
+            "paper": {
+                "daily_loss_limit": sup_cfg.daily_loss_limit,
+                "max_drawdown_pct": sup_cfg.max_drawdown_pct,
+                "max_leverage": getattr(sup_cfg, "max_leverage", 1.0),
+                "breach_mode": getattr(sup_cfg, "breach_mode", "PAUSE_AND_HOLD"),
+                "correlation_warning_threshold": getattr(
+                    sup_cfg, "correlation_warning_threshold", 3
+                ),
+            },
+            "live": dict(all_configs.get("paper", {})),  # Same as paper for now
+        }
+
     limits = {k: v.to_dict() for k, v in BUCKET_RISK_LIMITS.items()}
     corr_safe = {}
     for gid, meta in CORRELATION_GROUPS.items():
@@ -443,15 +479,8 @@ def risk_config_view() -> Tuple[Response, int]:
     return jsonify(
         {
             "success": True,
-            "global": {
-                "daily_loss_limit": sup_cfg.daily_loss_limit,
-                "max_drawdown_pct": sup_cfg.max_drawdown_pct,
-                "max_leverage": getattr(sup_cfg, "max_leverage", 1.0),
-                "breach_mode": getattr(sup_cfg, "breach_mode", "PAUSE_AND_HOLD"),
-                "correlation_warning_threshold": getattr(
-                    sup_cfg, "correlation_warning_threshold", 3
-                ),
-            },
+            "global": all_configs.get("paper", {}),  # Default to paper for legacy callers
+            "modes": all_configs,  # NEW: per-mode configs
             "buckets": limits,
             "correlation_groups": corr_safe,
         }
@@ -467,10 +496,39 @@ def risk_config_save() -> Tuple[Response, int]:
     the dataclass validation and can silently install impossible limits
     (or, worse, weaken the live bucket's source gate). Invalid input gets a
     400 and NOTHING is changed.
+
+    NEW: Supports per-mode configs via "modes" key:
+    {"modes": {"paper": {...}, "live": {...}}}
     """
     data = request.get_json(silent=True) or {}
     mgr = _manager()
     updated = {}
+
+    # NEW: Per-mode risk config updates
+    if "modes" in data and isinstance(data["modes"], dict):
+        if hasattr(mgr, 'set_risk_config'):
+            mode_updates = {}
+            for mode, values in data["modes"].items():
+                if mode not in ("paper", "live"):
+                    return _error(f"Invalid mode: {mode}. Must be 'paper' or 'live'", 400)
+                try:
+                    changed = mgr.set_risk_config(mode, values)
+                    mode_updates[mode] = changed
+                except (ValueError, TypeError) as exc:
+                    return _error(f"invalid {mode} risk config: {exc}", 400)
+            updated["modes"] = mode_updates
+            log.info("risk config modes updated: %s", mode_updates)
+            try:
+                mgr._audit_log(
+                    "RISK_MODE_CONFIG_UPDATE",
+                    scope="all",
+                    detail=f"modes={list(mode_updates.keys())}",
+                )
+            except Exception as exc:  # noqa: BLE001 — the update already landed
+                log.warning("risk mode audit log failed: %s", exc)
+        else:
+            # Fallback: treat as global update
+            data["global"] = data["modes"].get("paper", data["modes"].get("live", {}))
 
     if "global" in data and isinstance(data["global"], dict):
         g = data["global"]
@@ -672,6 +730,17 @@ def create_runner() -> Tuple[Response, int]:
                 f"a {mode} runner cannot be created into it"
             )
 
+    # A runner always trades on a feed the data-source policy names. Nothing
+    # enabled at all (synthetic off AND no broker source in the config) is a
+    # refusal, not a sourceless runner — a runner with no feed is exactly the
+    # silent substitution this policy exists to stop.
+    runner_source = str(data.get("source") or "").strip().lower() or _default_runner_source()
+    if not runner_source:
+        return _error(
+            "config/data_sources.yaml enables no data source this runner could trade "
+            "on — enable db/mstock (or the testing profile's synthetic) first."
+        )
+
     try:
         config = RunnerConfig(
             name=name,
@@ -702,7 +771,13 @@ def create_runner() -> Tuple[Response, int]:
                 else None
             ),
             mode=mode or "paper",
-            source=data.get("source") or "synthetic",
+            # The source this client named, or the policy's answer for a runner
+            # (2026-09-30): a deployment with synthetic disabled (the shipped
+            # default) creates broker runners, and the only process that still
+            # gets synthetic by omission is one whose data-source policy
+            # explicitly enables it — i.e. the test suite's own profile. The
+            # empty case was refused above, so this never starts sourceless.
+            source=runner_source,
             segment=segment,
             execution_broker=execution_broker,
             instrument=instrument,
