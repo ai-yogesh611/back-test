@@ -178,6 +178,13 @@ def test_create_runner_live_execution_broker_routes_to_dhan(api, monkeypatch):
     # The live-order confirm gate is a manager-level flag (two-tier live
     # gate): arm it the same way tests/test_position_management.py does.
     monkeypatch.setenv("ALLOW_LIVE_ORDERS", "1")
+    # This test is about broker ROUTING, not the certified panel: pretend no
+    # kill-switch sentinel row exists so the env gate stays the sole control
+    # (a developer's live Cost & Risk Settings would otherwise refuse arming
+    # and make this test environment-dependent).
+    monkeypatch.setattr(
+        "backtest.api.segments_store._panel_configured", lambda: False
+    )
     mgr = reset_portfolio_manager(
         auto_start_feed=False,
         tick_seconds=1.0,
