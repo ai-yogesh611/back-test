@@ -221,3 +221,31 @@ def test_logout_deletes_remembered_session(rs_env, mgr):
     manager.logout()
     assert rs_env.has_saved_session() is False
     assert broker.logged_out is True
+
+
+# ---------------------------------------------------------------------------
+# Naive expiry (mStock computes its session expiry from datetime.now(), no
+# tzinfo) must not crash the aware store clock in _prune() — 2026-10-01 fix.
+# ---------------------------------------------------------------------------
+
+
+def test_naive_future_expiry_saves_and_restores(rs_env):
+    """A naive expires_at is normalised to aware so the live session is
+    kept instead of throwing ``can't compare offset-naive and offset-aware
+    datetimes`` (which made every remember-session save silently fail)."""
+    rs_env.set_toggle(True)
+    naive_future = datetime.now() + timedelta(hours=2)  # naive, like mStock
+    assert rs_env.save_session("tok", naive_future) is True
+
+    sessions = rs_env.load_sessions()
+    assert "mstock" in sessions
+    assert sessions["mstock"]["token"] == "tok"
+    assert sessions["mstock"]["expires_at"].tzinfo is not None
+
+
+def test_naive_expired_entry_is_pruned_without_crashing(rs_env):
+    """A naive expiry already in the past is dropped cleanly, not raised."""
+    rs_env.set_toggle(True)
+    naive_past = datetime.now() - timedelta(hours=1)  # naive, expired
+    assert rs_env.save_session("tok", naive_past) is True  # save survives prune
+    assert rs_env.load_sessions() == {}

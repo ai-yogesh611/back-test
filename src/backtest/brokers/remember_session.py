@@ -166,9 +166,21 @@ def _atomic_write(path: Path, payload: dict) -> None:
 
 def _parse_expiry(raw: Any) -> Optional[datetime]:
     try:
-        return datetime.fromisoformat(str(raw))
+        parsed = datetime.fromisoformat(str(raw))
     except (TypeError, ValueError):
         return None
+    # A broker can hand back a naive expiry: mStock computes its session
+    # expiry from a local clock (datetime.now(), no tzinfo) and the store
+    # keeps that ISO string verbatim. The store clock here (_now) is aware
+    # UTC, so comparing a naive expiry against it raises
+    # ``TypeError: can't compare offset-naive and offset-aware datetimes``
+    # in _prune() on every save. Re-attach the local zone (a naive value is
+    # presumed system-local time) so both operands are aware and the expiry
+    # check stays correct instead of crashing. Already-aware values pass
+    # through untouched.
+    if parsed.tzinfo is None:
+        parsed = parsed.astimezone()
+    return parsed
 
 
 def _read_raw_store() -> Optional[Dict[str, dict]]:
