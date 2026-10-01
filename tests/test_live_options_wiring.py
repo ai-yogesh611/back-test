@@ -38,9 +38,12 @@ from backtest.forward.feed_registry import (
 )
 from backtest.forward.paper_runner import RunnerConfig
 from backtest.options.quote_providers import (
+    BidAskQuoteProvider,
+    CachedQuoteProvider,
     LiveChainProvider,
     LiveQuoteProvider,
     SyntheticChainGenerator,
+    SyntheticQuoteProvider,
 )
 from backtest.instruments.base import OptionType
 from backtest.instruments.option import OptionContract
@@ -410,3 +413,134 @@ class TestEngineQuoteSeam:
         self._patch_session(monkeypatch, True)
         provider, _ = engine._resolve_quote_source("mstock", "live")
         assert not isinstance(provider, MStockLiveFeed)
+
+
+# ---------------------------------------------------------------------------
+# 5. R3 / R5: register_contract protocol & provider conformance (AC #1, AC #4)
+# ---------------------------------------------------------------------------
+
+
+def test_register_contract_binds_numeric_token_to_trading_symbol():
+    """AC #1: LiveChainProvider.register_contract binds numeric instrument_token
+    so get_quote('49228') resolves to trading_symbol without generate_chain()
+    having run first (post-restart recovery).
+    """
+    contract = _contract(24_800, EXP1, OptionType.CE, token="49228")
+    broker = FakeBroker(CHAIN, {contract.trading_symbol: {"ltp": 148.75}})
+    provider = LiveChainProvider(broker=broker)  # cold: generate_chain NOT called
+
+    provider.register_contract(contract)
+    quote = provider.get_quote("49228")
+
+    assert "error" not in quote
+    assert quote["ltp"] == pytest.approx(148.75)
+    assert broker.quote_calls == 1
+
+
+class TestQuoteProviderRegisterContractConformance:
+    """R5 / AC #4: Every QuoteProvider implementation must implement
+    register_contract(contract) so post-restart contract rebinding works on
+    every provider type.
+    """
+
+    @staticmethod
+    def _build_all_providers(contract: OptionContract):
+        gen = SyntheticChainGenerator()
+        gen.set_spot("NIFTY", 24_800.0)
+        synth = SyntheticQuoteProvider(gen)
+        live_broker = FakeBroker(
+            CHAIN,
+            {contract.trading_symbol: {"ltp": 123.45, "bid": 123.0, "ask": 124.0}},
+        )
+        live_quote = LiveQuoteProvider(live_broker)
+        live_chain = LiveChainProvider(live_broker)
+        cached = CachedQuoteProvider(LiveQuoteProvider(live_broker), ttl=5)
+        bid_ask = BidAskQuoteProvider(SyntheticQuoteProvider(gen))
+        from backtest.options.paper_trading import FakeQuoteProvider
+
+        fake = FakeQuoteProvider(default_price=110.0)
+        return [synth, live_quote, live_chain, cached, bid_ask, fake]
+
+    def test_every_quote_provider_implements_register_contract(self):
+        contract = _contract(24_800, EXP1, OptionType.CE, token="49228")
+        providers = self._build_all_providers(contract)
+        assert len(providers) >= 6
+        for provider in providers:
+            register = getattr(provider, "register_contract", None)
+            assert callable(register), (
+                f"{type(provider).__name__} is missing register_contract(contract)"
+            )
+            register(contract)
+            quote = provider.get_quote("49228")
+            assert isinstance(quote, dict) and quote, (
+                f"{type(provider).__name__}.get_quote('49228') returned empty row after register_contract"
+            )
+            assert not quote.get("error"), (
+                f"{type(provider).__name__}.get_quote('49228') returned error after register_contract: {quote}"
+            )
+            assert float(quote.get("ltp", 0)) > 0
+
+    def test_conformance_gate_detects_provider_missing_register_contract(self, caplog):
+        """AC #4: A provider without register_contract fails conformance check
+        and causes OptionsBridge._rebind_restored_contracts to log ERROR.
+        """
+        from backtest.forward.options_bridge import OptionsBridge
+        from backtest.options.paper_trading import OptionPosition, StructurePosition
+
+        class _BrokenProvider:
+            source_name = "broken:test"
+            generator = SyntheticChainGenerator()
+
+            def get_quote(self, instrument_token: str):
+                return {"ltp": 100.0}
+
+        broken = _BrokenProvider()
+        assert not callable(getattr(broken, "register_contract", None))
+
+        bridge = OptionsBridge(capital=100_000, quote_provider=broken)
+        leg = OptionPosition(
+            position_id="p1",
+            structure_id="s1",
+            strategy_name="test",
+            instrument_token="49228",
+            trading_symbol="NIFTY26100124800CE",
+            underlying="NIFTY",
+            option_type="CE",
+            strike=Decimal("24800"),
+            expiry=EXP1,
+            lot_size=25,
+            side="BUY",
+            quantity=1,
+            entry_price=Decimal("100"),
+            current_price=Decimal("100"),
+        )
+        structure = StructurePosition(
+            structure_id="s1",
+            structure_type="long_call",
+            strategy_name="test",
+            underlying="NIFTY",
+            expiry=EXP1,
+            legs=[leg],
+        )
+        bridge.option_broker.restore_structure(structure)
+        bridge.open_structure_id = "s1"
+
+        with caplog.at_level("ERROR", logger="backtest.forward.options_bridge"):
+            ok = bridge._rebind_restored_contracts()
+
+        assert ok is False
+        assert any(
+            "restored legs cannot rebind" in rec.message
+            and "_BrokenProvider lacks register_contract" in rec.message
+            for rec in caplog.records
+        )
+
+    def test_live_quote_provider_tags_zero_ltp_as_error(self):
+        """LiveQuoteProvider tags broker responses where ltp <= 0 as an error
+        so fail-closed MTM holds last known price instead of marking to 0.
+        """
+        broker = FakeBroker(CHAIN, {"NIFTY261024800CE": {"ltp": 0.0}})
+        provider = LiveQuoteProvider(broker)
+        quote = provider.get_quote("NIFTY261024800CE")
+        assert quote.get("error") == "zero or missing ltp"
+

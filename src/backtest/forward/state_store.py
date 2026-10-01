@@ -173,12 +173,32 @@ def _opt_position_to_snapshot(p: Any) -> Dict[str, Any]:
         "realized_pnl": str(p.realized_pnl),
         "unrealized_pnl": str(p.unrealized_pnl),
         "commission": str(p.commission),
+        "opened_at": p.opened_at.isoformat() if getattr(p, "opened_at", None) else None,
+        "closed_at": p.closed_at.isoformat() if getattr(p, "closed_at", None) else None,
+        "last_updated": p.last_updated.isoformat() if getattr(p, "last_updated", None) else None,
+        "mtm_failures": int(getattr(p, "mtm_failures", 0) or 0),
+        "last_quote_error": getattr(p, "last_quote_error", None),
     }
 
 
 def _opt_position_from_snapshot(payload: Dict[str, Any]) -> Any:
     from backtest.options.paper_trading import OptionPosition, PositionStatus
 
+    opened_at = (
+        datetime.fromisoformat(payload["opened_at"])
+        if payload.get("opened_at")
+        else datetime.utcnow()
+    )
+    closed_at = (
+        datetime.fromisoformat(payload["closed_at"])
+        if payload.get("closed_at")
+        else None
+    )
+    last_updated = (
+        datetime.fromisoformat(payload["last_updated"])
+        if payload.get("last_updated")
+        else opened_at
+    )
     return OptionPosition(
         position_id=payload["position_id"],
         structure_id=payload.get("structure_id", ""),
@@ -200,6 +220,11 @@ def _opt_position_from_snapshot(payload: Dict[str, Any]) -> Any:
         realized_pnl=Decimal(payload.get("realized_pnl", "0")),
         unrealized_pnl=Decimal(payload.get("unrealized_pnl", "0")),
         commission=Decimal(payload.get("commission", "0")),
+        opened_at=opened_at,
+        closed_at=closed_at,
+        last_updated=last_updated,
+        mtm_failures=int(payload.get("mtm_failures", 0) or 0),
+        last_quote_error=payload.get("last_quote_error"),
     )
 
 
@@ -312,6 +337,7 @@ def restore_bridge(bridge: Any, snapshot: Dict[str, Any]) -> None:
             positions[leg.position_id] = leg
     broker._structures = structures
     broker._positions = positions
+    bridge._restored_contracts_rebound = False
 
 
 def _to_json(value: Any) -> Any:
@@ -450,6 +476,10 @@ def restore_runner(runner: Any, snapshot: Dict[str, Any]) -> None:
             if saved_status in (STATUS_PAUSED, STATUS_STOPPED)
             else STATUS_STOPPED
         )
+    if runner.options_bridge is not None:
+        runner.options_bridge.runner_running = runner.status == STATUS_RUNNING
+        runner.options_bridge.runner_id = runner.instance_id
+        runner.options_bridge.runner_name = runner.config.name
 
 
 def _now_iso() -> str:

@@ -51,6 +51,7 @@ to market. Without it a runner's legs keep their entry premium forever and
 from __future__ import annotations
 
 import logging
+import time
 from collections import deque
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -71,7 +72,11 @@ from backtest.options.exit_policy import (
 from backtest.options.greeks import BlackScholes
 from backtest.options.expiry import EXIT_REASON_SETTLEMENT, ExpiryManager
 from backtest.options.expiry_policy import NearestExpiryPolicy
-from backtest.options.paper_trading import OptionPaperBroker
+from backtest.options.paper_trading import (
+    STALE_AFTER_BARS,
+    OptionPaperBroker,
+    PositionStatus,
+)
 from backtest.options.quote_providers import (
     SyntheticQuoteProvider,
 )
@@ -237,6 +242,31 @@ class OptionsBridge:
         # U2.2: re-entry tracking — max_reentries_per_day knob, default 2, next-bar only
         self._reentries_today: int = 0
         self._reentry_day: Optional[Any] = None
+
+        # -- MTM Staleness Observability (R1, R4, R6) -----------------------
+        try:
+            self.stale_after_bars: int = max(
+                1, int(self.expression.get("stale_after_bars", STALE_AFTER_BARS) or STALE_AFTER_BARS)
+            )
+        except (TypeError, ValueError):
+            self.stale_after_bars = STALE_AFTER_BARS
+        #: True while the owning runner is RUNNING (default True for standalone
+        #: bridge use; StrategyRunner syncs this to ``status == STATUS_RUNNING``
+        #: so paused/stopped runners report ``mark_stale=False`` per §5).
+        self.runner_running: bool = True
+        self.runner_id: Optional[str] = None
+        self.runner_name: Optional[str] = None
+        #: R4 throttle window (seconds) between repeated quote-failure warnings
+        #: for the same (runner, symbol). First failure logs immediately, then
+        #: at most once per 10 minutes while it persists.
+        self.warn_throttle_seconds: float = 600.0
+        self._last_failure_warn_ts: dict[str, float] = {}
+        #: R6/R7 edge-triggered staleness episode state (notify once per
+        #: healthy → stale transition).
+        self._in_stale_episode: bool = False
+        self._stale_episode_id: int = 0
+        self.stale_notifications: list[dict[str, Any]] = []
+        self.last_refresh_result: Optional[dict[str, Any]] = None
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -465,11 +495,17 @@ class OptionsBridge:
         """Compact book state for runner state payloads and tests."""
         broker = self.option_broker
         closed = broker.get_closed_structures()
+        open_structures = broker.get_open_structures()
         wins = sum(1 for s in closed if s.total_realized_pnl >= 0)
         total_pnl = sum((s.total_realized_pnl for s in closed), Decimal("0"))
+        stale_positions = sum(
+            1
+            for s in open_structures
+            if self.runner_running and s.is_mark_stale(self.stale_after_bars)
+        )
         return {
             "open_positions": len(broker.get_open_positions()),
-            "open_structures": len(broker.get_open_structures()),
+            "open_structures": len(open_structures),
             "executed_count": self.executed_count,
             "closed_count": self.closed_count,
             "capital": float(broker.capital),
@@ -478,6 +514,12 @@ class OptionsBridge:
             "unrealized_pnl": float(self.last_unrealized_pnl),
             "last_spot": self.last_spot,
             "last_mtm_ts": self.last_mtm_ts,
+            "mark_ts": self.mark_ts,
+            "mark_stale": self.mark_stale,
+            "quote_error": self.quote_error,
+            "stale_positions": stale_positions,
+            "stale_episode_id": self._stale_episode_id if self.mark_stale else 0,
+            "last_refresh": self.last_refresh_result,
             "quote_source": str(getattr(self.quote_provider, "source_name", "unknown")),
             "last_exit": dict(self.last_exit) if self.last_exit else None,
             "settled_count": self._settlement_count,
@@ -498,6 +540,31 @@ class OptionsBridge:
     # ------------------------------------------------------------------ #
     # Book metrics (task A2) — the runner folds these into its own numbers
     # ------------------------------------------------------------------ #
+
+    @property
+    def mark_ts(self) -> Optional[str]:
+        """ISO-8601 UTC timestamp of the last successful mark on the open book (R1)."""
+        open_structures = self.option_broker.get_open_structures()
+        stamps = [s.mark_ts for s in open_structures if s.mark_ts]
+        return min(stamps) if stamps else None
+
+    @property
+    def mark_stale(self) -> bool:
+        """True when the runner is RUNNING and any open structure has ≥ STALE_AFTER_BARS failed marks (R1)."""
+        if not self.runner_running:
+            return False
+        return any(
+            s.is_mark_stale(self.stale_after_bars)
+            for s in self.option_broker.get_open_structures()
+        )
+
+    @property
+    def quote_error(self) -> Optional[str]:
+        """Last failure reason on any open structure leg, or ``None`` when healthy (R1)."""
+        for s in self.option_broker.get_open_structures():
+            if s.quote_error:
+                return s.quote_error
+        return None
 
     @property
     def net_pnl(self) -> Decimal:
@@ -594,6 +661,13 @@ class OptionsBridge:
                         "entry_price": float(leg.entry_price),
                         "current_price": float(leg.current_price),
                         "pnl": float(leg.unrealized_pnl),
+                        # R1: per-leg mark freshness contract
+                        "mark_ts": leg.mark_ts,
+                        "mark_stale": bool(
+                            self.runner_running and leg.is_mark_stale(self.stale_after_bars)
+                        ),
+                        "quote_error": leg.last_quote_error,
+                        "mtm_failures": leg.mtm_failures,
                         # Best-effort analytics: None (not 0.0!) when the spot,
                         # expiry or an implied vol for this contract is
                         # unavailable — an invented delta is worse than none.
@@ -605,6 +679,9 @@ class OptionsBridge:
             entry = _net_premium("entry_price")
             current = _net_premium("current_price")
             unrealized = float(structure.total_unrealized_pnl)
+            structure_stale = bool(
+                self.runner_running and structure.is_mark_stale(self.stale_after_bars)
+            )
             rows.append(
                 {
                     # Equity-compatible shape (so existing renderers work) …
@@ -623,6 +700,11 @@ class OptionsBridge:
                         round(unrealized / (entry * units), 4) if entry * units else 0.0
                     ),
                     "entry_ts": structure.opened_at.isoformat() if structure.opened_at else None,
+                    # R1: per-structure mark freshness contract
+                    "mark_ts": structure.mark_ts,
+                    "mark_stale": structure_stale,
+                    "quote_error": structure.quote_error,
+                    "mtm_failures": structure.mtm_failures,
                     # … plus the option-specific columns (C2).
                     "kind": "option",
                     "structure_id": structure.structure_id,
@@ -726,8 +808,13 @@ class OptionsBridge:
             self.last_unrealized_pnl = Decimal(str(unrealized))
             self.last_spot = float(price)
             self.last_mtm_ts = str(ts) if ts else None
+            self._after_mtm_attempt(symbol=underlying)
         except Exception as exc:  # noqa: BLE001 — pricing must never kill the runner
-            logger.warning("[options-bridge] MTM failed for %s @ %s: %s", symbol, price, exc)
+            self._log_mtm_failure_throttled(
+                str(symbol or self.underlying or "NIFTY").upper(),
+                f"MTM failed for {symbol} @ {price}: {exc}",
+            )
+            self._update_stale_episode_state()
             return None
 
         # Operator levels first: a human's stop beats every configured rule,
@@ -737,6 +824,7 @@ class OptionsBridge:
         self._maybe_manual_exit()
         self._maybe_risk_exit(strategy_name="")
         self._maybe_expiry_settlement()
+        self._update_stale_episode_state()
         return self.last_unrealized_pnl
 
     # ------------------------------------------------------------------ #
@@ -849,6 +937,15 @@ class OptionsBridge:
         """
         if self.manual_stop_loss is None and self.manual_target is None:
             return None
+        structure = self.option_broker.get_structure(self.open_structure_id or "")
+        if structure is not None and (
+            structure.mtm_failures > 0 or structure.is_mark_stale(self.stale_after_bars)
+        ):
+            self._log_mtm_failure_throttled(
+                f"{self.underlying}:manual_exit",
+                f"manual stop/target suppressed on {self.underlying} while mark is stale/failed",
+            )
+            return None
         mark = self._open_mark()
         if mark is None:
             return None
@@ -885,50 +982,344 @@ class OptionsBridge:
 
     _restored_contracts_rebound: bool = False
 
-    def _rebind_restored_contracts(self) -> None:
-        """One-shot: register restored open structures with the quote provider.
+    def _rebind_restored_contracts(self, force: bool = False) -> bool:
+        """Register restored open structures with the quote provider (R3/R5).
 
         The registry lives on the provider (token → contract); a restarted
         process builds a fresh provider with an EMPTY registry, so restored
-        legs' real mStock tokens looked up nothing and MTM'd to 0. Legacy
-        live tokens fall back to the trading symbol inside LiveChainProvider.
-        """
-        if getattr(self, "_restored_contracts_rebound", False):
-            return
-        register = getattr(self.quote_provider, "register_contract", None)
-        if register is None:
-            self._restored_contracts_rebound = True
-            return
-        try:
-            for structure in self.option_broker.get_open_structures():
-                for leg in structure.legs:
-                    # Legs aren't full contracts — build the minimum the
-                    # providers' price paths need. For SyntheticQuoteProvider
-                    # this enables pricing; for LiveChainProvider the trading
-                    # symbol is what the LTP endpoint keys on.
-                    from backtest.instruments.option import OptionContract
-                    from backtest.instruments.base import ExerciseType, SettlementType
+        legs' real mStock tokens looked up nothing and MTM'd to 0.
 
-                    expiry = getattr(structure, "expiry", None) or date.today()
-                    register(
-                        OptionContract(
-                            instrument_token=str(leg.instrument_token or leg.trading_symbol),
-                            trading_symbol=str(leg.trading_symbol or ""),
-                            underlying=str(getattr(leg, "underlying", "") or structure.underlying),
+        R3 fail-loud rule: if the provider lacks ``register_contract``, log
+        **ERROR** ("restored legs cannot rebind — <provider> lacks
+        register_contract") instead of silently completing.
+        """
+        open_structures = self.option_broker.get_open_structures()
+        if not open_structures:
+            return False
+        if getattr(self, "_restored_contracts_rebound", False) and not force:
+            return True
+        register = getattr(self.quote_provider, "register_contract", None)
+        if not callable(register):
+            logger.error(
+                "[options-bridge] restored legs cannot rebind — %s lacks register_contract",
+                type(self.quote_provider).__name__,
+            )
+            self._restored_contracts_rebound = True
+            return False
+        try:
+            from backtest.instruments.option import OptionContract
+            from backtest.instruments.base import ExerciseType, SettlementType
+
+            for structure in open_structures:
+                expiry = getattr(structure, "expiry", None) or date.today()
+                for leg in structure.legs:
+                    token = str(leg.instrument_token or leg.trading_symbol)
+                    symbol = str(leg.trading_symbol or token)
+                    contract = OptionContract(
+                        instrument_token=token,
+                        trading_symbol=symbol,
+                        underlying=str(getattr(leg, "underlying", "") or structure.underlying),
+                        exchange="NSE",
+                        segment="NFO",
+                        expiry=expiry,
+                        strike=Decimal(str(getattr(leg, "strike", 0) or 0)),
+                        option_type=str(getattr(leg, "option_type", "CE") or "CE"),
+                        lot_size=int(getattr(leg, "lot_size", 1) or 1),
+                        tick_size=Decimal("0.05"),
+                        contract_type=ExerciseType.EUROPEAN,
+                        settlement_type=SettlementType.CASH,
+                    )
+                    register(contract)
+                    # Also register under trading_symbol if distinct from token
+                    # so direct symbol re-quotes resolve on every provider type.
+                    if symbol and symbol != token:
+                        sym_contract = OptionContract(
+                            instrument_token=symbol,
+                            trading_symbol=symbol,
+                            underlying=contract.underlying,
                             exchange="NSE",
                             segment="NFO",
                             expiry=expiry,
-                            strike=Decimal(str(getattr(leg, "strike", 0) or 0)),
-                            option_type=str(getattr(leg, "option_type", "CE") or "CE"),
-                            lot_size=int(getattr(leg, "lot_size", 1) or 1),
+                            strike=contract.strike,
+                            option_type=contract.option_type,
+                            lot_size=contract.lot_size,
                             tick_size=Decimal("0.05"),
                             contract_type=ExerciseType.EUROPEAN,
                             settlement_type=SettlementType.CASH,
                         )
-                    )
+                        register(sym_contract)
             self._restored_contracts_rebound = True
+            return True
         except Exception:  # noqa: BLE001 — recovery must never kill the bar
             logger.warning("[options-bridge] restored-contract rebind failed", exc_info=True)
+            return False
+
+    # ------------------------------------------------------------------ #
+    # MTM Staleness Observability & Watchdog Repair (R4, R6)
+    # ------------------------------------------------------------------ #
+
+    def _log_mtm_failure_throttled(self, key: str, message: str) -> bool:
+        """Rate-limited WARNING log: first failure immediately, then at most
+        once per ``warn_throttle_seconds`` (10 min default) while it persists (R4).
+        """
+        now_mono = time.monotonic()
+        last = self._last_failure_warn_ts.get(key)
+        if last is None or (now_mono - last) >= self.warn_throttle_seconds:
+            self._last_failure_warn_ts[key] = now_mono
+            logger.warning("[options-bridge] %s", message)
+            return True
+        return False
+
+    def _after_mtm_attempt(self, symbol: str) -> None:
+        """Post-MTM hook: throttled failure logging + episode state update."""
+        open_legs = self.option_broker.get_open_positions()
+        failed_legs = [leg for leg in open_legs if leg.mtm_failures > 0]
+        key = str(symbol or self.underlying or "NIFTY").upper()
+        if failed_legs:
+            leg_desc = ", ".join(
+                f"{leg.trading_symbol or leg.instrument_token} "
+                f"(failures={leg.mtm_failures}, err={leg.last_quote_error})"
+                for leg in failed_legs
+            )
+            self._log_mtm_failure_throttled(
+                key,
+                f"MTM quote failed for {key} [{leg_desc}]",
+            )
+        else:
+            self._last_failure_warn_ts.pop(key, None)
+        self._update_stale_episode_state()
+
+    def _update_stale_episode_state(self) -> bool:
+        """Track healthy → stale transitions and fire single-shot notification (R6/AC #8).
+
+        Returns True iff this call transitioned from healthy to stale.
+        """
+        now_stale = self.mark_stale
+        subject = f"mtm:{self.runner_id or 'bridge'}"
+        if now_stale and not self._in_stale_episode:
+            self._in_stale_episode = True
+            self._stale_episode_id += 1
+            err = self.quote_error or "quote failed"
+            ts_now = datetime.now(timezone.utc).isoformat()
+            runner_label = self.runner_name or self.runner_id or self.underlying
+            notice = {
+                "episode_id": self._stale_episode_id,
+                "ts": ts_now,
+                "runner_id": self.runner_id,
+                "runner": runner_label,
+                "underlying": self.underlying,
+                "mark_ts": self.mark_ts,
+                "quote_error": err,
+                "message": f"Stale option mark on {runner_label} ({self.underlying}): {err}",
+            }
+            self.stale_notifications.append(notice)
+            try:
+                from backtest.alerts.broker import get_alert_broker
+                from backtest.alerts.types import AlertType
+
+                get_alert_broker().raise_alert(
+                    AlertType.DATA_FEED_STALE.value,
+                    "warning",
+                    notice["message"],
+                    subject=subject,
+                    data=notice,
+                )
+            except Exception:  # noqa: BLE001 — alerting never blocks trading
+                logger.debug("[options-bridge] stale mark alert raise failed", exc_info=True)
+            return True
+        if not now_stale and self._in_stale_episode:
+            self._in_stale_episode = False
+            try:
+                from backtest.alerts.broker import get_alert_broker
+                from backtest.alerts.types import AlertType
+
+                get_alert_broker().resolve_key(
+                    AlertType.DATA_FEED_STALE.value,
+                    subject,
+                    reason="option mark refreshed",
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("[options-bridge] stale mark alert resolve failed", exc_info=True)
+        return False
+
+    def repair_marks(
+        self,
+        *,
+        force: bool = False,
+        now_utc: Optional[datetime] = None,
+        max_age_s: float = 120.0,
+    ) -> dict[str, Any]:
+        """Watchdog / manual mark-repair routine (R6).
+
+        1. Re-binds every open leg via its stored ``trading_symbol`` (and
+           invalidates any provider quote cache).
+        2. Re-quotes each open structure atomically, falling back to direct
+           ``get_quote(leg.trading_symbol)`` if ``leg.instrument_token`` still
+           fails (bypassing a corrupted token→contract registry).
+        3. If still failing on a stale-age leg, ensures ``mark_stale`` is set,
+           keeps ``quote_error``, logs once (throttled), and notifies once per
+           staleness episode.
+        """
+        now_dt = now_utc or datetime.now(timezone.utc)
+        if now_dt.tzinfo is None:
+            now_dt = now_dt.replace(tzinfo=timezone.utc)
+        else:
+            now_dt = now_dt.astimezone(timezone.utc)
+
+        open_structures = self.option_broker.get_open_structures()
+        open_legs = [
+            leg
+            for s in open_structures
+            for leg in s.legs
+            if leg.status == PositionStatus.OPEN
+        ]
+        if not open_legs:
+            self._update_stale_episode_state()
+            res = {
+                "checked": 0,
+                "repaired": 0,
+                "still_failing": 0,
+                "mark_stale": False,
+                "mark_ts": None,
+                "quote_error": None,
+                "refreshed_at": now_dt.isoformat(),
+                "message": "no open option positions",
+            }
+            self.last_refresh_result = res
+            return res
+
+        # Determine which legs need repair (all when force=True, else age > max_age_s or failing)
+        needs_repair = force
+        if not needs_repair:
+            for leg in open_legs:
+                lu = leg.last_updated
+                if lu is None:
+                    needs_repair = True
+                    break
+                lu_utc = (
+                    lu.replace(tzinfo=timezone.utc)
+                    if lu.tzinfo is None
+                    else lu.astimezone(timezone.utc)
+                )
+                age_s = (now_dt - lu_utc).total_seconds()
+                if age_s > max_age_s or leg.mtm_failures > 0:
+                    needs_repair = True
+                    break
+
+        if not needs_repair:
+            res = {
+                "checked": 0,
+                "repaired": 0,
+                "still_failing": 0,
+                "mark_stale": self.mark_stale,
+                "mark_ts": self.mark_ts,
+                "quote_error": self.quote_error,
+                "refreshed_at": now_dt.isoformat(),
+                "message": "marks are fresh",
+            }
+            return res
+
+        # Step 1: re-bind legs via stored trading_symbol & invalidate caches
+        self._rebind_restored_contracts(force=True)
+        invalidate = getattr(self.quote_provider, "invalidate", None)
+        if callable(invalidate):
+            for leg in open_legs:
+                invalidate(leg.instrument_token)
+                if leg.trading_symbol:
+                    invalidate(leg.trading_symbol)
+
+        # Step 2: re-quote legs (with direct trading_symbol fallback if token lookup fails)
+        repaired_count = 0
+        failing_count = 0
+        for structure in open_structures:
+            s_legs = [leg for leg in structure.legs if leg.status == PositionStatus.OPEN]
+            outcomes: list[tuple[Any, bool, Decimal, Optional[str]]] = []
+            for leg in s_legs:
+                quote: Any = None
+                err_msg: Optional[str] = None
+                try:
+                    quote = self.quote_provider.get_quote(leg.instrument_token)
+                except Exception as exc:  # noqa: BLE001
+                    err_msg = str(exc)
+                    quote = None
+
+                is_fail = (
+                    err_msg is not None
+                    or not isinstance(quote, dict)
+                    or not quote
+                    or bool(quote.get("error"))
+                )
+                if is_fail and err_msg is None:
+                    err_msg = (
+                        str(quote.get("error"))
+                        if isinstance(quote, dict) and quote.get("error")
+                        else "empty quote row"
+                    )
+
+                # R6 step 1b: bypass token→contract registry by querying trading_symbol directly
+                if (
+                    is_fail
+                    and leg.trading_symbol
+                    and str(leg.trading_symbol) != str(leg.instrument_token)
+                ):
+                    try:
+                        sym_quote = self.quote_provider.get_quote(str(leg.trading_symbol))
+                        if (
+                            isinstance(sym_quote, dict)
+                            and sym_quote
+                            and not sym_quote.get("error")
+                        ):
+                            quote = sym_quote
+                            is_fail = False
+                            err_msg = None
+                    except Exception as exc:  # noqa: BLE001
+                        err_msg = str(exc)
+
+                price = (
+                    Decimal(str(quote.get("ltp", 0) or 0))
+                    if isinstance(quote, dict) and not is_fail
+                    else Decimal("0")
+                )
+                outcomes.append((leg, is_fail, price, err_msg))
+
+            if any(is_f for _, is_f, _, _ in outcomes):
+                for leg, is_f, _, err_msg in outcomes:
+                    if is_f:
+                        failing_count += 1
+                        leg.record_mtm_failure(err_msg)
+                        # Step 3: a watchdog/manual repair that still fails must
+                        # surface mark_stale immediately rather than hiding for
+                        # another bar cycle.
+                        if leg.mtm_failures < self.stale_after_bars:
+                            leg.mtm_failures = self.stale_after_bars
+                    else:
+                        leg.last_quote_error = None
+            else:
+                for leg, _, price, _ in outcomes:
+                    leg.update_mtm(price)
+                    repaired_count += 1
+
+        self.last_unrealized_pnl = self.option_broker.total_unrealized_pnl
+        self._after_mtm_attempt(symbol=self.underlying)
+
+        time_label = now_dt.astimezone().strftime("%H:%M:%S")
+        if failing_count > 0:
+            msg = f"refreshed {time_label} — still failing: {self.quote_error or 'quote failed'}"
+        else:
+            msg = f"refreshed {time_label} — {repaired_count} leg(s) updated"
+
+        res = {
+            "checked": len(open_legs),
+            "repaired": repaired_count,
+            "still_failing": failing_count,
+            "mark_stale": self.mark_stale,
+            "mark_ts": self.mark_ts,
+            "quote_error": self.quote_error,
+            "refreshed_at": now_dt.isoformat(),
+            "message": msg,
+        }
+        self.last_refresh_result = res
+        return res
 
     def _sync_market(self, underlying: str, spot: float, ts: Any = None) -> None:
         """Point the quote feed at a new spot / bar clock.
@@ -1020,7 +1411,7 @@ class OptionsBridge:
         if structure is None:
             return None
         try:
-            return self.exit_policy.evaluate(
+            decision = self.exit_policy.evaluate(
                 view=view,
                 structure_direction=self._structure_direction,
                 unrealized_pnl=structure.total_unrealized_pnl,
@@ -1030,6 +1421,17 @@ class OptionsBridge:
                 bar_date=self._bar_dt.date() if self._bar_dt else None,
                 expiry=structure.expiry,
             )
+            if (
+                decision is not None
+                and getattr(decision, "reason", None) in ("stop_loss", "target")
+                and (structure.mtm_failures > 0 or structure.is_mark_stale(self.stale_after_bars))
+            ):
+                self._log_mtm_failure_throttled(
+                    f"{self.underlying}:risk_exit",
+                    f"price-driven {decision.reason} suppressed on {self.underlying} while mark is stale/failed",
+                )
+                return None
+            return decision
         except Exception as exc:  # noqa: BLE001 — a bad rule must not block trading
             logger.warning("[options-bridge] exit evaluation failed: %s", exc)
             return None
@@ -1097,6 +1499,7 @@ class OptionsBridge:
         # The legs are closed, so the open-leg mark is gone. Keep the summary
         # honest for the rest of this bar.
         self.last_unrealized_pnl = self.option_broker.total_unrealized_pnl
+        self._update_stale_episode_state()
 
         logger.info(
             "[options-bridge] closed %s (%s) after %d bars — pnl ₹%.2f — %s",

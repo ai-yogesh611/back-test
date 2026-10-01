@@ -20,6 +20,11 @@
     // looking at — the table is filtered client-side off the live snapshot.
     posSearch: "",
     posRulesOnly: false,
+    // MTM Staleness Observability (R2, R7): track active staleness episodes
+    // per runner so the toast fires once on healthy → stale transition, and
+    // track inline manual refresh results per runner.
+    staleEpisodes: {},
+    refreshStatus: {},
   };
 
 
@@ -151,7 +156,12 @@
     real.textContent = fmtSigned(p.realized_pnl);
     real.className = "metric-value " + pnlClass(p.realized_pnl);
 
-    $("m-positions").textContent = p.open_positions + " active";
+    const staleMarksCount = typeof p.stale_marks_count === "number"
+      ? p.stale_marks_count
+      : (p.runners || []).reduce((n, r) => n + OptionView.staleCount(r), 0);
+    $("m-positions").textContent = staleMarksCount > 0
+      ? p.open_positions + " pos · " + staleMarksCount + " stale mark"
+      : p.open_positions + " active";
     $("m-runner-count").textContent =
       p.runner_count + " instances · " + p.running + " running · " +
       p.paused + " paused";
@@ -212,6 +222,10 @@
 
   function rowActions(r) {
     let html = "";
+    if (OptionView.isMarkStale(r)) {
+      html += '<button class="row-btn row-btn-refresh-marks" data-act="refresh_marks" data-id="' +
+        r.instance_id + '" title="Re-bind option contracts and refresh stale marks">↻ Refresh marks</button>';
+    }
     if (r.status === "RUNNING") {
       html += '<button class="row-btn" data-act="pause" data-id="' + r.instance_id + '" title="Pause">⏸</button>';
     } else if (r.status === "PAUSED") {
@@ -265,8 +279,17 @@
       const notes = OptionView.matrixNotes(r);
       const targetCell = r.target_label +
         notes.map((n) => '<div class="cell-sub">' + n + '</div>').join("");
+      const isStale = OptionView.isMarkStale(r);
+      const staleItem = {
+        mark_stale: isStale,
+        mark_ts: r.mark_ts || (r.options && r.options.mark_ts),
+        quote_error: r.quote_error || (r.options && r.options.quote_error),
+      };
+      const refreshMsg = state.refreshStatus[r.instance_id] ||
+        (r.options && r.options.last_refresh && r.options.last_refresh.message) || "";
       return (
         '<tr class="matrix-row' + (option ? " matrix-row-option" : "") +
+          (isStale ? " stale-mark-row" : "") +
           ' status-' + r.status.toLowerCase() + '">' +
         '<td>' + (i + 1) + '</td>' +
         '<td class="cell-name">' + kindBadge(r) + r.name +
@@ -276,14 +299,17 @@
         '<td>' + badgeHtml(r.mode, r.source) + '</td>' +
         '<td>' + r.timeframe + '</td>' +
         '<td class="num">' + fmtMoney(r.allocated_capital) + '</td>' +
-        '<td class="num ' + pnlClass(r.open_pnl) + '">' + fmtSigned(r.open_pnl) + '</td>' +
+        '<td class="num ' + pnlClass(r.open_pnl) + '">' + fmtSigned(r.open_pnl) +
+          OptionView.staleBadgeHtml(staleItem) + '</td>' +
         '<td class="num ' + pnlClass(r.daily_pnl) + '">' + fmtSigned(r.daily_pnl) + '</td>' +
         '<td class="num">' + posCell.primary +
           (posCell.sub ? '<div class="cell-sub">' + posCell.sub + '</div>' : "") + '</td>' +
         '<td><span class="status-cell">' + (STATUS_DOT[r.status] || "⚪") + " " + r.status + "</span>" +
           (r.error ? '<div class="cell-sub cell-error" title="' + (r.error || "") + '">⚠ risk halt</div>' : "") +
         '</td>' +
-        '<td><div class="row-actions">' + rowActions(r) + "</div></td>" +
+        '<td><div class="row-actions">' + rowActions(r) + "</div>" +
+          (refreshMsg ? '<div class="cell-sub refresh-marks-result">' + refreshMsg + '</div>' : "") +
+        "</td>" +
         "</tr>"
       );
     }).join("");
@@ -360,6 +386,7 @@
       : '<div class="cell-sub">' + (row.strategy_name || "") + "</div>";
     return (
       '<tr class="pos-row' + (row.stale ? " pos-row-stale" : "") +
+        (row.mark_stale ? " stale-mark-row" : "") +
         (row.kind === "option" ? " matrix-row-option" : "") + '">' +
       '<td>' + stale + (row.runner || String(row.instance_id || "").slice(0, 8)) +
         '<div class="cell-sub">' + (row.status || "") +
@@ -373,7 +400,7 @@
       "<td>" + (row.side || "") + "</td>" +
       '<td class="num">' + Number(row.qty || 0).toLocaleString("en-IN") + "</td>" +
       '<td class="num">' + legPriceOf(row.entry_price) + "</td>" +
-      '<td class="num">' + legPriceOf(row.current_price) + "</td>" +
+      '<td class="num">' + legPriceOf(row.current_price) + OptionView.staleBadgeHtml(row) + "</td>" +
       '<td class="num ' + pnlClass(pnl) + '">' + fmtSigned(pnl) + "</td>" +
       posLevelCell(row.target, "target") +
       posLevelCell(row.stop_loss, "stop") +
@@ -393,7 +420,7 @@
         : "Δ " + Number(leg.delta).toFixed(2) +
           (leg.theta === null || leg.theta === undefined ? "" : " Θ " + Number(leg.theta).toFixed(1));
       return (
-        '<tr class="opt-leg-row">' +
+        '<tr class="opt-leg-row' + (leg.mark_stale ? " stale-mark-row" : "") + '">' +
         "<td></td>" +
         '<td class="cell-sub">↳ leg ' + (leg.trading_symbol || "") +
           '<span class="muted"> ' + Number(leg.strike || 0).toLocaleString("en-IN") +
@@ -401,7 +428,7 @@
         "<td>" + (leg.side || "") + "</td>" +
         '<td class="num">' + Number(leg.qty || 0).toLocaleString("en-IN") + "</td>" +
         '<td class="num">' + legPriceOf(leg.entry_price) + "</td>" +
-        '<td class="num">' + legPriceOf(leg.current_price) + "</td>" +
+        '<td class="num">' + legPriceOf(leg.current_price) + OptionView.staleBadgeHtml(leg) + "</td>" +
         '<td class="num ' + pnlClass(legPnl) + '">' + fmtSigned(legPnl) + "</td>" +
         '<td class="num muted">—</td><td class="num muted">—</td>' +
         '<td class="num muted">' + greeks + "</td><td></td></tr>"
@@ -430,6 +457,7 @@
       (r.stop_loss !== null && r.stop_loss !== undefined) ||
       (r.target !== null && r.target !== undefined)).length;
     const stale = rows.filter((r) => r.stale).length;
+    const markStale = rows.filter((r) => r.mark_stale).length;
     const summaryEl = $("pos-summary");
     if (summaryEl) {
       // Multi-broker Phase B: per-broker totals when positions span more
@@ -449,7 +477,8 @@
           ).join(" · ") + "</div>"
         : "";
       summaryEl.innerHTML = rows.length
-        ? "<strong>" + rows.length + "</strong> open · " +
+        ? "<strong>" + rows.length + "</strong> pos · " +
+          (markStale ? '<span class="stale-mark-summary">' + markStale + " stale mark</span> · " : "") +
           rows.filter((r) => r.kind === "option").length + " option · " +
           rows.filter((r) => r.kind === "equity").length + " equity · " +
           withRules + " with a manual level · open P&L " +
@@ -514,30 +543,31 @@
         const legs = (s.legs_detail && s.legs_detail.length) ? s.legs_detail : null;
         if (!legs) {
           rows.push(
-            '<tr><td>' + r.name + frozenTag(r) + '</td><td>' + s.symbol + '</td><td>' + s.side + '</td>' +
+            '<tr' + (s.mark_stale ? ' class="stale-mark-row"' : "") + '><td>' + r.name + frozenTag(r) + '</td><td>' + s.symbol + '</td><td>' + s.side + '</td>' +
             '<td class="num">' + s.units + '</td>' +
             '<td class="num">' + legPrice(s.entry_price) + '</td>' +
-            '<td class="num">' + legPrice(s.current_price) + '</td>' +
+            '<td class="num">' + legPrice(s.current_price) + OptionView.staleBadgeHtml(s) + '</td>' +
             '<td class="num ' + pnlClass(s.unrealized_pnl) + '">' + fmtSigned(s.unrealized_pnl) +
             '</td></tr>');
           return;
         }
         legs.forEach((leg, idx) => {
+          const rowCls = [idx === 0 ? "opt-first-leg" : "", leg.mark_stale ? "stale-mark-row" : ""].filter(Boolean).join(" ");
           rows.push(
-            '<tr' + (idx === 0 ? ' class="opt-first-leg"' : "") + '>' +
+            '<tr' + (rowCls ? ' class="' + rowCls + '"' : "") + '>' +
             '<td>' + (idx === 0 ? r.name + frozenTag(r) : "") + '</td>' +
             '<td>' + (leg.trading_symbol || s.symbol) + '</td>' +
             '<td>' + leg.side + '</td>' +
             '<td class="num">' + leg.qty + '</td>' +
             '<td class="num">' + legPrice(leg.entry_price) + '</td>' +
-            '<td class="num">' + legPrice(leg.current_price) + '</td>' +
+            '<td class="num">' + legPrice(leg.current_price) + OptionView.staleBadgeHtml(leg) + '</td>' +
             '<td class="num ' + pnlClass(leg.pnl) + '">' + fmtSigned(leg.pnl) + '</td></tr>');
         });
         rows.push(
-          '<tr class="opt-total"><td></td><td>' + s.symbol + ' (net)</td><td>' + s.side +
+          '<tr class="opt-total' + (s.mark_stale ? " stale-mark-row" : "") + '"><td></td><td>' + s.symbol + ' (net)</td><td>' + s.side +
           '</td><td class="num">' + s.qty + ' lot' + (s.qty === 1 ? "" : "s") + '</td>' +
           '<td class="num">' + legPrice(s.entry_price) + '</td>' +
-          '<td class="num">' + legPrice(s.current_price) + '</td>' +
+          '<td class="num">' + legPrice(s.current_price) + OptionView.staleBadgeHtml(s) + '</td>' +
           '<td class="num ' + pnlClass(s.unrealized_pnl) + '">' + fmtSigned(s.unrealized_pnl) +
           ' <span class="muted">exp ' + OptionView.expiryLabel(s.expiry) + '</span></td></tr>');
       });
@@ -638,11 +668,31 @@
       '<tr><td colspan="8" class="muted" style="padding:16px">No runners in this bucket.</td></tr>';
   }
 
+  function checkStaleTransitions(p) {
+    const runners = (p && p.runners) || [];
+    runners.forEach((r) => {
+      const id = r.instance_id;
+      if (!id) return;
+      const isStale = OptionView.isMarkStale(r);
+      const epKey = (r.options && r.options.stale_episode_id) || (isStale ? 1 : 0);
+      if (isStale) {
+        if (state.staleEpisodes[id] !== epKey) {
+          state.staleEpisodes[id] = epKey;
+          const err = r.quote_error || (r.options && r.options.quote_error) || "quote failed";
+          toast("⚠ Stale mark on " + (r.name || id) + ": " + err, "warning");
+        }
+      } else if (state.staleEpisodes[id]) {
+        delete state.staleEpisodes[id];
+      }
+    });
+  }
+
   // ---------------------------------------------------------------- render
   function render(p) {
     // SSE broadcasts the combined snapshot — drop other buckets on a scoped page.
     if (PAGE_MODE) p.runners = (p.runners || []).filter((r) => (r.mode || "paper") === PAGE_MODE);
     state.portfolio = p;
+    checkStaleTransitions(p);
     // T2.1: Metrics use bucket-scoped data when PAGE_MODE is set.
     renderMetrics(bucketMetrics(p));
     renderBanner(p);
@@ -726,6 +776,19 @@
       addAudit(action.toUpperCase() + " sent to instance " + id.slice(0, 8), "action");
       toast(action + " sent", "success");
     } catch (e) { toast(e.message, "error"); }
+  }
+
+  async function refreshRunnerMarks(id) {
+    try {
+      const data = await api("/api/portfolio/runner/" + id + "/refresh-marks", "POST", {});
+      const msg = data.message || "marks refreshed";
+      state.refreshStatus[id] = msg;
+      addAudit("REFRESH_MARKS [" + id.slice(0, 8) + "] — " + msg, "action");
+      if (state.portfolio) renderMatrix(state.portfolio);
+      toast(msg, data.still_failing > 0 || data.cooldown ? "warning" : "success");
+    } catch (e) {
+      toast("Refresh marks failed: " + e.message, "error");
+    }
   }
 
   // T2.4: Bulk actions scoped to PAGE_MODE when set.
@@ -1198,6 +1261,8 @@
       const act = btn.dataset.act;
       if (act === "deep_dive") {
         window.DeepDive.open(id, state.portfolio);
+      } else if (act === "refresh_marks") {
+        refreshRunnerMarks(id);
       } else if (act === "remove") {
         // Destructive: confirm first — removal flattens the book and
         // deletes the instance; there is no undo.

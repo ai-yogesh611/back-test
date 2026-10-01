@@ -600,3 +600,94 @@ def test_the_action_and_order_styles_exist():
     # Adverse slippage must read as a loss, and a working order must be visible.
     assert ".order-row.order-pending" in css
     assert ".order-row.order-rejected" in css
+    for stale_cls in (
+        ".badge-stale-mark",
+        ".stale-mark-row",
+        ".row-btn-refresh-marks",
+        ".refresh-marks-result",
+        ".stale-mark-summary",
+    ):
+        assert stale_cls in css, f"missing staleness style {stale_cls}"
+
+
+@requires_node
+def test_stale_mark_live_drill_renders_badge_tooltip_and_refresh_button(option_runner, tmp_path):
+    """AC #2 & AC #10 (Live drill): Kill the quote session on a running option
+    runner, wait 3 bars, and verify the rendered dashboard visibly shows
+    '⚠ stale mark' badge, 'last good quote ... — ...' tooltip, 'stale-mark-row'
+    highlight, and '↻ Refresh marks' button in matrix, positions, and deep-dive.
+    """
+    bridge = option_runner.options_bridge
+    assert bridge is not None
+    assert bridge.open_structure_id is not None
+    # Hold the structure open through the 3-bar drill instead of time-stopping on bar 2
+    from backtest.options.exit_policy import ExitConfig, ExitPolicy
+
+    bridge.exit_policy = ExitPolicy(ExitConfig(max_bars=None, min_days_to_expiry=1))
+
+    class _KilledSessionQuoteProvider:
+        source_name = "live:mstock"
+        generator = bridge.quote_provider.generator
+
+        def register_contract(self, contract):
+            pass
+
+        def get_quote(self, token):
+            return {"error": f"unknown option contract {token!r} (session killed)"}
+
+    bridge.quote_provider = _KilledSessionQuoteProvider()
+
+    # Wait 3 bars after killing the broker session
+    for bar in _bars([25_700, 25_750, 25_800], day_offset=12):
+        option_runner.process_candle_event("NIFTY", bar)
+
+    row = option_runner.get_state()
+    detail = option_runner.get_detail()
+    assert row["mark_stale"] is True
+    assert "session killed" in (row["quote_error"] or "")
+    assert row["mark_ts"] is not None
+
+    summary = {
+        "success": True,
+        "portfolio": {
+            "total_equity": row["equity"],
+            "open_positions": row["open_positions"],
+            "stale_marks_count": row["stale_positions"],
+            "runners": [row],
+            "positions": [
+                {
+                    "instance_id": row["instance_id"],
+                    "runner": row["name"],
+                    "status": row["status"],
+                    "stale": False,
+                    **s,
+                    "legs": s["legs_detail"],
+                }
+                for s in row["options"]["open_structures_detail"]
+            ],
+            "buckets": {},
+        },
+    }
+    (tmp_path / "summary.json").write_text(json.dumps(summary, default=str))
+    (tmp_path / "stale_detail.json").write_text(json.dumps(detail, default=str))
+
+    sections = _render(tmp_path, "stale_detail.json")
+
+    # Matrix row has stale-mark-row, ⚠ stale mark badge, tooltip, and ↻ Refresh marks button
+    assert "⚠ stale mark" in sections["MATRIX"]
+    assert "last good quote " in sections["MATRIX"]
+    assert "session killed" in sections["MATRIX"]
+    assert "stale-mark-row" in sections["MATRIX"]
+    assert "↻ Refresh marks" in sections["MATRIX"]
+    assert 'data-act="refresh_marks"' in sections["MATRIX"]
+
+    # Positions table has ⚠ stale mark badge and tooltip on structure and leg rows
+    assert "⚠ stale mark" in sections["POSITIONS"]
+    assert "last good quote " in sections["POSITIONS"]
+    assert "stale-mark-row" in sections["POSITIONS"]
+
+    # Deep-dive drawer has ⚠ stale mark badge and tooltip on structure and leg rows
+    assert "⚠ stale mark" in sections["DEEPDIVE"]
+    assert "last good quote " in sections["DEEPDIVE"]
+    assert "stale-mark-row" in sections["DEEPDIVE"]
+

@@ -980,6 +980,7 @@ def _position_rows(mode: str | None) -> Tuple[list[dict], dict]:
         "equity": sum(1 for r in rows if r.get("kind") == "equity"),
         "option": sum(1 for r in rows if r.get("kind") == "option"),
         "stale": sum(1 for r in rows if r.get("stale")),
+        "mark_stale": sum(1 for r in rows if r.get("mark_stale")),
         "with_stop": sum(1 for r in rows if r.get("stop_loss") is not None),
         "with_target": sum(1 for r in rows if r.get("target") is not None),
         # Unrealized P&L of the rows above (frozen marks included; the row
@@ -1029,6 +1030,27 @@ def position_action() -> Tuple[Response, int]:
         return _error(str(exc), 404)
     except (ValueError, RuntimeError) as exc:
         return _error(str(exc), 409)
+    return jsonify({"success": True, **result}), 200
+
+
+@portfolio_bp.post("/api/portfolio/runner/<instance_id>/refresh-marks")
+def refresh_runner_marks(instance_id: str) -> Tuple[Response, int]:
+    """Manual operator trigger for the R6 mark-repair routine (R6 / R7, AC #7).
+
+    Calls the same repair routine as the periodic 60s watchdog timer, enforces
+    a 10s per-runner rate-limit (returning ``cooldown: True`` without hitting
+    the broker), and writes the same audit entry.
+    """
+    iid = str(instance_id or "").strip()
+    if not iid:
+        return _error("instance_id is required")
+    try:
+        result = _manager().refresh_runner_marks(iid)
+    except KeyError as exc:
+        return _error(str(exc), 404)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("refresh-marks failed for %s: %s", iid, exc)
+        return _error(f"refresh-marks failed: {exc}", 500)
     return jsonify({"success": True, **result}), 200
 
 

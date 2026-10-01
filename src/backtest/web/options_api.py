@@ -140,18 +140,24 @@ def get_option_broker() -> OptionPaperBroker:
 
 
 def _register_restored_contracts(quotes: Any, structures: list[Any]) -> None:
-    """Re-register rehydrated legs with a synthetic quote feed.
+    """Re-register rehydrated legs with a quote feed (R3).
 
     The in-process contract registry dies with the server; without this the
     first MTM refresh after a restart would mark every restored leg at 0.
-    Live feeds need no registration, so this is a no-op for them.
+    Logs ERROR if the provider lacks ``register_contract``.
     """
     from backtest.instruments.base import OptionType
     from backtest.instruments.option import OptionContract
 
-    target = getattr(quotes, "inner", quotes)
-    register = getattr(target, "register_contract", None)
-    if register is None:
+    register = getattr(quotes, "register_contract", None)
+    if not callable(register):
+        target = getattr(quotes, "inner", quotes)
+        register = getattr(target, "register_contract", None)
+    if not callable(register):
+        logger.error(
+            "[options] restored legs cannot rebind — %s lacks register_contract",
+            type(quotes).__name__,
+        )
         return
     for structure in structures:
         for leg in structure.legs:
@@ -703,6 +709,10 @@ def _position_to_dict(p: Any) -> dict[str, Any]:
         "realized_pnl": float(p.realized_pnl),
         "status": p.status.value,
         "opened_at": p.opened_at.isoformat(),
+        "mark_ts": getattr(p, "mark_ts", None),
+        "mark_stale": bool(p.is_mark_stale()) if hasattr(p, "is_mark_stale") else False,
+        "quote_error": getattr(p, "last_quote_error", None),
+        "mtm_failures": int(getattr(p, "mtm_failures", 0) or 0),
     }
 
 
@@ -719,4 +729,8 @@ def _structure_to_dict(s: Any) -> dict[str, Any]:
         "total_unrealized_pnl": float(s.total_unrealized_pnl),
         "legs": [_position_to_dict(leg) for leg in s.legs],
         "opened_at": s.opened_at.isoformat(),
+        "mark_ts": getattr(s, "mark_ts", None),
+        "mark_stale": bool(s.is_mark_stale()) if hasattr(s, "is_mark_stale") else False,
+        "quote_error": getattr(s, "quote_error", None),
+        "mtm_failures": int(getattr(s, "mtm_failures", 0) or 0),
     }
