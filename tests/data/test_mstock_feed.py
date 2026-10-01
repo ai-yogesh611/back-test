@@ -183,15 +183,16 @@ def test_market_open_boundaries():
 
 
 # ---------------------------------------------------------------------------
-# Equity live-quote path — 2026-10-01: RELIANCE runners froze on the prior
-# day's close because quote/ohlc was index-only and equities fell through to
-# the T+1 historical endpoint. Equities must now be served a TODAY bar.
+# Equity live-bar path — 2026-10-01: RELIANCE runners froze on the prior
+# day's close. First attempt served equities from quote/ohlc under
+# "NSE:<TRADINGSYMBOL>", but that catalog is index-only: mStock answers
+# equities with HTTP 202 + "Invalid symbol.'RELIANCE' Please verify the
+# exchange and scrip name" forever (verified live). Equities are served by
+# the intraday-chart endpoint, keyed by scriptmaster instrument_token.
 # ---------------------------------------------------------------------------
 
 
-def test_latest_bar_serves_equity_live_quote(monkeypatch):
-    from datetime import timedelta, timezone
-
+def test_latest_bar_serves_equity_intraday_bar(monkeypatch):
     monkeypatch.setenv("MSTOCK_API_KEY", "test-api-key")
     monkeypatch.setenv("MSTOCK_BASE_URL", "https://api.mstock.test")
     monkeypatch.setattr("backtest.live.auth.get_session_token", lambda: "sess")
@@ -201,7 +202,7 @@ def test_latest_bar_serves_equity_live_quote(monkeypatch):
     monkeypatch.setattr(
         feed_mod,
         "_resolve_scriptmaster_row",
-        lambda *a, **k: {"exchange": "NSE", "tradingsymbol": "RELIANCE"},
+        lambda *a, **k: {"exchange": "NSE", "instrument_token": 2885},
     )
 
     captured: dict = {}
@@ -211,18 +212,18 @@ def test_latest_bar_serves_equity_live_quote(monkeypatch):
             return None
 
         def json(self):
+            # Newest-first, exactly as the live endpoint returned it.
             return {
                 "data": {
-                    "NSE:RELIANCE": {
-                        "ohlc": {"open": 100.0, "high": 102.0, "low": 99.0},
-                        "last_price": 101.0,
-                    }
+                    "candles": [
+                        ["2026-10-01T12:10:00+05", 1176.2, 1176.2, 1174.8, 1175.4, 12228],
+                        ["2026-10-01T12:09:00+05", 1175.0, 1176.5, 1174.0, 1176.2, 20000],
+                    ]
                 }
             }
 
     def fake_get(url, *a, **k):
         captured["url"] = url
-        captured["params"] = k.get("params")
         return _Resp()
 
     monkeypatch.setattr("requests.get", fake_get)
@@ -231,19 +232,16 @@ def test_latest_bar_serves_equity_live_quote(monkeypatch):
     bar = feed.latest_bar("RELIANCE")
 
     assert bar is not None
-    assert bar["close"] == 101.0
-    assert "/instruments/quote/ohlc" in captured["url"]
-    assert ("i", "NSE:RELIANCE") in captured["params"]
-    # ts is today's IST minute floor — never the stale prior-day close.
-    ist_today = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime(
-        "%Y-%m-%d"
-    )
-    assert bar["ts"].startswith(ist_today)
+    assert bar["close"] == 1175.4 and bar["volume"] == 12228  # newest candle
+    assert captured["url"].endswith("/instruments/intraday/1/2885/minute")
+    # quote/ohlc must NOT be probed for equities (it only ever 404s there).
+    assert "/quote/ohlc" not in captured["url"]
 
 
-def test_equity_quote_name_defaults_to_nse_on_resolution_failure(monkeypatch):
-    """If scriptmaster lookup fails, fall back to the NSE convention rather
-    than dropping the symbol (so the poll thread keeps producing bars)."""
+def test_equity_intraday_key_defaults_to_nse_on_resolution_failure(monkeypatch):
+    """If scriptmaster row lookup fails, fall back to the NSE segment with
+    the security-token resolution rather than dropping the symbol (so the
+    poll thread keeps producing bars)."""
     monkeypatch.setenv("MSTOCK_API_KEY", "test-api-key")
     monkeypatch.setenv("MSTOCK_BASE_URL", "https://api.mstock.test")
     monkeypatch.setattr("backtest.live.auth.get_session_token", lambda: "sess")
@@ -254,9 +252,10 @@ def test_equity_quote_name_defaults_to_nse_on_resolution_failure(monkeypatch):
         raise ValueError("symbol not in scriptmaster")
 
     monkeypatch.setattr(feed_mod, "_resolve_scriptmaster_row", boom)
+    monkeypatch.setattr(feed_mod, "_resolve_security_token", lambda *a, **k: "9999")
 
     feed = MStockLiveFeed(base_url="https://api.mstock.test")
-    assert feed._quote_name_for("TATAMOTORS") == "NSE:TATAMOTORS"
+    assert feed._intraday_key_for("TATAMOTORS") == ("1", "9999")
 
 
 def test_index_quote_map_is_preferred_over_equity_resolution(monkeypatch):
@@ -292,5 +291,5 @@ def test_index_quote_map_is_preferred_over_equity_resolution(monkeypatch):
     bar = feed._fetch_quote_bar("NIFTY")
     assert bar is not None and bar["close"] == 25010.0
     assert ("i", "NSE:NIFTY 50") in captured["params"]
-    assert feed._quote_names == {}  # equity-resolution cache stayed empty
+    assert feed._intraday_keys == {}  # equity-resolution cache stayed empty
     assert QUOTE_SYMBOL_NAMES["NIFTY"] == "NSE:NIFTY 50"

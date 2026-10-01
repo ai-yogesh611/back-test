@@ -224,6 +224,18 @@ QUOTE_SYMBOL_NAMES: dict[str, str] = {
 }
 
 
+#: Path segment ids for the intraday-chart endpoint (verified live
+#: 2026-10-01: the API rejects anything else with "Valid exchange allowed
+#: are 1-NSE, 2-NFO, 3-CDS, 4-BSE and 5-BFO").
+INTRADAY_SEGMENT_IDS: dict[str, str] = {
+    "NSE": "1",
+    "NFO": "2",
+    "CDS": "3",
+    "BSE": "4",
+    "BFO": "5",
+}
+
+
 def _resolve_security_token(base_url: str, api_key: str, token: str, symbol: str) -> str:
     """Resolve a symbol to its mStock security token via scriptmaster."""
     resp = requests.get(
@@ -322,7 +334,7 @@ class MStockLiveFeed:
         # extra kwargs here).
         self._config: dict[str, Any] = dict(kwargs)
         self._security_tokens: dict[str, str] = {}
-        self._quote_names: dict[str, str] = {}
+        self._intraday_keys: dict[str, tuple[str, str]] = {}
 
     # -- credentials (lazy) ------------------------------------------------
 
@@ -343,23 +355,17 @@ class MStockLiveFeed:
         return str(url).rstrip("/")
 
     def _fetch_quote_bar(self, symbol: str) -> dict | None:
-        """Today's running bar from ``quote/ohlc`` (indexes and equities).
+        """Today's running bar from ``quote/ohlc`` — INDEX SYMBOLS ONLY.
 
         Returns a bar ``{ts, open, high, low, close, volume}`` where OHLC
         is the session's running aggregate and ``ts`` is the minute floor
-        of "now" (IST). ``None`` when the symbol cannot be mapped or the API
-        fails — callers fall back to the historical path.
-
-        Equities are served here too, not just the curated index list: the
-        live endpoint keys them as ``<EXCHANGE>:<TRADINGSYMBOL>`` (e.g.
-        ``NSE:RELIANCE``). Restricting this to :data:`QUOTE_SYMBOL_NAMES` is
-        what froze every equity runner on the prior day's close — the
-        ``instruments/historical`` fallback is T+1 and never returns the
-        current session (2026-10-01 RELIANCE ``data_feed_stale``).
+        of "now" (IST). ``None`` for anything outside
+        :data:`QUOTE_SYMBOL_NAMES` or when the API fails — non-index
+        symbols must use :meth:`_fetch_intraday_bar` (the quote catalog
+        rejects equities with "Invalid symbol" forever, 2026-10-01) and
+        then the historical fallback.
         """
         quote_name = QUOTE_SYMBOL_NAMES.get(str(symbol).strip().upper())
-        if quote_name is None:
-            quote_name = self._quote_name_for(str(symbol).strip().upper())
         if quote_name is None:
             return None
         # One retry on transient failures (408/429/timeout) — mStock
@@ -421,45 +427,96 @@ class MStockLiveFeed:
                 )
         return self._security_tokens[key]
 
-    def _quote_name_for(self, symbol: str) -> str | None:
-        """Live ``quote/ohlc`` name for a non-index symbol (equity/ETF/F&O).
+    def _intraday_key_for(self, symbol: str) -> tuple[str, str] | None:
+        """``(segment_id, script_code)`` for the intraday-chart endpoint.
 
-        mStock serves TODAY's session for equities under
-        ``<EXCHANGE>:<TRADINGSYMBOL>``. The exchange and canonical trading
-        symbol come from scriptmaster (resolved once and cached per symbol);
-        if that lookup fails we fall back to the ``NSE:<SYMBOL>`` convention
-        the order path already uses. Returns ``None`` only if a name can't be
-        formed at all.
+        The endpoint keys equities/ETFs/derivatives by scriptmaster's
+        ``instrument_token`` (e.g. RELIANCE → ``intraday/1/2885/minute``),
+        NOT by tradingsymbol — ``intraday/1/RELIANCE/minute`` is rejected
+        as an invalid scriptCode (verified live 2026-10-01). Resolution
+        failure degrades to ``("1", <security token>)`` — the NSE default
+        the order path already assumes — so the poll thread never dies.
         """
-        if symbol in self._quote_names:
-            return self._quote_names[symbol]
-        exchange, trading = "NSE", symbol
+        cached = self._intraday_keys.get(symbol)
+        if cached is not None:
+            return cached
+        exchange, script = "NSE", None
         try:
             token, api_key = self._credentials()
             row = _resolve_scriptmaster_row(self._base_url(), api_key, token, symbol)
-            exchange = str(row.get("exchange") or exchange).strip().upper() or "NSE"
-            trading = str(
-                row.get("tradingsymbol") or row.get("symbol") or row.get("name") or symbol
-            ).strip().upper()
+            exchange = str(row.get("exchange") or "NSE").strip().upper() or "NSE"
+            raw_script = row.get("instrument_token") or row.get("securitytoken")
+            if raw_script is not None and str(raw_script).strip():
+                script = str(raw_script).strip()
         except Exception as exc:  # noqa: BLE001 — resolution failure must not stop the poll
             logger.debug(
-                "mstock feed: quote-name resolution for %s failed (%s); using NSE default",
+                "mstock feed: intraday key resolution for %s failed (%s); using NSE default",
                 symbol,
                 exc,
             )
-        name = f"{exchange}:{trading}"
-        self._quote_names[symbol] = name
-        return name
+        if script is None:
+            try:
+                script = self._security_token_for(symbol)
+            except Exception as exc:  # noqa: BLE001 — no token, no intraday path
+                logger.debug("mstock feed: no script code for %s: %s", symbol, exc)
+                return None
+        seg_id = INTRADAY_SEGMENT_IDS.get(exchange, "1")
+        key = (seg_id, script)
+        self._intraday_keys[symbol] = key
+        return key
+
+    def _fetch_intraday_bar(self, symbol: str) -> dict | None:
+        """The running minute bar for a NON-INDEX symbol (equities/ETFs/F&O).
+
+        ``instruments/intraday/{segment_id}/{scriptCode}/minute`` serves the
+        TODAY session for anything in scriptmaster — the only live path the
+        mStock TypeA API offers for equities (quote/ohlc is index-only and
+        instruments/historical is T+1). Candles come newest-first; the max
+        by timestamp is the still-forming bar. ``None`` when the symbol
+        cannot be keyed or the API fails — callers fall back to historical.
+        """
+        key = self._intraday_key_for(str(symbol).strip().upper())
+        if key is None:
+            return None
+        seg_id, script = key
+        last_exc: Exception | None = None
+        for attempt in range(2):
+            try:
+                token, api_key = self._credentials()
+                resp = requests.get(
+                    f"{self._base_url()}/openapi/typea/instruments/intraday"
+                    f"/{seg_id}/{script}/minute",
+                    headers=_typea_headers(api_key, token),
+                    timeout=15,
+                )
+                resp.raise_for_status()
+                rows = _extract_candles(resp.json())
+                bars = [b for b in (_candle_row_to_bar(row) for row in rows) if b]
+                if not bars:
+                    return None
+                return max(bars, key=lambda b: str(b["ts"]))
+            except Exception as exc:  # noqa: BLE001 — transient: back off, retry once
+                last_exc = exc
+                if attempt == 0:
+                    time.sleep(1.0)
+        logger.warning(
+            "mstock feed: intraday bar for %s failed after retry: %s", symbol, last_exc
+        )
+        return None
 
     # -- bar access ----------------------------------------------------------
 
     def latest_bar(self, symbol: str) -> dict | None:
         """The latest bar for ``symbol`` (``None`` if none is available).
 
-        Live path (2026-09-18): for symbols with a quote mapping, build the
-        bar from the TODAY-session ``quote/ohlc`` endpoint — the historical
-        endpoint is T+1 and never returns the current session. Falls back
-        to the historical window for everything else (catch-up / equities).
+        Live path: indexes come from the TODAY-session ``quote/ohlc``
+        endpoint (historical is T+1 and never returns the current session);
+        every other symbol (equities/ETFs/F&O) comes from the intraday-chart
+        endpoint, which serves the running minute bar keyed by scriptmaster
+        token. Only when both are unavailable does this fall back to the
+        historical window (catch-up). (2026-10-01: the equity leg started as
+        a quote/ohlc attempt — mStock rejects equity names there with
+        "Invalid symbol" — and lands on the intraday endpoint.)
         """
         if self.client is not None:
             return self.client.get_latest_bar(symbol)
@@ -467,6 +524,14 @@ class MStockLiveFeed:
         quote_bar = self._fetch_quote_bar(symbol)
         if quote_bar is not None:
             return quote_bar
+
+        # Non-index symbols (equities/ETFs/F&O) have no quote/ohlc entry and
+        # the historical endpoint is T+1 — the intraday-chart endpoint is the
+        # only source that carries the running session (2026-10-01 RELIANCE
+        # runners froze at the prior close until this path landed).
+        intraday_bar = self._fetch_intraday_bar(symbol)
+        if intraday_bar is not None:
+            return intraday_bar
 
         token, api_key = self._credentials()
         # API window rules (all verified live 2026-09-18):
