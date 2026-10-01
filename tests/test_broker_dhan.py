@@ -12,7 +12,7 @@ Covers the two-step auth contract (BrokerAuthBase) with the Dhan
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import patch
 
@@ -245,4 +245,24 @@ def test_logout_clears_everything(broker: DhanBroker) -> None:
 def test_restore_session_seeds_token(broker: DhanBroker) -> None:
     broker.restore_session("tok-xyz", datetime.now() + timedelta(hours=1))
     assert broker.get_session_token() == "tok-xyz"
+    assert broker.get_session_status()["status"] == STATUS_AUTHENTICATED
+
+
+def test_restore_session_normalizes_aware_expiry(broker: DhanBroker) -> None:
+    """The remember-session store returns AWARE expiries; the broker clock is
+    naive-local. Mixing them raised TypeError in get_session_status and
+    failed /api/broker/status closed to "Unknown Broker" after restarts
+    (same 2026-10-01 fix as MStockBroker.restore_session)."""
+    aware_future = datetime.now().astimezone() + timedelta(hours=2)
+    broker.restore_session("tok-xyz", aware_future)
+    assert broker.get_session_status()["status"] == STATUS_AUTHENTICATED
+    assert broker.get_session_token() == "tok-xyz"
+
+    aware_past = datetime.now(timezone.utc) - timedelta(minutes=1)
+    broker.restore_session("tok-xyz", aware_past)
+    assert broker.get_session_status()["status"] == STATUS_EXPIRED
+    assert broker.get_session_token() is None
+
+    # ISO strings (as persisted on disk) are accepted too.
+    broker.restore_session("tok-xyz", aware_future.isoformat())
     assert broker.get_session_status()["status"] == STATUS_AUTHENTICATED

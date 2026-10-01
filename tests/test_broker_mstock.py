@@ -7,7 +7,7 @@ PRD verification: login → verify_totp → get_session_status returns
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -367,3 +367,24 @@ def test_logout_clears_all_in_memory_state(broker, monkeypatch):
     assert broker._temp_auth_context is None
     assert broker.get_session_status()["status"] == STATUS_UNAUTHENTICATED
     assert broker.get_session_token() is None
+
+
+def test_restore_session_normalizes_aware_expiry(broker):
+    """Remember-session hands back an AWARE expiry (the store re-attaches the
+    zone since the 2026-10-01 fix); the broker's session clock is naive-local.
+    Mixing them raised TypeError in get_session_status, which failed
+    /api/broker/status closed to "Unknown Broker" and blanked the whole
+    broker strip after every restart with a remembered mStock session."""
+    aware_future = datetime.now().astimezone() + timedelta(hours=2)
+    broker.restore_session(FAKE_TOKEN, aware_future)
+    assert broker.get_session_status()["status"] == STATUS_AUTHENTICATED
+    assert broker.get_session_token() == FAKE_TOKEN
+
+    aware_past = datetime.now(timezone.utc) - timedelta(minutes=1)
+    broker.restore_session(FAKE_TOKEN, aware_past)
+    assert broker.get_session_status()["status"] == STATUS_EXPIRED
+    assert broker.get_session_token() is None
+
+    # ISO strings (as persisted on disk) are accepted too.
+    broker.restore_session(FAKE_TOKEN, aware_future.isoformat())
+    assert broker.get_session_status()["status"] == STATUS_AUTHENTICATED

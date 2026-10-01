@@ -313,7 +313,19 @@ class MStockBroker(BrokerAuthBase, BrokerOrderBase):
         Used by the remember-session-today feature: the session manager
         hands back a token persisted earlier the same day. No temp auth
         context is set — TOTP re-auth would start a fresh login flow.
+
+        The store keeps expiries as aware datetimes (``_parse_expiry``
+        re-attaches the local zone), while this broker's session clock is
+        naive-local everywhere (see ``_now``). Coerce the incoming value to
+        naive-local so ``get_session_status`` does not raise
+        ``TypeError: can't subtract offset-naive and offset-aware datetimes``
+        — which used to fail-close /api/broker/status into "Unknown Broker"
+        and blank the whole broker strip after a restart (2026-10-01).
         """
+        if isinstance(expires_at, str):
+            expires_at = datetime.fromisoformat(expires_at)
+        if expires_at is not None and expires_at.tzinfo is not None:
+            expires_at = expires_at.astimezone().replace(tzinfo=None)
         self._session_token = token
         self._expires_at = expires_at
         self._temp_auth_context = None
