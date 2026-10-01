@@ -1,18 +1,13 @@
 {% extends "base.html" %}
+{% from "_macros.html" import icon, page_header %}
 {% block title %}Strategy Performance Analytics · Trading Bot{% endblock %}
 
 {% block content %}
 <div class="analytics-page">
-    <div class="page-head" style="display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 16px;">
-        <div>
-            <h1 class="page-title">📈 Strategy Performance Analytics</h1>
-            <p class="muted small page-sub">Scientific performance analysis, edge monitoring, risk ratios & trade quality for live & paper trading.</p>
-        </div>
-        <div style="display: flex; gap: 8px; align-items: center;">
-            <a href="/compare" class="btn btn-ghost" style="text-decoration: none;">📊 Compare Backtests →</a>
-            <button id="refreshAnalyticsBtn" class="btn btn-ghost" type="button" title="Refresh data">🔄 Refresh</button>
-        </div>
-    </div>
+    {% call page_header('Workspace / Performance & execution', 'Strategy analytics', 'Understand your edge, execution quality and risk across paper and live trading.') %}
+        <a href="/compare" class="btn btn-ghost">{{ icon('compare', 14) }} Compare backtests</a>
+        <button id="refreshAnalyticsBtn" class="btn" type="button" title="Refresh data">{{ icon('refresh', 14) }} Refresh</button>
+    {% endcall %}
 
     <!-- Analytics Navigation Bar -->
     <div class="card" style="padding: 10px 16px; margin-bottom: 20px;">
@@ -172,7 +167,7 @@
 
                 <div id="execDegradation" class="xb-headline"></div>
 
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; align-items: start;">
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 20px; align-items: start;">
                     <div class="xb-panel">
                         <h4 class="xb-panel-title">Slippage trend (bps, adverse-positive)</h4>
                         <div style="height: 200px; position: relative;">
@@ -405,7 +400,7 @@
         <!-- Section 5: Trade P&L Distribution -->
         <div class="card" style="margin-bottom: 20px;">
             <h3 class="card-title" style="margin-bottom: 10px;">Trade P&L Distribution & Insights</h3>
-            <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 20px; align-items: start;">
+            <div class="analytics-detail-grid">
                 <div style="height: 220px; position: relative;">
                     <canvas id="detailDistributionChart"></canvas>
                 </div>

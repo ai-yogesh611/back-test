@@ -676,6 +676,7 @@
       try {
         const p = JSON.parse(ev.data);
         $("feed-dot").textContent = "🟢";
+        $("feed-dot").dataset.state = "connected";
         // T2.3: Show bucket-scoped runner count when PAGE_MODE is set.
         const runnerCount = PAGE_MODE && p.buckets && p.buckets[PAGE_MODE]
           ? p.buckets[PAGE_MODE].count
@@ -699,6 +700,7 @@
     });
     es.addEventListener("error", () => {
       $("feed-dot").textContent = "🔴";
+      $("feed-dot").dataset.state = "disconnected";
       $("feed-label").textContent = "Feed disconnected — retrying…";
     });
     es.onerror = () => { /* browser auto-reconnects */ };
@@ -890,13 +892,13 @@
     const box = $("spawn-params");
     if (!strat || !strat.params) { box.innerHTML = ""; return; }
     box.innerHTML = "<div class='spawn-params-title'>Strategy parameters</div>" +
-      Object.entries(strat.params).map(([key, spec]) => {
+      Object.entries(strat.params).map(([key, spec], index) => {
         const type = spec.type === "bool" ? "checkbox"
           : spec.type === "int" || spec.type === "float" ? "number" : "text";
         const val = spec.default !== null && spec.default !== undefined ? spec.default : "";
-        return '<div class="form-row"><label>' + (spec.label || key) +
+        return '<div class="form-row"><label for="spawn-param-' + index + '">' + (spec.label || key) +
           (spec.tooltip ? ' <span class="muted" title="' + spec.tooltip + '">ⓘ</span>' : "") +
-          '</label><input class="input spawn-param" data-param="' + key +
+          '</label><input id="spawn-param-' + index + '" class="input spawn-param" data-param="' + key +
           '" type="' + type + '" value="' + val + '"></div>';
       }).join("");
   }

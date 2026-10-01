@@ -70,9 +70,9 @@ function addSlot(prefill) {
             <button class="btn-icon remove-slot" title="Remove">✕</button>
         </div>
         ${generalization
-            ? `<div class="form-row"><label>Symbol</label><select class="slot-symbol input"></select></div>
+            ? `<div class="form-row"><label for="slot-symbol-${id}">Symbol</label><select id="slot-symbol-${id}" class="slot-symbol input"></select></div>
                <div class="slot-params-note muted small"></div>`
-            : `<div class="form-row"><label>Strategy</label><select class="slot-strategy input"></select></div>
+            : `<div class="form-row"><label for="slot-strategy-${id}">Strategy</label><select id="slot-strategy-${id}" class="slot-strategy input"></select></div>
                <div class="slot-params"></div>`}
         <div class="slot-status muted small"></div>`;
     $("slotsRow").appendChild(card);

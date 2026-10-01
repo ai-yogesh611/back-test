@@ -167,11 +167,11 @@
     if (globalForm) {
       const g = cfg.global || {};
       globalForm.innerHTML = `
-        <div class="risk-config-row"><label>Daily Loss Limit (${fmtMoney(1)})</label><input id="cfg-daily-loss" type="range" min="1000" max="100000" step="1000" value="${g.daily_loss_limit || 50000}" class="risk-slider"><span id="cfg-daily-loss-val">${fmtMoney(g.daily_loss_limit || 50000)}</span></div>
-        <div class="risk-config-row"><label>Max Drawdown %</label><input id="cfg-drawdown" type="range" min="1" max="50" step="1" value="${(g.max_drawdown_pct || 0.25)*100}" class="risk-slider"><span id="cfg-drawdown-val">${pct(g.max_drawdown_pct || 0.25)}</span></div>
-        <div class="risk-config-row"><label>Max Leverage</label><input id="cfg-leverage" type="range" min="1" max="5" step="0.1" value="${g.max_leverage || 1}" class="risk-slider"><span id="cfg-leverage-val">${g.max_leverage || 1}x</span></div>
-        <div class="risk-config-row"><label>Breach Mode</label><select id="cfg-breach-mode" class="input input-select"><option value="PAUSE_AND_HOLD" ${g.breach_mode==="PAUSE_AND_HOLD"?"selected":""}>Pause & Hold</option>      <option value="EMERGENCY_FLATTEN" ${g.breach_mode==="EMERGENCY_FLATTEN"?"selected":""}>Flatten & Halt</option></select><span></span></div>
-        <div class="risk-config-row"><label>Correlation Warn Threshold</label><input id="cfg-corr" type="range" min="1" max="10" step="1" value="${g.correlation_warning_threshold || 3}" class="risk-slider"><span id="cfg-corr-val">${g.correlation_warning_threshold || 3}</span></div>
+        <div class="risk-config-row"><label for="cfg-daily-loss">Daily loss limit</label><input id="cfg-daily-loss" type="range" min="1000" max="100000" step="1000" value="${g.daily_loss_limit || 50000}" class="risk-slider"><span id="cfg-daily-loss-val">${fmtMoney(g.daily_loss_limit || 50000)}</span></div>
+        <div class="risk-config-row"><label for="cfg-drawdown">Max Drawdown %</label><input id="cfg-drawdown" type="range" min="1" max="50" step="1" value="${(g.max_drawdown_pct || 0.25)*100}" class="risk-slider"><span id="cfg-drawdown-val">${pct(g.max_drawdown_pct || 0.25)}</span></div>
+        <div class="risk-config-row"><label for="cfg-leverage">Max Leverage</label><input id="cfg-leverage" type="range" min="1" max="5" step="0.1" value="${g.max_leverage || 1}" class="risk-slider"><span id="cfg-leverage-val">${g.max_leverage || 1}x</span></div>
+        <div class="risk-config-row"><label for="cfg-breach-mode">Breach Mode</label><select id="cfg-breach-mode" class="input input-select"><option value="PAUSE_AND_HOLD" ${g.breach_mode==="PAUSE_AND_HOLD"?"selected":""}>Pause & Hold</option>      <option value="EMERGENCY_FLATTEN" ${g.breach_mode==="EMERGENCY_FLATTEN"?"selected":""}>Flatten & Halt</option></select><span></span></div>
+        <div class="risk-config-row"><label for="cfg-corr">Correlation Warn Threshold</label><input id="cfg-corr" type="range" min="1" max="10" step="1" value="${g.correlation_warning_threshold || 3}" class="risk-slider"><span id="cfg-corr-val">${g.correlation_warning_threshold || 3}</span></div>
       `;
       // Bind live updates
       $("cfg-daily-loss")?.addEventListener("input", e => { $("cfg-daily-loss-val").textContent = fmtMoney(parseFloat(e.target.value)); });
@@ -186,9 +186,9 @@
       bucketForm.innerHTML = Object.entries(buckets).map(([mode, lim]) => `
         <div style="border:1px solid var(--border); border-radius:8px; padding:10px; margin-bottom:8px;">
           <strong>${mode.toUpperCase()}</strong>
-          <div class="risk-config-row"><label>Max Position %</label><input data-bucket="${mode}" data-field="max_position_pct" type="range" min="1" max="100" step="1" value="${(lim.max_position_pct||0.1)*100}" class="risk-slider" id="slider-pos-${mode}"><span id="span-pos-${mode}">${pct(lim.max_position_pct||0.1)}</span></div>
-          <div class="risk-config-row"><label>Max Position Value</label><input data-bucket="${mode}" data-field="max_position_value" type="number" value="${lim.max_position_value||10000}" class="input" style="max-width:140px;"><span>${fmtMoney(lim.max_position_value||0)}</span></div>
-          <div class="risk-config-row"><label>Max Open Positions</label><input data-bucket="${mode}" data-field="max_open_positions" type="number" min="1" max="100" value="${lim.max_open_positions||''}" class="input" style="max-width:100px;"><span></span></div>
+          <div class="risk-config-row"><label for="slider-pos-${mode}">Max Position %</label><input data-bucket="${mode}" data-field="max_position_pct" type="range" min="1" max="100" step="1" value="${(lim.max_position_pct||0.1)*100}" class="risk-slider" id="slider-pos-${mode}"><span id="span-pos-${mode}">${pct(lim.max_position_pct||0.1)}</span></div>
+          <div class="risk-config-row"><label for="bucket-value-${mode}">Max Position Value</label><input id="bucket-value-${mode}" data-bucket="${mode}" data-field="max_position_value" type="number" value="${lim.max_position_value||10000}" class="input" style="max-width:140px;"><span>${fmtMoney(lim.max_position_value||0)}</span></div>
+          <div class="risk-config-row"><label for="bucket-positions-${mode}">Max Open Positions</label><input id="bucket-positions-${mode}" data-bucket="${mode}" data-field="max_open_positions" type="number" min="1" max="100" value="${lim.max_open_positions||''}" class="input" style="max-width:100px;"><span></span></div>
         </div>
       `).join("");
       

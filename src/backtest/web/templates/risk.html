@@ -1,23 +1,16 @@
 {% extends "base.html" %}
+{% from "_macros.html" import icon, page_header %}
 {% block title %}Risk Management{% endblock %}
 
 {% block content %}
 <div class="risk-page" id="risk-page">
-  <div class="risk-page-header">
-    <div>
-      <h1 class="risk-page-title">🛡️ Risk Management & Monitoring</h1>
-      <div class="muted">Tier 3 Analysis — Global dashboard, configuration, audit timeline, exposure analysis, trade analytics</div>
-    </div>
-    <div style="display:flex; gap:8px; align-items:center;">
-      <select id="risk-page-mode" class="input input-select" style="min-width:130px;">
-        <option value="">All Buckets</option>
-        <option value="paper">Paper Only</option>
-        <option value="live">Live Only</option>
+  {% call page_header('Workspace / Protection & oversight', 'Risk management', 'Monitor your exposure, understand limit usage and keep every book within its mandate.') %}
+      <select id="risk-page-mode" class="input input-select" aria-label="Risk bucket" style="width:140px;">
+        <option value="">All Buckets</option><option value="paper">Paper Only</option><option value="live">Live Only</option>
       </select>
-      <button id="risk-page-refresh" class="btn btn-primary btn-small" type="button">↻ Refresh</button>
-      <button id="risk-page-export" class="btn btn-ghost btn-small" type="button">Export CSV</button>
-    </div>
-  </div>
+      <button id="risk-page-refresh" class="btn" type="button">{{ icon('refresh', 14) }} Refresh</button>
+      <button id="risk-page-export" class="btn btn-ghost" type="button">{{ icon('download', 14) }} Export CSV</button>
+  {% endcall %}
 
   <!-- Global Dashboard — 6 large gauges -->
   <div id="risk-global-dashboard">
@@ -54,7 +47,7 @@
         </div>
       </div>
 
-      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:20px;">
+      <div class="risk-config-columns" style="display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:20px;">
         <div>
           <h4 style="margin-bottom:8px;">Global Limits (Supervisor)</h4>
           <div id="risk-global-config-form"></div>
@@ -85,20 +78,20 @@
       <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:12px;">
         <h3 style="margin:0;">Audit Timeline</h3>
         <div class="audit-filters">
-          <select id="audit-scope" class="input input-select" style="min-width:110px;">
+          <select id="audit-scope" aria-label="Audit scope" class="input input-select" style="min-width:110px;">
             <option value="all">All Scopes</option>
             <option value="paper">Paper</option>
             <option value="live">Live</option>
             <option value="playbook">Playbook</option>
             <option value="dashboard">Dashboard</option>
           </select>
-          <select id="audit-type" class="input input-select" style="min-width:130px;">
+          <select id="audit-type" aria-label="Audit event type" class="input input-select" style="min-width:130px;">
             <option value="all">All Types</option>
             <option value="breach">Breaches Only</option>
             <option value="flatten">Flattens</option>
             <option value="halt">Halts</option>
           </select>
-          <input id="audit-search" class="input" type="text" placeholder="Search action/reason…" style="min-width:180px;">
+          <input id="audit-search" aria-label="Filter audit events" class="input" type="text" placeholder="Search action/reason…" style="min-width:180px;">
           <button id="btn-audit-refresh" class="btn btn-ghost btn-small" type="button">↻ Refresh</button>
           <button id="btn-audit-export" class="btn btn-ghost btn-small" type="button">Export CSV</button>
         </div>
@@ -118,22 +111,22 @@
     <div class="exposure-grid">
       <div class="exposure-card">
         <h4>Exposure by Symbol — Pie</h4>
-        <canvas id="exposure-pie" height="200"></canvas>
+        <canvas id="exposure-pie" role="img" aria-label="Exposure by symbol" height="200"></canvas>
         <div id="exposure-concentration-warnings"></div>
       </div>
       <div class="exposure-card">
         <h4>Exposure by Correlation Group</h4>
-        <canvas id="exposure-bar" height="200"></canvas>
+        <canvas id="exposure-bar" role="img" aria-label="Exposure by correlation group" height="200"></canvas>
       </div>
     </div>
     <div class="exposure-grid">
       <div class="exposure-card">
         <h4>Drawdown & Daily Loss — Last 6h</h4>
-        <canvas id="exposure-line" height="150"></canvas>
+        <canvas id="exposure-line" role="img" aria-label="Drawdown and daily loss over the last six hours" height="150"></canvas>
       </div>
       <div class="exposure-card">
         <h4>Exposure Details</h4>
-        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+        <div class="risk-config-columns" style="display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:12px;">
           <div>
             <strong>By Symbol</strong>
             <div class="table-scroll" style="max-height:260px;">
@@ -159,8 +152,8 @@
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
       <h3 style="margin:0;">Trade History — Grouped by Day</h3>
       <div style="display:flex; gap:8px;">
-        <select id="trades-kind" class="input input-select"><option value="all">All</option><option value="equity">Equity</option><option value="option">Option</option></select>
-        <select id="trades-limit" class="input input-select"><option value="50">50</option><option value="100" selected>100</option><option value="200">200</option><option value="500">500</option></select>
+        <select id="trades-kind" aria-label="Instrument type" class="input input-select"><option value="all">All</option><option value="equity">Equity</option><option value="option">Option</option></select>
+        <select id="trades-limit" aria-label="Rows per page" class="input input-select"><option value="50">50</option><option value="100" selected>100</option><option value="200">200</option><option value="500">500</option></select>
         <button id="btn-trades-refresh" class="btn btn-primary btn-small" type="button">↻ Refresh</button>
         <button id="btn-trades-export" class="btn btn-ghost btn-small" type="button">Export CSV</button>
       </div>

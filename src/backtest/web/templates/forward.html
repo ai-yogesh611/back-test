@@ -1,17 +1,18 @@
 {% extends "base.html" %}
+{% from "_macros.html" import icon, page_header %}
 {% block title %}Engine Playground · Trading Bot{% endblock %}
 
 {% block content %}
-<h1 class="page-title">🔧 Engine Playground <span class="muted small" style="font-weight:400;">(session diagnostics)</span></h1>
-<p class="muted small page-sub">Single-strategy paper replay watched in real time — a diagnostics bench for the engine, not a trading book.</p>
-
-<div class="banner" style="border-left:4px solid #d4b26a; background:rgba(212,178,106,0.08); padding:10px 14px; margin-bottom:16px;">
-    📚 <strong>For real books, use the Portfolio Command Center.</strong> Runs spawned there go through the
-    PortfolioManager: isolated capital buckets, circuit breakers, order ledger, persistence across restarts
-    and the alert system. This page runs the raw <code>ForwardTestingEngine</code> for one strategy —
-    in-memory session, no bucket risk, fills anchored differently (next bar's open) — so its numbers are
-    not directly comparable with Portfolio runners on gapped data.
-</div>
+{% call page_header('Operations / Session diagnostics', 'Engine playground', 'Watch a single-strategy paper replay in real time. A diagnostics bench for the engine, not a trading book.') %}
+    <a href="/portfolio" class="btn">{{ icon('portfolio', 14) }} Portfolio command center</a>
+{% endcall %}
+<details class="diagnostic-notice">
+    <summary>Diagnostics only · paper replay without portfolio bucket-risk controls</summary>
+    <p>For real books, use the <a href="/portfolio">Portfolio Command Center</a>. Its runners use isolated capital buckets,
+        circuit breakers, an order ledger, restart persistence and alerts. This page uses the raw
+        <code>ForwardTestingEngine</code>: an in-memory session with no bucket risk and fills at the next bar's open.
+        Results are not directly comparable with portfolio runners on gapped data.</p>
+</details>
 
 <div id="prefillBanner" class="banner" hidden>Pre-filled from a backtest / compare result</div>
 
@@ -48,16 +49,16 @@
 <section class="card config-panel">
     <h2 class="card-title">Configuration</h2>
     <div class="forward-grid">
-        <div class="form-row"><label>Strategy</label><select id="strategy" class="input"><option value="">Loading…</option></select></div>
-        <div class="form-row"><label>Symbol</label>
+        <div class="form-row"><label for="strategy">Strategy</label><select id="strategy" class="input"><option value="">Loading…</option></select></div>
+        <div class="form-row"><label for="symbol">Symbol</label>
             <input type="text" id="symbol" class="input" placeholder="e.g. MAZDOCK, INFY" list="symbolList">
             <datalist id="symbolList"></datalist>
         </div>
-        <div class="form-row"><label>Timeframe</label><select id="timeframe" class="input">
+        <div class="form-row"><label for="timeframe">Timeframe</label><select id="timeframe" class="input">
             <option value="1min">1min</option>
             <option value="day">Day</option>
         </select></div>
-        <div class="form-row"><label>Run mode</label><select id="runMode" class="input">
+        <div class="form-row"><label for="runMode">Run mode</label><select id="runMode" class="input">
             {% for m in bucket_modes %}
             <option value="{{ m }}"
                 {% if m == 'paper' %}selected{% endif %}>
@@ -67,7 +68,7 @@
             </option>
             {% endfor %}
         </select></div>
-        <div class="form-row"><label>Data source</label><select id="dataSource" class="input">
+        <div class="form-row"><label for="dataSource">Data source</label><select id="dataSource" class="input">
             {% for s in source_tags %}
             <option value="{{ s }}" {% if s == default_source_tag %}selected{% endif %}>{{ s | upper }}</option>
             {% endfor %}
@@ -75,8 +76,8 @@
         <div class="form-row" style="grid-column: 1 / -1;">
             <small id="taxonomyHint" class="muted">Paper = free-play risk caps; data source only affects data trust (paper accepts all).</small>
         </div>
-        <div class="form-row"><label>Capital ({{ currency_symbol }})</label><input type="number" id="capital" class="input" value="100000" min="1000"></div>
-        <div class="form-row"><label>Replay speed</label><select id="replaySpeed" class="input"
+        <div class="form-row"><label for="capital">Capital ({{ currency_symbol }})</label><input type="number" id="capital" class="input" value="100000" min="1000"></div>
+        <div class="form-row"><label for="replaySpeed">Replay speed</label><select id="replaySpeed" class="input"
                 title="Bars revealed per second by the server clock — it keeps running even if you close this tab">
             <option value="">Default ({{ replay_speed }} bars/s)</option>
             <option value="0.25">Slow — 0.25 bar/s</option>
@@ -85,8 +86,8 @@
             <option value="25">25 bars/s</option>
             <option value="500">Instant-ish — 500 bars/s</option>
         </select></div>
-        <div class="form-row"><label>From Date</label><input type="date" id="fromDate" class="input" value="2024-01-01"></div>
-        <div class="form-row"><label>To Date</label><input type="date" id="toDate" class="input" value="2026-08-28"></div>
+        <div class="form-row"><label for="fromDate">From Date</label><input type="date" id="fromDate" class="input" value="2024-01-01"></div>
+        <div class="form-row"><label for="toDate">To Date</label><input type="date" id="toDate" class="input" value="2026-08-28"></div>
     </div>
     <fieldset class="params-fieldset"><legend>Strategy Params</legend>
         <div id="params-container"><p class="muted small">Select a strategy…</p></div>

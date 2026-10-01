@@ -1,16 +1,12 @@
 {% extends "base.html" %}
+{% from "_macros.html" import icon, page_header %}
 {% block title %}Strategy Builder · Trading Bot{% endblock %}
 
 {% block content %}
-<div style="max-width:1200px; margin:0 auto; padding:16px;">
-  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
-    <div>
-      <h1 style="margin:0;">🧩 Strategy Builder</h1>
-      <div class="muted">Paste TradingView Pine Script v5, convert it to a Python strategy, then save it as a plugin — saved strategies appear in the Engine Playground and Optimize pickers after a restart.</div>
-    </div>
-  </div>
+<div class="screen-page builder-page">
+  {{ page_header('Research / Strategy authoring', 'Strategy builder', 'Bring a TradingView Pine Script v5 idea into your workspace. Convert, validate and save it as a Python strategy plugin.') }}
 
-  <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; align-items:start;">
+  <div class="strategy-editor-grid">
     <!-- Left: input -->
     <div>
       <label for="pine-name" class="muted" style="display:block; margin-bottom:4px;">Strategy name (optional — defaults to the Pine script's title)</label>
@@ -18,11 +14,11 @@
 
       <label for="pine-code" class="muted" style="display:block; margin-bottom:4px;">Pine Script v5 source</label>
       <textarea id="pine-code" class="input" rows="20" spellcheck="false"
-        placeholder='//@version=5&#10;strategy("EMA Cross")&#10;...'"
+        placeholder='//@version=5&#10;strategy("EMA Cross")&#10;...'
         style="width:100%; font-family:monospace; font-size:13px; resize:vertical;"></textarea>
 
       <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap;">
-        <button id="pine-convert" class="btn" type="button">⚙️ Convert</button>
+        <button id="pine-convert" class="btn btn-primary" type="button">{{ icon('code', 14) }} Convert strategy</button>
         <button id="pine-validate" class="btn btn-ghost" type="button" disabled>✅ Validate (backtest)</button>
         <button id="pine-save" class="btn btn-ghost" type="button" disabled>💾 Save as plugin</button>
         <button id="pine-copy-prompt" class="btn btn-ghost" type="button" title="Complex strategies may need manual conversion — copy the LLM prompt and use ChatGPT/Claude">📋 Copy LLM prompt</button>
