@@ -15,6 +15,7 @@ env/
 .env
 .env.local
 *.session.json
+/.broker_sessions.json
 
 # Local databases (SQLite dev files)
 *.db
@@ -69,3 +70,9 @@ Thumbs.db
 
 # Local UI review tools, browser binaries and screenshots
 /.cache/
+
+# Local runtime dumps and server logs (never commit)
+/pf*.json
+/server_5000.log
+/server_5000.out
+src/data/feed_quality.log
