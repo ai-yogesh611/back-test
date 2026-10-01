@@ -259,10 +259,10 @@
                 <td><input type="checkbox" data-f="optimize" ${p.optimize ? 'checked' : ''} aria-label="optimize ${C.escapeHtml(p.name)}"></td>
                 <td><div class="opt-pname" title="${C.escapeHtml(p.tooltip || '')}">${C.escapeHtml(p.label || p.name)}</div>
                     <div class="muted small">${C.escapeHtml(p.name)}${bounds ? ' · ' + bounds : ''}</div></td>
-                <td><input class="input opt-num" data-f="current" type="number" ${numAttrs} value="${p.current}"></td>
-                <td><input class="input opt-num" data-f="min" type="number" ${numAttrs} value="${p.min}" ${p.optimize ? '' : 'disabled'}></td>
-                <td><input class="input opt-num" data-f="max" type="number" ${numAttrs} value="${p.max}" ${p.optimize ? '' : 'disabled'}></td>
-                <td><input class="input opt-num" data-f="step" type="number" step="any" min="0" value="${p.step}" ${p.optimize ? '' : 'disabled'}></td>
+                <td><input class="input opt-num" data-f="current" aria-label="${C.escapeHtml(p.label || p.name)} — current value" type="number" ${numAttrs} value="${p.current}"></td>
+                <td><input class="input opt-num" data-f="min" aria-label="${C.escapeHtml(p.label || p.name)} — search minimum" type="number" ${numAttrs} value="${p.min}" ${p.optimize ? '' : 'disabled'}></td>
+                <td><input class="input opt-num" data-f="max" aria-label="${C.escapeHtml(p.label || p.name)} — search maximum" type="number" ${numAttrs} value="${p.max}" ${p.optimize ? '' : 'disabled'}></td>
+                <td><input class="input opt-num" data-f="step" aria-label="${C.escapeHtml(p.label || p.name)} — search step size" type="number" step="any" min="0" value="${p.step}" ${p.optimize ? '' : 'disabled'}></td>
                 <td class="opt-count" data-count></td>
             </tr>`;
         }).join('');
@@ -306,11 +306,11 @@
         box.innerHTML = state.constraints.map((c, i) => `
             <div class="opt-constraint ${c.enabled ? '' : 'opt-row-off'}" data-i="${i}">
                 <input type="checkbox" data-f="enabled" ${c.enabled ? 'checked' : ''} aria-label="enable constraint">
-                <select class="input" data-f="metric">${Object.entries(CONSTRAINT_LABELS)
+                <select class="input" data-f="metric" aria-label="Constraint ${i + 1} metric">${Object.entries(CONSTRAINT_LABELS)
                     .map(([k, v]) => `<option value="${k}" ${k === c.metric ? 'selected' : ''}>${v}</option>`).join('')}</select>
-                <select class="input opt-op" data-f="operator">${['<', '<=', '>', '>=']
+                <select class="input opt-op" data-f="operator" aria-label="Constraint ${i + 1} comparison">${['<', '<=', '>', '>=']
                     .map((o) => `<option ${o === c.operator ? 'selected' : ''}>${o}</option>`).join('')}</select>
-                <input class="input opt-num" type="number" step="any" data-f="value" value="${c.value}">
+                <input class="input opt-num" type="number" step="any" data-f="value" aria-label="Constraint ${i + 1} threshold" value="${c.value}">
                 <button type="button" class="btn-icon" data-remove title="Remove">✕</button>
             </div>`).join('') || '<div class="muted small">No constraints — every result will be ranked.</div>';
         box.querySelectorAll('.opt-constraint').forEach((row) => {

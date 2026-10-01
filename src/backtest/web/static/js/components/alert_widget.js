@@ -75,7 +75,7 @@
     const c = counts || {};
     if (!c.total) {
       return `<button class="aw-pill aw-pill-clear" type="button" data-aw="toggle"
-                title="No open portfolio alerts">🔔 <span class="aw-pill-text">No alerts</span></button>`;
+                title="No open portfolio alerts"><svg class="ui-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg> <span class="aw-pill-text">No alerts</span></button>`;
     }
     const parts = ["critical", "warning", "info"]
       .filter((k) => c[k])
@@ -83,7 +83,7 @@
       .join(" ");
     const worst = c.critical ? "critical" : c.warning ? "warning" : "info";
     return `<button class="aw-pill aw-pill-${worst}" type="button" data-aw="toggle"
-              title="Open the alert list">🔔 <strong class="aw-count">${c.total}</strong>
+              title="Open the alert list"><svg class="ui-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg> <strong class="aw-count">${c.total}</strong>
               <span class="aw-pill-text">alert${c.total === 1 ? "" : "s"}</span> ${parts}</button>`;
   }
 
@@ -115,7 +115,7 @@
     return `
       <div class="aw-panel" role="dialog" aria-label="Portfolio alerts">
         <div class="aw-panel-head">
-          <strong>🔔 Portfolio Alerts (${(counts && counts.total) || 0})</strong>
+          <strong><svg class="ui-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg> Portfolio Alerts (${(counts && counts.total) || 0})</strong>
           <span class="aw-panel-links">
             <a href="/portfolio?tab=risk#pi-greeks" class="aw-link">Risk Board</a>
             <button class="aw-min" type="button" data-aw="toggle" title="Minimize">▁</button>

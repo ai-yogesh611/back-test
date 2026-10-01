@@ -146,7 +146,7 @@ const Reporting = (() => {
 
     // --------------------------------------------------------------- renderers
     function card(label, value, hint, tone) {
-        const color = tone === "good" ? "#22c55e" : tone === "bad" ? "#ef4444" : "var(--text, #e6e6e6)";
+        const color = tone === "good" ? "var(--success-text)" : tone === "bad" ? "var(--danger-text)" : "var(--text, #e6e6e6)";
         return (
             '<div style="border:1px solid var(--border,#333); border-radius:10px; padding:12px 14px; min-width:190px; flex:1;">' +
             '<div class="muted" style="font-size:12px;">' + escapeHtml(label) + "</div>" +
@@ -161,7 +161,7 @@ const Reporting = (() => {
         const ladder = m.rows.map((row) =>
             '<tr><td style="padding:4px 8px;">' + escapeHtml(row.label) + "</td>" +
             '<td style="padding:4px 8px; text-align:right; color:' +
-            (row.amount < 0 ? "#ef4444" : "inherit") + ';">' + money(row.amount) + "</td></tr>"
+            (row.amount < 0 ? "var(--danger-text)" : "inherit") + ';">' + money(row.amount) + "</td></tr>"
         ).join("");
         const stats = m.stats || {};
         return (
@@ -243,7 +243,7 @@ const Reporting = (() => {
 
     function caveatsHtml(report) {
         const m = warningModel(report);
-        const warnings = m.warnings.map((w) => '<li style="color:#f59e0b; font-size:12px;">' + escapeHtml(w) + "</li>").join("");
+        const warnings = m.warnings.map((w) => '<li style="color:var(--warning-text); font-size:12px;">' + escapeHtml(w) + "</li>").join("");
         const notes = m.notes.map((w) => '<li class="muted" style="font-size:12px;">' + escapeHtml(w) + "</li>").join("");
         const sources = m.sources.map((s) =>
             '<li style="font-size:12px;">' + escapeHtml(s.name) + " — " + escapeHtml(s.note || "ok") + "</li>"
@@ -263,12 +263,12 @@ const Reporting = (() => {
 
     function reconcileHtml(result) {
         const m = reconcileModel(result);
-        const tone = m.status === "PASS" ? "#22c55e" : m.status === "WARNING" ? "#f59e0b" : "#ef4444";
+        const tone = m.status === "PASS" ? "var(--success-text)" : m.status === "WARNING" ? "var(--warning-text)" : "var(--danger-text)";
         const components = m.components.map((c) =>
             "<tr><td style=\"padding:3px 8px;\">" + escapeHtml(c.key) + "</td>" +
             '<td style="padding:3px 8px; text-align:right;">' + money(c.platform) + "</td>" +
             '<td style="padding:3px 8px; text-align:right;">' + money(c.broker) + "</td>" +
-            '<td style="padding:3px 8px; text-align:right; color:' + (c.difference ? "#ef4444" : "inherit") + ';">' +
+            '<td style="padding:3px 8px; text-align:right; color:' + (c.difference ? "var(--danger-text)" : "inherit") + ';">' +
             money(c.difference) + "</td></tr>"
         ).join("");
         return (
@@ -285,7 +285,7 @@ const Reporting = (() => {
             (m.causes.length ? "<ul style=\"margin:6px 0 0 18px;\">" +
                 m.causes.map((c) => '<li style="font-size:12px;">' + escapeHtml(c) + "</li>").join("") + "</ul>" : "") +
             (m.warnings.length ? "<ul style=\"margin:6px 0 0 18px;\">" +
-                m.warnings.map((c) => '<li style="font-size:12px; color:#f59e0b;">' + escapeHtml(c) + "</li>").join("") + "</ul>" : "") +
+                m.warnings.map((c) => '<li style="font-size:12px; color:var(--warning-text);">' + escapeHtml(c) + "</li>").join("") + "</ul>" : "") +
             "</div>"
         );
     }
@@ -353,7 +353,7 @@ const Reporting = (() => {
         const host = document.getElementById("rp-message");
         if (!host) return;
         host.innerHTML = text
-            ? '<span style="color:' + (tone === "bad" ? "#ef4444" : tone === "warn" ? "#f59e0b" : "#22c55e") +
+            ? '<span style="color:' + (tone === "bad" ? "var(--danger-text)" : tone === "warn" ? "var(--warning-text)" : "var(--success-text)") +
               ';">' + escapeHtml(text) + "</span>"
             : "";
     }
@@ -367,8 +367,8 @@ const Reporting = (() => {
         const banner = document.getElementById("rp-banner");
         if (banner) {
             banner.innerHTML = report && report.demo
-                ? '<div style="border:1px solid #f59e0b; background:rgba(245,158,11,0.08); border-radius:10px; ' +
-                  'padding:10px 12px; margin-bottom:12px; color:#f59e0b;">DEMO BOOK — sample trades, ' +
+                ? '<div style="border:1px solid var(--warning-text); background:var(--warning-tint); border-radius:10px; ' +
+                  'padding:10px 12px; margin-bottom:12px; color:var(--warning-text);">DEMO BOOK — sample trades, ' +
                   "clearly labelled, excluded from tax. Not a record of any real account.</div>"
                 : "";
         }
@@ -460,7 +460,7 @@ const Reporting = (() => {
                 const fees = row.querySelector(".rp-note-fees").value;
                 const result = row.querySelector(".rp-reconcile-result");
                 if (pnl === "") {
-                    result.innerHTML = '<span style="color:#f59e0b; font-size:12px;">Enter the note net P&L first.</span>';
+                    result.innerHTML = '<span style="color:var(--warning-text); font-size:12px;">Enter the note net P&L first.</span>';
                     return;
                 }
                 const payload = bodyPayload({ broker: broker, contract_note_pnl: Number(pnl) });
@@ -472,7 +472,7 @@ const Reporting = (() => {
                     if (body.success === false) throw new Error(body.error || "reconcile failed");
                     result.innerHTML = reconcileHtml(body);
                 }).catch((err) => {
-                    result.innerHTML = '<span style="color:#ef4444; font-size:12px;">' + escapeHtml(err.message) + "</span>";
+                    result.innerHTML = '<span style="color:var(--danger-text); font-size:12px;">' + escapeHtml(err.message) + "</span>";
                 });
             });
         });

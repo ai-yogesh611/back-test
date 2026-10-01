@@ -1,40 +1,25 @@
 {% extends "base.html" %}
-{% block title %}Consolidated P&amp;L{% endblock %}
+{% from "_macros.html" import icon, page_header %}
+{% block title %}Consolidated P&amp;L · Trading Bot{% endblock %}
 
 {% block content %}
-<div style="max-width:1280px; margin:0 auto; padding:16px;">
-  <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px; flex-wrap:wrap; gap:10px;">
-    <div>
-      <h1 style="margin:0;">🧾 Consolidated P&amp;L</h1>
-      <div class="muted">
-        Every broker, both books, one statement — gross → costs → net → tax → what is actually left.
-        Rates come from <code>config/reporting.yaml</code>; estimates are labelled as estimates.
-      </div>
-    </div>
-    <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
-      <label class="muted" for="rp-from">From</label>
-      <input id="rp-from" class="input" type="date" style="width:150px;">
-      <label class="muted" for="rp-to">To</label>
-      <input id="rp-to" class="input" type="date" style="width:150px;">
-      <label class="muted" style="display:flex; align-items:center; gap:4px;">
-        <input id="rp-paper" type="checkbox" checked> paper
-      </label>
-      <input id="rp-brokers" class="input" type="text" placeholder="brokers (csv, blank = all)" style="width:190px;">
-      <button id="rp-load" class="btn btn-primary btn-small" type="button">↻ Generate</button>
-    </div>
+<div class="screen-page reporting-page">
+  {{ page_header('Workspace / Reporting & reconciliation', 'Consolidated P&L', 'Every broker, both books, one statement. Follow your returns from gross profit through costs, net profit and estimated tax.') }}
+  <div class="card reporting-filters">
+    <div class="form-row"><label for="rp-from">From</label><input id="rp-from" class="input" type="date"></div>
+    <div class="form-row"><label for="rp-to">To</label><input id="rp-to" class="input" type="date"></div>
+    <div class="form-row report-brokers"><label for="rp-brokers">Brokers</label><input id="rp-brokers" class="input" type="text" placeholder="All brokers, or comma-separated names"></div>
+    <label class="reporting-check" for="rp-paper"><input id="rp-paper" type="checkbox" checked> Include paper trades</label>
+    <button id="rp-load" class="btn btn-primary" type="button">{{ icon('refresh', 14) }} Generate report</button>
   </div>
-
-  <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px;">
-    <button id="rp-pdf" class="btn btn-small" type="button">⬇️ PDF statement</button>
-    <button id="rp-itr" class="btn btn-small" type="button">📊 ITR annexures (xlsx)</button>
-    <button id="rp-trades" class="btn btn-small" type="button">📄 Trade ledger (csv)</button>
-    <button id="rp-email" class="btn btn-ghost btn-small" type="button">✉️ Email (dry run)</button>
-    <label class="muted" style="display:flex; align-items:center; gap:4px; margin-left:auto;">
-      <input id="rp-demo" type="checkbox"> demo book (labelled sample data)
-    </label>
+  <div class="reporting-exports">
+    <button id="rp-pdf" class="btn btn-small" type="button">{{ icon('download', 13) }} PDF statement</button>
+    <button id="rp-itr" class="btn btn-small" type="button">{{ icon('report', 13) }} ITR annexures (xlsx)</button>
+    <button id="rp-trades" class="btn btn-small" type="button">{{ icon('paper', 13) }} Trade ledger (csv)</button>
+    <button id="rp-email" class="btn btn-ghost btn-small" type="button">{{ icon('arrow-up-right', 13) }} Email (dry run)</button>
+    <label class="reporting-check" for="rp-demo"><input id="rp-demo" type="checkbox"> demo book (labelled sample data)</label>
   </div>
-
-  <div id="rp-message" class="muted" style="min-height:18px; margin-bottom:8px;"></div>
+  <div id="rp-message" class="muted" role="status" style="min-height:18px; margin-bottom:8px;"></div>
   <div id="rp-banner"></div>
   <div id="rp-summary"></div>
   <div id="rp-brokers-block"></div>

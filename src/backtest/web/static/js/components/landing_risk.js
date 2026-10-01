@@ -38,14 +38,16 @@
     header.hidden = false;
 
     const state = getState(p);
+    const disclosure = $("grh-expand-btn");
+    if (disclosure) disclosure.setAttribute("aria-expanded", String(expanded));
     header.className = "global-risk-header " + (expanded ? "" : "collapsed ") + state;
 
     const statusText = $("grh-status-text");
     if (statusText) {
-      if (state === "halted") statusText.textContent = "🔴 HALTED — " + (p.halt_reason || "Risk breach");
-      else if (state === "danger") statusText.textContent = "🔴 High Risk — " + pct(Math.max(p.daily_loss_pct, p.drawdown_pct));
-      else if (state === "warning") statusText.textContent = "🟡 Warning — approaching limits";
-      else statusText.textContent = "🟢 Safe — all limits nominal";
+      if (state === "halted") statusText.textContent = "HALTED — " + (p.halt_reason || "Risk breach");
+      else if (state === "danger") statusText.textContent = "High risk — " + pct(Math.max(p.daily_loss_pct, p.drawdown_pct));
+      else if (state === "warning") statusText.textContent = "Warning — approaching limits";
+      else statusText.textContent = "Safe — limits nominal";
     }
 
     const dlossText = $("grh-dloss-text");
@@ -121,6 +123,21 @@
     if (ddEl) ddEl.textContent = pct(ddPct);
     if (posEl) posEl.textContent = `${summary.open_positions || 0} pos`;
 
+    // Keep the redesigned summary synchronized with the SAME scoped snapshot
+    // as its risk row. Missing fields never become invented zeros.
+    for (const [id, key] of [["equity", "total_equity"], ["allocated", "total_capital"], ["daily-pnl", "daily_pnl"], ["realized-pnl", "realized_pnl"]]) {
+      const el = $("bucket-" + id + "-" + mode);
+      if (!el || summary[key] == null) continue;
+      const value = summary[key];
+      el.textContent = typeof Money !== "undefined" ? Money.format(value, 0) : fmtMoney(value);
+      if (id.includes("pnl")) {
+        el.classList.toggle("pnl-pos", value > 0);
+        el.classList.toggle("pnl-neg", value < 0);
+      }
+    }
+    const instances = $("bucket-instances-" + mode);
+    if (instances && summary.runner_count != null) instances.textContent = summary.runner_count;
+
     // 2026-09-22: live Running / Open-positions rows on the overview card.
     const runEl = $("bucket-running-" + mode);
     const openEl = $("bucket-openpos-" + mode);
@@ -166,7 +183,10 @@
       const handler = () => {
         expanded = !expanded;
         header.classList.toggle("collapsed", !expanded);
-        if (btn) btn.textContent = expanded ? "▲ Less" : "▼ Details";
+        if (btn) {
+          btn.textContent = expanded ? "Less" : "Details";
+          btn.setAttribute("aria-expanded", String(expanded));
+        }
         localStorage.setItem("grh_expanded", expanded ? "1" : "0");
       };
       toggle.addEventListener("click", handler);

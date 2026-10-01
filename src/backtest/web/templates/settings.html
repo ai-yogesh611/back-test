@@ -1,29 +1,23 @@
 {% extends "base.html" %}
+{% from "_macros.html" import icon, page_header %}
 {% block title %}Cost &amp; Risk Settings{% endblock %}
 
 {% block content %}
-<div style="max-width:1200px; margin:0 auto; padding:16px;">
-  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
-    <div>
-      <h1 style="margin:0;">⚙️ Cost &amp; Risk Settings</h1>
-      <div class="muted">Broker cost models, contract-note validation and the active broker — edits apply to runs started after saving; running runners are never mutated.</div>
-    </div>
-    <div style="display:flex; gap:8px; align-items:center;">
-      <label class="muted" for="settings-active-broker">Active broker</label>
-      <select id="settings-active-broker" class="input input-select" style="min-width:160px;"></select>
-      <button id="settings-refresh" class="btn btn-ghost btn-small" type="button">↻ Refresh</button>
-    </div>
-  </div>
+<div class="screen-page settings-page">
+  {% call page_header('Operations / Brokers, costs & mandates', 'Workspace settings', 'Configure broker costs, execution segments and safeguards. Saved edits apply to new runs, never to running strategies.') %}
+      <div class="settings-active"><label for="settings-active-broker">Active broker</label><select id="settings-active-broker" class="input input-select"></select></div>
+      <button id="settings-refresh" class="btn btn-ghost" type="button">{{ icon('refresh', 14) }} Refresh</button>
+  {% endcall %}
 
   <!-- Global live kill-switch (certified v2 §0 #4: default OFF, overrides all segments) -->
-  <div id="settings-killswitch" style="margin:16px 0; border:1px solid var(--border,#333); border-radius:10px; padding:14px; display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
-    <div style="font-size:22px;">🛑</div>
+  <div id="settings-killswitch" class="config-surface" style="margin:16px 0; border:1px solid var(--border,#333); border-radius:10px; padding:14px; display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+    <div class="settings-kill-icon">{{ icon("shield", 24) }}</div>
     <div style="flex:1; min-width:240px;">
       <strong>Global live kill-switch</strong>
       <div class="muted" style="font-size:12px;">OFF = every live run refused, regardless of segment mode. ON = segments with mode=live, a positive daily-loss limit and a contract-note-validated broker may arm live.</div>
     </div>
-    <span id="killswitch-state" style="font-weight:bold;">…</span>
-    <button id="killswitch-toggle" class="btn btn-small" type="button">Toggle</button>
+    <span id="killswitch-state" role="status" style="font-weight:bold;">Checking…</span>
+    <button id="killswitch-toggle" class="btn btn-small" type="button" disabled>Checking live gate…</button>
   </div>
 
   <!-- Broker profiles — grouped: in use first, the rate catalogue collapses -->
@@ -33,7 +27,7 @@
   <!-- Segments (Phase 2: risk limits belong to segments, v2 §0 #2) -->
   <div style="margin-top:26px;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-      <h3 style="margin:0;">🧩 Segments <span class="muted" style="font-weight:400;">— capital + broker + mode + risk limits per mandate</span></h3>
+      <h3 style="margin:0;">{{ icon('layers', 16) }} Segments <span class="muted" style="font-weight:400;">— capital + broker + mode + risk limits per mandate</span></h3>
       <button id="segment-new" class="btn btn-ghost btn-small" type="button">+ New segment</button>
     </div>
     <div id="segments-list" style="display:grid; grid-template-columns:repeat(auto-fill,minmax(340px,1fr)); gap:14px;"></div>
@@ -187,9 +181,9 @@
       card.appendChild(head);
       card.appendChild(el("div", { class: "muted", style: "margin:4px 0;" }, p.profile_id + " · " + p.currency + " · " + p.default_segment));
       if (p.validated_on) {
-        card.appendChild(el("div", { style: "color:#3c9; font-size:12px;" }, "✅ validated " + p.validated_on + " vs " + p.contract_note_ref));
+        card.appendChild(el("div", { style: "color:var(--success-text); font-size:12px;" }, "✅ validated " + p.validated_on + " vs " + p.contract_note_ref));
       } else {
-        card.appendChild(el("div", { class: "muted", style: "font-size:12px;" }, "⚠️ not contract-note validated"));
+        card.appendChild(el("div", { class: "muted", style: "font-size:12px;" }, "Not contract-note validated"));
       }
       var rates = p.statutory_rates || {};
       var summary = el("div", { style: "margin-top:6px; font-size:12px;" });
@@ -372,13 +366,13 @@
     api("POST", "/api/settings/brokers/" + editing.profile_id + "/validate", body).then(function (r) {
       var msg = document.getElementById("settings-validate-msg");
       if (r.data.status === "PASS") {
-        msg.innerHTML = '<span style="color:#3c9;">✅ PASS — profile stamped vs ' + r.data.stamped + "</span>";
+        msg.innerHTML = '<span style="color:var(--success-text);">✅ PASS — profile stamped vs ' + r.data.stamped + "</span>";
         loadAll(); loadAudit();
       } else {
         var items = (r.data.mismatches || [r.data.error || "validation failed"]).map(function (m) {
           return "<li>" + m + "</li>";
         }).join("");
-        msg.innerHTML = '<span style="color:#f66;">❌ FAIL<ul style="margin:4px 0 0 16px;">' + items + "</ul></span>";
+        msg.innerHTML = '<span style="color:var(--danger-text);">❌ FAIL<ul style="margin:4px 0 0 16px;">' + items + "</ul></span>";
       }
     });
   };
@@ -400,7 +394,9 @@
     document.getElementById("settings-editor").hidden = true;
     editing = null;
   };
-  document.getElementById("settings-refresh").onclick = loadAll;
+  document.getElementById("settings-refresh").onclick = function () {
+    loadAll(); loadKillSwitch(); loadSegments();
+  };
 
   // ------------------------------------------------------------------
   // Phase 2 — kill-switch + segments
@@ -408,36 +404,70 @@
 
   var segments = [];
 
+  function renderKillSwitch(r) {
+    var state = document.getElementById("killswitch-state");
+    var toggle = document.getElementById("killswitch-toggle");
+    var valid = r && r.ok && r.data && typeof r.data.enabled === "boolean";
+    toggle.disabled = !valid;
+    if (!valid) {
+      state.textContent = "Unavailable (state unknown)";
+      state.style.color = "var(--warning-text)";
+      toggle.textContent = "Live gate unavailable";
+      return;
+    }
+    var on = r.data.enabled;
+    state.textContent = on ? "ARMED (global gate)" : "OFF (live blocked)";
+    state.style.color = on ? "var(--warning-text)" : "var(--muted)";
+    toggle.textContent = on ? "Disable live execution" : "Arm live execution";
+  }
+
   function loadKillSwitch() {
-    api("GET", "/api/settings/live-kill-switch").then(function (r) {
-      var on = r.data.enabled;
-      var state = document.getElementById("killswitch-state");
-      state.textContent = on ? "🟢 ARMED (live allowed)" : "🔴 OFF (all live paused)";
-      state.style.color = on ? "#3c9" : "#f66";
+    return api("GET", "/api/settings/live-kill-switch").then(renderKillSwitch).catch(function () {
+      renderKillSwitch(null);
     });
   }
 
   document.getElementById("killswitch-toggle").onclick = function () {
     api("GET", "/api/settings/live-kill-switch").then(function (r) {
-      api("PUT", "/api/settings/live-kill-switch", { enabled: !r.data.enabled }).then(loadKillSwitch);
-    });
+      if (!r.ok || typeof r.data.enabled !== "boolean") { renderKillSwitch(r); return; }
+      if (!r.data.enabled && !confirm("Arm live execution? Eligible live segments may place real broker orders. Verify your broker, cost validation and risk limits before continuing.")) return;
+      document.getElementById("killswitch-toggle").disabled = true;
+      api("PUT", "/api/settings/live-kill-switch", { enabled: !r.data.enabled }).then(function (updated) {
+        if (!updated.ok) showToast("Could not update the live execution gate", "error");
+        loadKillSwitch();
+      }).catch(function () { renderKillSwitch(null); });
+    }).catch(function () { renderKillSwitch(null); });
   };
 
   function loadSegments() {
     return api("GET", "/api/settings/segments").then(function (r) {
-      segments = r.data.segments || [];
+      if (!r.ok || !r.data || !Array.isArray(r.data.segments)) {
+        renderSegmentsUnavailable();
+        return;
+      }
+      segments = r.data.segments;
       renderSegments();
-    });
+    }).catch(renderSegmentsUnavailable);
+  }
+
+  function renderSegmentsUnavailable() {
+    var host = document.getElementById("segments-list");
+    host.innerHTML = "";
+    host.appendChild(el("div", { class: "card settings-empty muted", role: "status" },
+      "Segments unavailable — check the database connection, then refresh."));
   }
 
   function renderSegments() {
     var host = document.getElementById("segments-list");
-    host.innerHTML = segments.length ? "" : el("div", { class: "muted" }, "No segments yet — create one to allocate capital and risk limits.");
+    host.innerHTML = "";
+    if (!segments.length) {
+      host.appendChild(el("div", { class: "card settings-empty muted" }, "No segments yet — create one to allocate capital and risk limits."));
+    }
     segments.forEach(function (s) {
       var card = el("div", { style: "border:1px solid var(--border,#333); border-radius:10px; padding:12px;" });
       var head = el("div", { style: "display:flex; justify-content:space-between; align-items:center;" });
       head.appendChild(el("strong", null, s.segment_name || s.segment_id));
-      var modeBadge = el("span", { style: "font-size:12px; color:" + (s.mode === "live" ? "#f66" : "#8ab") }, s.mode.toUpperCase());
+      var modeBadge = el("span", { style: "font-size:12px; color:" + (s.mode === "live" ? "var(--danger-text)" : "var(--info)") }, s.mode.toUpperCase());
       head.appendChild(modeBadge);
       card.appendChild(head);
       card.appendChild(el("div", { class: "muted", style: "margin:4px 0; font-size:12px;" },
@@ -559,10 +589,10 @@
     if (!segmentId) { host.innerHTML = ""; return; }
     api("GET", "/api/settings/segments/" + segmentId + "/arming").then(function (r) {
       if (r.data.armed) {
-        host.innerHTML = '<span style="color:#3c9;">✅ live arming allowed for this segment</span>';
+        host.innerHTML = '<span style="color:var(--success-text);">✅ live arming allowed for this segment</span>';
       } else {
         var items = (r.data.blockers || []).map(function (b) { return "<li>" + b + "</li>"; }).join("");
-        host.innerHTML = '<span style="color:#f66;">⛔ live arming blocked:<ul style="margin:4px 0 0 16px;">' + items + "</ul></span>";
+        host.innerHTML = '<span style="color:var(--danger-text);">⛔ live arming blocked:<ul style="margin:4px 0 0 16px;">' + items + "</ul></span>";
       }
     });
   }

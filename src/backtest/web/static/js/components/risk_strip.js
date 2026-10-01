@@ -69,8 +69,12 @@
       pill.style.animation = "";
     } else {
       dot.textContent = "🟢";
-      txt.textContent = "LIVE";
-      pill.title = "All runners active — click to view Risk Board";
+      // Risk state is not execution mode. In particular, an empty or paper
+      // portfolio must never appear to be a live-money trading connection.
+      txt.textContent = (p.running || 0) > 0 ? "Risk clear" : "Standby";
+      pill.title = (p.running || 0) > 0
+        ? "Risk limits nominal — click to view Risk Board"
+        : "No runners currently running — click to view Risk Board";
       pill.style.animation = "";
     }
   }
@@ -103,7 +107,7 @@
     if (feedEl) {
       const tick = p.tick || 0;
       const running = p.running || 0;
-      feedEl.textContent = tick > 0 ? `🟢 Feed OK · ${running} running · ${tick} ticks` : "🟢 Feed OK";
+      feedEl.textContent = tick > 0 ? `Feed active · ${running} running · ${tick} ticks` : "Feed idle";
     }
 
     // Daily loss

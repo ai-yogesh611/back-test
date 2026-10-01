@@ -1,16 +1,11 @@
 {% extends "base.html" %}
+{% from "_macros.html" import icon, page_header %}
 {% block title %}Compare Backtests · Trading Bot{% endblock %}
 
 {% block content %}
-<div class="page-head" style="display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px;">
-    <div>
-        <h1 class="page-title">📊 Compare Backtests</h1>
-        <p class="muted small page-sub">Historical simulation: run 2–4 combinations side by side under one shared set of conditions.</p>
-    </div>
-    <div>
-        <a href="/analytics" class="btn btn-ghost" style="text-decoration: none;">📈 View Live & Paper Analytics →</a>
-    </div>
-</div>
+{% call page_header('Research / Side-by-side analysis', 'Compare strategies', 'Test 2–4 combinations under the same conditions. Find the differences that actually matter.') %}
+    <a href="/analytics" class="btn btn-ghost">{{ icon('chart', 15) }} Trading analytics {{ icon('arrow-up-right', 13) }}</a>
+{% endcall %}
 
 <!-- ================= WHAT ARE WE COMPARING? (PRD §4.2) ================= -->
 <div class="card mode-bar">
@@ -84,8 +79,8 @@
 <div class="slots-head">
     <h2 class="card-title inline" id="slotsTitle">Slots</h2>
     <div class="actions">
-        <button id="addSlotBtn" class="btn">+ Add Slot</button>
-        <button id="runAllBtn" class="btn btn-primary">▶ Run All</button>
+        <button id="addSlotBtn" class="btn">{{ icon('plus', 13) }} Add slot</button>
+        <button id="runAllBtn" class="btn btn-primary">{{ icon('play', 13) }} Run comparison</button>
     </div>
 </div>
 <div id="slotsRow" class="slots-row"></div>
@@ -117,7 +112,7 @@
 </section>
 
 <section id="emptyState" class="empty-state card">
-    <p class="muted">Configure slots and click <strong>Run All</strong> to compare.</p>
+    <div class="empty-icon">{{ icon('compare', 23) }}</div><h3>Put your ideas side by side.</h3><p class="muted">Configure your strategy slots, then run a comparison to see performance, drawdowns and trade-offs.</p>
 </section>
 {% endblock %}
 

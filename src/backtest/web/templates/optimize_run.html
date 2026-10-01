@@ -1,13 +1,14 @@
 {% extends "base.html" %}
+{% from "_macros.html" import icon, page_header %}
 {% block title %}Optimization run · Trading Bot{% endblock %}
 
 {% block content %}
 <div class="opt-page" id="optRun" data-run-id="{{ run_id }}">
-    <div class="opt-page-head">
+    <div class="opt-page-head page-header">
         <div>
-            <div class="small muted"><a href="/optimize" class="opt-back">← Optimization</a></div>
+            <div class="eyebrow"><a href="/optimize" class="opt-back">{{ icon("arrow-left", 12) }} Research / Optimization</a></div>
             <h1 class="page-title" id="runTitle">Optimization run</h1>
-            <p class="muted small" id="runSubtitle"></p>
+            <p class="page-description" id="runSubtitle"></p>
         </div>
         <div class="actions" id="runActions">
             <button class="btn" id="btnPause" hidden>⏸ Pause</button>

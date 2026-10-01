@@ -82,6 +82,9 @@ const BrokerStatus = (() => {
                 item.className = "broker-strip-item";
                 item.dataset.broker = name;
                 item.dataset.state = row.status || "unknown";
+                // CSS renders the status dot separately; keep the original
+                // text for assistive technology and the stable status contract.
+                item.dataset.label = row.broker_display_name || name;
                 const d = row.authenticated ? DOTS[row.status] || "🟢"
                     : (row.status === "expired" ? DOTS.expired : "⚪");
                 item.textContent = `${d} ${row.broker_display_name || name}`;

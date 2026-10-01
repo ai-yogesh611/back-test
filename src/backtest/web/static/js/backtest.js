@@ -111,9 +111,19 @@ function engineMode() {
 
 async function runBacktest() {
     if (!$("strategy").value) { showToast("Select a strategy first", "warning"); return; }
+    if (!$("symbol").value) { showToast("Select an instrument first", "warning"); $("symbol").focus(); return; }
     if (!$("fromDate").value || !$("toDate").value) { showToast("Pick a date range", "warning"); return; }
 
+    const runButton = $("runBtn");
+    if (runButton.disabled) return;
+    const buttonMarkup = runButton.innerHTML;
+    runButton.disabled = true;
+    runButton.textContent = "Running backtest…";
+    runButton.setAttribute("aria-busy", "true");
     const config = collectConfig();
+    $("results").setAttribute("aria-busy", "true");
+    if ($("backtestOutput")) $("backtestOutput").hidden = true;
+    if ($("resultProvenance")) $("resultProvenance").innerHTML = "";
     $("emptyState").hidden = true;
     $("results").hidden = false;
     showLoader("metricsCards", "Running backtest…");
@@ -136,10 +146,18 @@ async function runBacktest() {
         showToast(err.message || "Backtest failed", "error");
         $("results").hidden = true;
         $("emptyState").hidden = false;
+    } finally {
+        runButton.disabled = runButton.dataset.dsgPinned === "1";
+        runButton.innerHTML = buttonMarkup;
+        runButton.removeAttribute("aria-busy");
+        $("results").removeAttribute("aria-busy");
     }
 }
 
 function renderResults(result) {
+    if ($("backtestOutput")) $("backtestOutput").hidden = false;
+    const caption = $("backtest-result-caption");
+    if (caption && lastRun) caption.textContent = `${lastRun.config.symbol} · ${lastRun.config.from_date} — ${lastRun.config.to_date}`;
     // Engine + data provenance first: every number below it is read through
     // these two badges (PRD backTest-enhance §1.1/§1.2).
     if (typeof Provenance !== "undefined") Provenance.renderInto("resultProvenance", result.provenance);
@@ -337,9 +355,22 @@ async function init() {
     // phantom option.
     symbolPicker = SymbolPicker.mount({
         select: "symbol", search: "symbol-search", tabs: "symbol-tabs", summary: "symbol-status",
-        onChange: () => Timeframes.applyTo($("timeframe"), symbolPicker.timeframesFor($("symbol").value)),
+        onChange: () => Timeframes.applyTo($("timeframe"), document.body.dataset.source === "synthetic"
+            ? ["1day"] : symbolPicker.timeframesFor($("symbol").value)),
     });
-    Timeframes.applyTo($("timeframe"), null);
+    Timeframes.applyTo($("timeframe"), document.body.dataset.source === "synthetic" ? ["1day"] : null);
+    const demoButton = $("useSyntheticDemo");
+    if (demoButton && document.body.dataset.source === "synthetic") {
+        demoButton.addEventListener("click", () => {
+            // An explicit choice of the already-configured generated source.
+            // It never enables a source, changes a guard, or starts a run.
+            symbolPicker.setValue("DEMO");
+            const selected = $("symbol").selectedOptions[0];
+            if (selected) selected.textContent = "DEMO — generated random walk";
+            Timeframes.applyTo($("timeframe"), ["1day"]);
+            $("symbol-status").textContent = "Generated daily candles · not real market prices";
+        });
+    }
 
     // load strategies
     let strategies = [];
@@ -347,8 +378,18 @@ async function init() {
         // venue=backtest: the server omits option strategies, because a
         // backtest runs on DB candles and the DB holds no historical chains.
         strategies = await fetchJSON("/api/strategies?venue=backtest");
-        $("strategy").innerHTML = strategies
-            .map((s) => `<option value="${s.name}">${s.name}</option>`).join("");
+        $("strategy").innerHTML = "";
+        strategies.forEach((strategy) => {
+            const option = document.createElement("option");
+            option.value = strategy.name;
+            option.title = strategy.name;
+            const acronyms = new Set(["sma", "ema", "rsi", "macd", "roc", "vwap"]);
+            option.textContent = strategy.name.split("_").map((part, index) =>
+                acronyms.has(part) ? part.toUpperCase() : index === 0
+                    ? part.charAt(0).toUpperCase() + part.slice(1) : part
+            ).join(" ");
+            $("strategy").appendChild(option);
+        });
     } catch (err) {
         $("strategy").innerHTML = `<option value="">failed to load</option>`;
         showToast("Could not load strategies", "error");
@@ -368,7 +409,7 @@ async function init() {
         $("strategy").value = cfg.strategy;
         if (cfg.symbol) {
             symbolPicker.setValue(cfg.symbol);
-            Timeframes.applyTo($("timeframe"), symbolPicker.timeframesFor(cfg.symbol));
+            Timeframes.applyTo($("timeframe"), document.body.dataset.source === "synthetic" ? ["1day"] : symbolPicker.timeframesFor(cfg.symbol));
         }
         if (cfg.timeframe) {
             const want = Timeframes.toCanonical(cfg.timeframe);

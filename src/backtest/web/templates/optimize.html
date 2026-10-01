@@ -1,19 +1,13 @@
 {% extends "base.html" %}
+{% from "_macros.html" import icon, page_header %}
 {% block title %}Parameter Optimization · Trading Bot{% endblock %}
 
 {% block content %}
 <div class="opt-page" id="optSetup" data-selected-strategy="{{ selected_strategy }}" data-source="{{ source }}">
+    {% call page_header('Research / Search & validate', 'Parameter optimization', 'Search the parameter space. Filter by risk. Validate out-of-sample before applying anything to a runner.') %}
+        <a href="/backtest" class="btn btn-ghost">{{ icon('flask', 14) }} Backtest workspace</a>
+    {% endcall %}
     <div id="dataSourceGate" data-status='{{ data_sources | tojson }}'></div>
-    <div class="opt-page-head">
-        <div>
-            <h1 class="page-title">🎯 Parameter Optimization</h1>
-            <p class="muted small">Search a strategy's parameter space, filter by risk constraints, and
-                validate out-of-sample before applying anything to a runner.</p>
-        </div>
-        <div class="actions">
-            <a href="/backtest" class="btn btn-ghost">Backtest →</a>
-        </div>
-    </div>
 
     <div id="optDbBanner" class="warning-banner" hidden></div>
     <!-- PRD §6: shown only when the form was filled from a backtest result. -->
