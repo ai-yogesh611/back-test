@@ -252,6 +252,40 @@ def _resolve_security_token(base_url: str, api_key: str, token: str, symbol: str
     return str(matches.iloc[0][token_key])
 
 
+def _resolve_scriptmaster_row(
+    base_url: str, api_key: str, token: str, symbol: str
+) -> dict:
+    """The scriptmaster row for ``symbol`` (lowercased columns), or ``{}``.
+
+    Used to recover the listing ``exchange`` (NSE/BSE) and ``tradingsymbol``
+    for the live ``quote/ohlc`` name of a non-index symbol. Unlike
+    :func:`_resolve_security_token` this never raises for a missing symbol —
+    the quote path degrades to an ``NSE:<SYMBOL>`` convention instead of
+    killing the poll thread.
+    """
+    resp = requests.get(
+        f"{base_url}/openapi/typea/instruments/scriptmaster",
+        headers=_typea_headers(api_key, token),
+        timeout=30,
+    )
+    resp.raise_for_status()
+    import io
+
+    frame = pd.read_csv(io.StringIO(resp.text), low_memory=False)
+    if frame.empty:
+        return {}
+    lower = frame.rename(columns=lambda c: str(c).strip().lower())
+    symbol_key = next(
+        (c for c in ("tradingsymbol", "symbol", "name") if c in lower.columns), None
+    )
+    if not symbol_key:
+        return {}
+    matches = lower[lower[symbol_key].astype(str).str.lower() == str(symbol).lower()]
+    if matches.empty:
+        return {}
+    return matches.iloc[0].to_dict()
+
+
 class MStockLiveFeed:
     """Live OHLCV feed from the mStock broker (ticket P3.4).
 
@@ -288,6 +322,7 @@ class MStockLiveFeed:
         # extra kwargs here).
         self._config: dict[str, Any] = dict(kwargs)
         self._security_tokens: dict[str, str] = {}
+        self._quote_names: dict[str, str] = {}
 
     # -- credentials (lazy) ------------------------------------------------
 
@@ -308,14 +343,23 @@ class MStockLiveFeed:
         return str(url).rstrip("/")
 
     def _fetch_quote_bar(self, symbol: str) -> dict | None:
-        """Today's running bar from ``quote/ohlc`` (indexes only).
+        """Today's running bar from ``quote/ohlc`` (indexes and equities).
 
         Returns a bar ``{ts, open, high, low, close, volume}`` where OHLC
         is the session's running aggregate and ``ts`` is the minute floor
-        of "now" (IST). ``None`` when the symbol has no quote mapping or
-        the API fails — callers fall back to the historical path.
+        of "now" (IST). ``None`` when the symbol cannot be mapped or the API
+        fails — callers fall back to the historical path.
+
+        Equities are served here too, not just the curated index list: the
+        live endpoint keys them as ``<EXCHANGE>:<TRADINGSYMBOL>`` (e.g.
+        ``NSE:RELIANCE``). Restricting this to :data:`QUOTE_SYMBOL_NAMES` is
+        what froze every equity runner on the prior day's close — the
+        ``instruments/historical`` fallback is T+1 and never returns the
+        current session (2026-10-01 RELIANCE ``data_feed_stale``).
         """
         quote_name = QUOTE_SYMBOL_NAMES.get(str(symbol).strip().upper())
+        if quote_name is None:
+            quote_name = self._quote_name_for(str(symbol).strip().upper())
         if quote_name is None:
             return None
         # One retry on transient failures (408/429/timeout) — mStock
@@ -333,7 +377,14 @@ class MStockLiveFeed:
                 )
                 resp.raise_for_status()
                 payload = resp.json().get("data") or {}
-                entry = payload.get(quote_name) or {}
+                entry = payload.get(quote_name)
+                if not isinstance(entry, dict):
+                    # A single-``i=`` request returns one keyed entry; if the
+                    # response key differs from our requested name (equity
+                    # tradingsymbol casing/exchange variants), take the sole
+                    # entry rather than dropping a valid live quote.
+                    vals = list(payload.values()) if isinstance(payload, dict) else []
+                    entry = vals[0] if len(vals) == 1 and isinstance(vals[0], dict) else {}
                 ohlc = entry.get("ohlc") or {}
                 last = entry.get("last_price")
                 if not ohlc or last is None:
@@ -369,6 +420,36 @@ class MStockLiveFeed:
                     self._base_url(), api_key, token, key
                 )
         return self._security_tokens[key]
+
+    def _quote_name_for(self, symbol: str) -> str | None:
+        """Live ``quote/ohlc`` name for a non-index symbol (equity/ETF/F&O).
+
+        mStock serves TODAY's session for equities under
+        ``<EXCHANGE>:<TRADINGSYMBOL>``. The exchange and canonical trading
+        symbol come from scriptmaster (resolved once and cached per symbol);
+        if that lookup fails we fall back to the ``NSE:<SYMBOL>`` convention
+        the order path already uses. Returns ``None`` only if a name can't be
+        formed at all.
+        """
+        if symbol in self._quote_names:
+            return self._quote_names[symbol]
+        exchange, trading = "NSE", symbol
+        try:
+            token, api_key = self._credentials()
+            row = _resolve_scriptmaster_row(self._base_url(), api_key, token, symbol)
+            exchange = str(row.get("exchange") or exchange).strip().upper() or "NSE"
+            trading = str(
+                row.get("tradingsymbol") or row.get("symbol") or row.get("name") or symbol
+            ).strip().upper()
+        except Exception as exc:  # noqa: BLE001 — resolution failure must not stop the poll
+            logger.debug(
+                "mstock feed: quote-name resolution for %s failed (%s); using NSE default",
+                symbol,
+                exc,
+            )
+        name = f"{exchange}:{trading}"
+        self._quote_names[symbol] = name
+        return name
 
     # -- bar access ----------------------------------------------------------
 
