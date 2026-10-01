@@ -325,7 +325,17 @@ class DhanBroker(BrokerAuthBase, BrokerOrderBase):
         return None
 
     def restore_session(self, token: str, expires_at: Any) -> None:
-        """Seed the in-memory session from a remembered token (remember-session)."""
+        """Seed the in-memory session from a remembered token (remember-session).
+
+        Coerce the expiry to naive-local (the convention of ``_now`` and
+        ``_compute_expiry``): the remember-session store returns aware
+        datetimes, and mixing them with the naive clock raises TypeError in
+        ``get_session_status`` — which blanks the header broker strip.
+        """
+        if isinstance(expires_at, str):
+            expires_at = datetime.fromisoformat(expires_at)
+        if expires_at is not None and expires_at.tzinfo is not None:
+            expires_at = expires_at.astimezone().replace(tzinfo=None)
         self._access_token = token
         self._expires_at = expires_at
         self._temp_auth_context = None
