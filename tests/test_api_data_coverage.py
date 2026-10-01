@@ -134,7 +134,6 @@ def test_search_filters_by_symbol_and_name(client):
 
 
 def test_equity_and_index_tabs_partition_the_list(client):
-    all_rows = {r["symbol"] for r in get(client, limit=0).get_json()["instruments"]}
     equity = {r["symbol"] for r in get(client, types="equity", limit=0).get_json()["instruments"]}
     index = {r["symbol"] for r in get(client, types="index", limit=0).get_json()["instruments"]}
     assert equity and index
@@ -144,6 +143,26 @@ def test_equity_and_index_tabs_partition_the_list(client):
 def test_available_filter_hides_symbols_that_cannot_run(client):
     body = get(client, available=1, limit=0).get_json()
     assert {r["symbol"] for r in body["instruments"]} == {"RELIANCE", "NIFTY"}
+
+
+def test_available_filter_reports_how_many_symbols_it_hid(client):
+    """issues.txt B1 (2026-10-01): a data-only dropdown must be able to say
+    "N symbols hidden — load data first" instead of silently shrinking."""
+    hidden = get(client, available=1, limit=0).get_json()
+    assert hidden["hidden_total"] == hidden["known_total"] - hidden["available_total"]
+    assert hidden["hidden_total"] > 100  # the shipped universe dwarfs 2 seeded symbols
+
+    # Without available=1 nothing is filtered out, so nothing is "hidden".
+    full = get(client, limit=0).get_json()
+    assert full["hidden_total"] == 0
+
+    # The count is scoped to the active tab: the Index tab hides only indices.
+    index_hidden = get(client, types="index", available=1, limit=0).get_json()
+    assert 0 < index_hidden["hidden_total"] < hidden["hidden_total"]
+
+    # A search narrows it too: one no-data match hides exactly one symbol.
+    one = get(client, q="TCS", available=1).get_json()
+    assert one["total"] == 0 and one["hidden_total"] == 1
 
 
 def test_paging_covers_the_whole_list(client):

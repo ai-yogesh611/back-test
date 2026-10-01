@@ -12,7 +12,8 @@
     search: "",
     filter: "all",
     sort: "default",
-    tab: "equity",
+    // issues.txt P4: Positions is the default view (template lists it first).
+  tab: "positions",
     chart: null,
     audit: [],
     backendAudit: [],
@@ -119,7 +120,14 @@
     try {
       const d = await api("/api/portfolio/audit?scope=all&limit=200");
       state.backendAudit = (d.audit || []).map((e) => ({
-        ts: (e.ts || "").replace("T", " ").slice(5, 19),
+        // Backend audit rows are UTC-aware ISO; show them local like the
+        // position times (previously sliced raw "06:57:34" strings).
+        ts: e.ts && !isNaN(parseExecDate(e.ts).getTime())
+          ? parseExecDate(e.ts).toLocaleString("en-IN", {
+              day: "2-digit", month: "2-digit", hour: "2-digit",
+              minute: "2-digit", second: "2-digit", hour12: false,
+            })
+          : (e.ts || "").replace("T", " ").slice(5, 19),
         message:
           (e.action || "") +
           (e.instance_id ? " [" + e.instance_id.slice(0, 8) + "]" : "") +
@@ -345,6 +353,25 @@
         theta.toLocaleString("en-IN", { maximumFractionDigits: 1 }) + "</span>") + "</td>";
   }
 
+  // Execution times arrive as UTC ISO strings (datetime.now(timezone.utc) on
+  // the backend). The broker terminal speaks IST, so render browser-local
+  // time — a bare "06:57" next to a broker's "12:27" is the same instant.
+  // Some books persist naive UTC (no +00:00 suffix); assume UTC when absent.
+  function parseExecDate(iso) {
+    let s = String(iso || "");
+    if (s && !/([zZ]|[+-]\d{2}:?\d{2})$/.test(s)) s += "Z";
+    return new Date(s);
+  }
+  function execTimeLabel(iso) {
+    if (!iso) return "";
+    const d = parseExecDate(iso);
+    if (isNaN(d.getTime())) return "";
+    const t = d.toLocaleTimeString("en-IN", { hour12: false });
+    if (d.toDateString() === new Date().toDateString()) return t;
+    return String(d.getDate()).padStart(2, "0") + "-" +
+      String(d.getMonth() + 1).padStart(2, "0") + " " + t;
+  }
+
   function positionRowHtml(row) {
     const pnl = Number(row.unrealized_pnl || 0);
     const stale = row.stale
@@ -353,11 +380,14 @@
     const label = row.kind === "option"
       ? '<span class="badge badge-option">OPTION</span> ' + (row.label || row.symbol) + " <span class=\"muted\">(net)</span>"
       : row.label || row.symbol;
+    const entered = row.entry_ts
+      ? '<span class="muted" title="Entry executed ' + String(row.entry_ts).replace(/[<>&"]/g, "") + ' (server UTC)"> · in ' + execTimeLabel(row.entry_ts) + "</span>"
+      : "";
     const sub = row.kind === "option"
       ? '<div class="cell-sub">' + (row.structure_type || "").replace(/_/g, " ") +
         (row.expiry ? " · exp " + expiryLabelOf(row.expiry) : "") +
-        (row.bars_held ? " · " + row.bars_held + " bars" : "") + "</div>"
-      : '<div class="cell-sub">' + (row.strategy_name || "") + "</div>";
+        (row.bars_held ? " · " + row.bars_held + " bars" : "") + entered + "</div>"
+      : '<div class="cell-sub">' + (row.strategy_name || "") + entered + "</div>";
     return (
       '<tr class="pos-row' + (row.stale ? " pos-row-stale" : "") +
         (row.kind === "option" ? " matrix-row-option" : "") + '">' +
@@ -824,32 +854,67 @@
     if (!sel._wired) {
       sel._wired = true;
       sel.addEventListener("change", () => {
-        const seg = (sel._segments || []).find((s) => s.name === sel.value);
-        sel._picked = seg || null;
-        const hint = $("spawn-segment-hint");
-        if (!seg) { if (hint) hint.textContent = ""; return; }
-        const cap = Number(seg.allocated_capital || 0);
-        const capLabel = cap >= 100000 ? "₹" + (cap / 100000).toFixed(cap % 100000 ? 1 : 0) + "L"
-          : "₹" + cap.toLocaleString("en-IN");
-        if (hint) {
-          hint.textContent = seg.broker + " • " + (seg.mode === "live" ? "Live" : "Paper") +
-            " • " + capLabel;
-        }
-        // The segment defines the bucket mode — sync the mode select so the
-        // form never submits a conflicting pair (the API refuses those).
-        const modeSel = $("spawn-mode");
-        if (modeSel && seg.mode) modeSel.value = seg.mode;
-        // Sync the broker select to the segment's broker so the venue the
-        // orders will route to is always visible. Changing it afterwards is
-        // the explicit execution_broker override (wins over the segment per
-        // the routing rules).
-        const brokerSel = $("spawn-broker");
-        if (brokerSel && seg.broker &&
-            brokerSel.querySelector('option[value="' + seg.broker + '"]')) {
-          brokerSel.value = seg.broker;
-          brokerSel.dispatchEvent(new Event("change"));
-        }
+        // S2: any change event on the segment control is a user decision —
+        // the strategy-driven preselect must stop overriding it.
+        sel._userChose = true;
+        applySegment((sel._segments || []).find((s) => s.name === sel.value));
       });
+    }
+    // A strategy may already be selected (loadSpawnForm calls syncSpawnForm
+    // before this async fetch resolves) — apply the preselect now too.
+    preselectSegment();
+  }
+
+  // S2 (issues.txt 2026-10-01): every strategy is LINKED to a segment so
+  // backtest → paper → live land in the same capital partition. The link is
+  // the strategy's explicit `default_segment` when it declares one, else its
+  // signal_kind (option strategies belong in the index-options segment,
+  // equity strategies in the equity-intraday one). It is a preselect, not a
+  // lock: the operator can always pick another segment before deploying.
+  function preferredSegmentFor(strat) {
+    if (strat && strat.default_segment) return strat.default_segment;
+    const isOption = !!(strat && strat.signal_kind === "option");
+    return isOption ? "options_index" : "equity_intraday";
+  }
+
+  function preselectSegment() {
+    const sel = $("spawn-segment");
+    if (!sel || !sel._segments || !sel._segments.length || sel._userChose) return;
+    const want = preferredSegmentFor(selectedStrategy());
+    if (sel.value === want) return;
+    const seg = sel._segments.find((s) => s.name === want);
+    if (!seg) return; // segment not configured — leave the form untouched
+    sel.value = want;
+    applySegment(seg);
+  }
+
+  /** Apply a picked segment to the form: hint, bucket mode and broker sync. */
+  function applySegment(seg) {
+    const sel = $("spawn-segment");
+    const hint = $("spawn-segment-hint");
+    if (!sel) return;
+    sel._picked = seg || null;
+    if (!seg) { if (hint) hint.textContent = ""; return; }
+    const cap = Number(seg.allocated_capital || 0);
+    const capLabel = cap >= 100000 ? "₹" + (cap / 100000).toFixed(cap % 100000 ? 1 : 0) + "L"
+      : "₹" + cap.toLocaleString("en-IN");
+    if (hint) {
+      hint.textContent = seg.broker + " • " + (seg.mode === "live" ? "Live" : "Paper") +
+        " • " + capLabel;
+    }
+    // The segment defines the bucket mode — sync the mode select so the
+    // form never submits a conflicting pair (the API refuses those).
+    const modeSel = $("spawn-mode");
+    if (modeSel && seg.mode) modeSel.value = seg.mode;
+    // Sync the broker select to the segment's broker so the venue the
+    // orders will route to is always visible. Changing it afterwards is
+    // the explicit execution_broker override (wins over the segment per
+    // the routing rules).
+    const brokerSel = $("spawn-broker");
+    if (brokerSel && seg.broker &&
+        brokerSel.querySelector('option[value="' + seg.broker + '"]')) {
+      brokerSel.value = seg.broker;
+      brokerSel.dispatchEvent(new Event("change"));
     }
   }
 
@@ -891,8 +956,18 @@
     const strat = (sel._catalogue || []).find((s) => s.name === sel.value);
     const box = $("spawn-params");
     if (!strat || !strat.params) { box.innerHTML = ""; return; }
+    // issues.txt P2 (2026-10-01): for an option strategy the Instrument field
+    // already asks NIFTY/BANKNIFTY — rendering the `underlying` param beside
+    // it asked the same question twice ("static Nifty" vs the picker) and the
+    // two could disagree. The field is suppressed here and synced from the
+    // Instrument at submit; the adapter still reads params.underlying for the
+    // view, so the value must travel, just not as a second question.
+    const isOption = strat.signal_kind === "option";
+    const entries = Object.entries(strat.params)
+      .filter(([key]) => !(isOption && key === "underlying"));
+    if (!entries.length) { box.innerHTML = ""; return; }
     box.innerHTML = "<div class='spawn-params-title'>Strategy parameters</div>" +
-      Object.entries(strat.params).map(([key, spec], index) => {
+      entries.map(([key, spec], index) => {
         const type = spec.type === "bool" ? "checkbox"
           : spec.type === "int" || spec.type === "float" ? "number" : "text";
         const val = spec.default !== null && spec.default !== undefined ? spec.default : "";
@@ -972,11 +1047,43 @@
     // Symbol: RESTRICTED strategies (eligible_instruments) get a dropdown of
     // exactly those instruments — no free typing, no wrong-instrument errors.
     // Option runners also get the lots-per-leg field (defaults 1, hidden otherwise).
-    // Open strategies keep the free-text input (equity symbols are open-ended).
+    // Open strategies keep the free-text input (equity symbols are open-ended),
+    // but the EQUITY strategy type also gets the shared SymbolPicker so the
+    // user sees every equity instrument the server knows instead of typing a
+    // ticker blind — the issue.txt complaint was "did not show all the symboles
+    // in the instrument section when selecting the equity".
     const symbolInput = $("spawn-symbol");
     const symbolSelect = $("spawn-symbol-select");
     const eligible = strat && strat.eligible_instruments;
-    if (symbolSelect) {
+    const pickerExtras = $("spawn-symbol-picker-extras");
+    if (!isOption && !eligible) {
+      // Free equity strategy (no eligible_instruments): mount the SymbolPicker
+      // on the Equity tab so the user picks from the full equity universe
+      // instead of typing a ticker blind — the issue.txt complaint was "did
+      // not show all the symboles in the instrument section when selecting
+      // the equity". Re-mounted on every sync (cheap: one coverage fetch, and
+      // this mount adds no listeners to the select) so the handle is never
+      // stale after a visit to an option/restricted strategy.
+      symbolSelect._picker = SymbolPicker.mount({
+        select: symbolSelect,
+        search: null,
+        tabs: "spawn-symbol-tabs",
+        summary: "spawn-symbol-hint",
+        defaultTab: "equity",
+        placeholder: "Select an equity instrument…",
+      });
+      symbolSelect.hidden = false;
+      symbolInput.hidden = true;
+      if (pickerExtras) pickerExtras.hidden = false;
+      // Seed the picker with the current value if it is a valid equity symbol.
+      if (symbolInput.value.trim()) {
+        symbolSelect._picker.setValue(symbolInput.value.trim().toUpperCase());
+      }
+    } else {
+      // Restricted (eligible_instruments) or option strategy: the dropdown of
+      // exactly those instruments replaces the picker. Drop the picker handle
+      // first so submit-time validation knows which control is active.
+      symbolSelect._picker = null;
       if (eligible && eligible.length) {
         symbolSelect.innerHTML = eligible.map((i) =>
           '<option value="' + i + '">' + i + "</option>").join("");
@@ -987,6 +1094,7 @@
         symbolSelect.hidden = true;
         symbolInput.hidden = false;
       }
+      if (pickerExtras) pickerExtras.hidden = true;
     }
     if (isOption) {
       symbolInput.setAttribute("list", "spawn-index-list");
@@ -1021,6 +1129,10 @@
     $("spawn-symbol-row").hidden = pool;
     $("spawn-universe-row").hidden = !pool;
     $("spawn-maxpos-row").hidden = !pool;
+
+    // S2: the strategy↔segment link preselects the capital partition this
+    // strategy is designed for (until the operator picks one themselves).
+    preselectSegment();
   }
 
   async function submitSpawn() {
@@ -1069,12 +1181,26 @@
     // U6.1: option routing comes from signal_kind + the selected playbook.
     // The expression block is the playbook's snapshot — never form fields.
     const kind = selectedSignalKind();
+    // issues.txt P1: an equity SymbolPicker that was never answered must not
+    // silently fall back to the template's RELIANCE default — the user picked
+    // nothing, and "nothing" becoming a live RELIANCE runner is a surprise.
+    if (kind === "equity" && targetType !== "pool") {
+      const sel = $("spawn-symbol-select");
+      if (sel && !sel.hidden && sel._picker && !body.symbol) {
+        toast("Pick an instrument from the list — nothing is selected.", "error");
+        return;
+      }
+    }
     if (kind === "option") {
       const symbolUpper = (body.symbol || "").toUpperCase();
       if (!OPTION_INDEXES.includes(symbolUpper)) {
         toast("Option strategies trade an index — pick NIFTY or BANKNIFTY.", "error");
         return;
       }
+      // issues.txt P2: the suppressed `underlying` param follows the
+      // Instrument choice — a BANKNIFTY runner must never carry a NIFTY
+      // view (the adapter builds the view from params.underlying).
+      params.underlying = symbolUpper;
       const pbId = $("spawn-playbook") ? $("spawn-playbook").value : "";
       const lots = Math.max(1, parseInt($("spawn-lots") && $("spawn-lots").value, 10) || 1);
       // Capital guard: lots × exchange units × est. premium must fit the

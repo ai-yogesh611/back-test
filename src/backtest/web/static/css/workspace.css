@@ -331,6 +331,26 @@ kbd { border: 1px solid var(--border); border-radius: 4px; padding: 1px 4px; fon
 .strategy-editor-grid label { font-size: 11px; }
 .config-surface { background: var(--surface); }
 
+/* Strategy builder: readable summary + missing-field highlighting. */
+.strategy-summary {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--primary-shade);
+  background: var(--surface-2);
+  border-radius: 6px;
+  padding: 12px 14px;
+  font-size: 11px;
+  line-height: 1.7;
+}
+.strategy-summary-row { display: flex; gap: 8px; align-items: baseline; }
+.strategy-summary-row + .strategy-summary-row { margin-top: 5px; }
+.strategy-summary-row .label { color: var(--muted); flex-shrink: 0; }
+.strategy-summary-row strong { color: var(--text-strong); }
+.strategy-summary-empty { color: var(--warning-text); font-weight: 600; }
+.strategy-field-flag { color: var(--warning-text); font-weight: 600; }
+.strategy-field-flag::before { content: "⚠ "; }
+.readable-summary-title { font-size: 10px; font-weight: 550; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+
 /* Modals and navigation dialogs. Confirmation semantics remain in controllers. */
 .modal-overlay, .broker-auth-overlay, .drawer-overlay { background: var(--backdrop); backdrop-filter: blur(4px); }
 .modal { display: flex; flex-direction: column; overflow: hidden; }

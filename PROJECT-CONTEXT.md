@@ -258,10 +258,18 @@ The second "bugs first" slice. Part 1 §1 is now complete.
   presenting an empty picker as "no symbols exist".
 - Backtest, Compare (one picker; slot timeframes follow the shared symbol) and
   Optimize all mount it. The Forward page still uses `/api/symbols` — out of scope.
+- **2026-10-01 (issues.txt P1/S2, spawn form)**: the Portfolio Center's spawn
+  modal now mounts the shared picker for free equity strategies (`defaultTab:
+  "equity"`, tabs + data hint under the Instrument row) instead of a free-text
+  ticker; an unanswered picker blocks submit instead of silently spawning the
+  template default. Strategies carry a `default_segment` (registry +
+  `/api/strategies`; option strategies → `options_index`, else derived from
+  `signal_kind` → `equity_intraday`) that preselects the spawn segment until the
+  operator picks one themselves.
 
 ### Tests
-`tests/test_data_coverage.py` (46), `tests/test_api_data_coverage.py` (15),
-`tests/test_timeframe_periods.py` (31), `tests/js/test_symbol_picker.mjs` (18, via
+`tests/test_data_coverage.py` (46), `tests/test_api_data_coverage.py` (16),
+`tests/test_timeframe_periods.py` (31), `tests/js/test_symbol_picker.mjs` (21, via
 `tests/test_web_components.py`).
 
 ---

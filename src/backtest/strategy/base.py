@@ -141,6 +141,12 @@ class Strategy(ABC):
     # and the runner/create API enforces the same set (defense in depth).
     # Option strategies declare the indexes their chain source supports.
     eligible_instruments: list[str] | None = None
+    # issues.txt S2 (2026-10-01): the segment this strategy is designed to
+    # run in — the spawn form preselects it so backtest → paper → live all
+    # land in the same capital partition. ``None`` = no explicit link (the
+    # spawn form falls back to the strategy's signal_kind). The value must
+    # match a segment name in config/segments.yaml when set.
+    default_segment: str | None = None
     # Portfolio Intelligence (2026-09-26). Alerts are *information*: the
     # platform never acts on them. A strategy opts in by listing alert types
     # here (or calling :meth:`subscribe_to_alerts`) and decides in

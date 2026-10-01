@@ -21,7 +21,9 @@ log = get_logger(__name__)
 _INTERVAL_TO_RULE = {
     "1min": "1min",
     "5min": "5min",
+    "10min": "10min",
     "15min": "15min",
+    "30min": "30min",
     "1hour": "1h",
     "4hour": "4h",
     "1day": "1D",

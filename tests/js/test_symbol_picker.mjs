@@ -71,6 +71,7 @@ const COVERAGE = {
           timeframes_available: [], hint: "No data loaded. Go to Data tab → fetch data for this symbol." },
     ],
     total: 3, returned: 3, known_total: 206, available_total: 2,
+    hidden_total: 1,
     db_available: true, catalogue_source: "market_data_cache",
     instrument_types: ["equity", "index", "futures", "options"],
     hint: "No data loaded. Go to Data tab → fetch data for this symbol.",
@@ -242,6 +243,57 @@ await test("the summary separates known symbols from runnable ones", async () =>
     await tick();
     assert.match(el("p5sum").textContent, /2 with data/);
     assert.match(el("p5sum").textContent, /206 known/);
+});
+
+await test("symbols hidden by the data-only filter are counted and explained", async () => {
+    // issues.txt B1: `available=1` hides no-data symbols; without this line a
+    // user reads a short list as "these symbols do not exist" / "no indices".
+    SymbolPicker.mount({ select: "p10", search: "p10s", tabs: "p10t", summary: "p10sum" });
+    await tick();
+    const sum = el("p10sum");
+    assert.match(sum.textContent, /1 symbol hidden — load data first \(Data tab →\)/);
+    assert.match(sum.title, /No data loaded/);
+    assert.match(sum.className, /sym-hidden-hint/);
+});
+
+await test("no hidden symbols means no nag: the hint class and title stay away", async () => {
+    const clean = Object.assign({}, COVERAGE, { hidden_total: 0 });
+    const quiet = {
+        console,
+        document: { getElementById: el, createElement: () => makeOption(), addEventListener() {} },
+        fetch: () => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(clean) }),
+        URLSearchParams, Object, Array, JSON, Number, String, Promise, setTimeout, clearTimeout,
+    };
+    quiet.globalThis = quiet;
+    vm.createContext(quiet);
+    vm.runInContext(pickerCode, quiet, { filename: "symbol_picker.js" });
+    quiet.SymbolPicker.mount({ select: "p11", search: "p11s", tabs: "p11t", summary: "p11sum" });
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    const sum = el("p11sum");
+    assert.doesNotMatch(sum.textContent, /hidden/);
+    assert.equal(sum.title, "");
+    assert.doesNotMatch(sum.className, /sym-hidden-hint/);
+});
+
+await test("a truncated page says how many more with-data rows exist", async () => {
+    // Same complaint, second cause: PAGE_SIZE=500 caps the list. A page whose
+    // total exceeds what was returned must not look like the complete set.
+    const crowded = Object.assign({}, COVERAGE, { total: 812, returned: 3, hidden_total: 0 });
+    const busy = {
+        console,
+        document: { getElementById: el, createElement: () => makeOption(), addEventListener() {} },
+        fetch: () => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(crowded) }),
+        URLSearchParams, Object, Array, JSON, Number, String, Promise, setTimeout, clearTimeout,
+    };
+    busy.globalThis = busy;
+    vm.createContext(busy);
+    vm.runInContext(pickerCode, busy, { filename: "symbol_picker.js" });
+    busy.SymbolPicker.mount({ select: "p12", search: "p12s", tabs: "p12t", summary: "p12sum" });
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    assert.match(el("p12sum").textContent, /809 more with data — search to find them/);
+    assert.match(el("p12sum").className, /sym-hidden-hint/);
 });
 
 await test("timeframesFor answers from the loaded coverage", async () => {

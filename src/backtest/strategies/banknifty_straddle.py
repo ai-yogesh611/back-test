@@ -19,6 +19,8 @@ class BankNiftyStraddle(Strategy):
 
     name = "banknifty_straddle"
     eligible_instruments = ["BANKNIFTY", "NIFTY"]
+    # issues.txt S2: index-options segment link (spawn-form preselect).
+    default_segment = "options_index"
     description = (
         "BankNifty Options — dynamic index options strategy emitting high-conviction "
         "MarketView signals based on EMA momentum and ATR volatility expansions."

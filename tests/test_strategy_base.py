@@ -169,6 +169,8 @@ def test_get_all_returns_valid_catalogue():
         assert set(entry) == {
             "name", "description", "version", "author", "params", "signal_kind",
             "eligible_instruments",
+            # issues.txt S2: the strategy→segment link (spawn-form preselect).
+            "default_segment",
         }
         assert entry["params"] == registry.get_params(entry["name"])
         assert entry["signal_kind"] in {"option", "equity"}

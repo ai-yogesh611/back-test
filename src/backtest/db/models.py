@@ -266,7 +266,9 @@ class Portfolio(Base):
     #: Capital partition this run belongs to (migration 008): '' = none, legacy.
     segment: Mapped[str] = mapped_column(String(64), nullable=False, server_default=text("''"))
     #: Broker the runner routes orders to (migration 008): '' = default routing.
-    execution_broker: Mapped[str] = mapped_column(String(32), nullable=False, server_default=text("''"))
+    execution_broker: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default=text("''")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

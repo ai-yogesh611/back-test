@@ -138,8 +138,11 @@
     <!-- Consolidated views -->
     <div class="card pcc-bottom">
         <div class="tabs">
-            <button class="tab active" data-tab="equity" type="button">Equity</button>
-            <button class="tab" data-tab="positions" type="button">Positions</button>
+            <!-- issues.txt P4 (2026-10-01): Positions leads and is the default
+                 view — what is held right now answers the operator's first
+                 question; the equity curve is one click away. -->
+            <button class="tab active" data-tab="positions" type="button">Positions</button>
+            <button class="tab" data-tab="equity" type="button">Equity</button>
             <button class="tab" data-tab="orders" type="button">Orders
                 <span id="orders-tab-badge" class="tab-badge" hidden></span></button>
             <button class="tab" data-tab="risk" type="button">Risk &amp; intelligence</button>
@@ -147,7 +150,7 @@
             <button class="tab" data-tab="playbooks" type="button">Playbooks</button>
             <button class="tab" data-tab="log" type="button">Activity log</button>
         </div>
-        <div class="tab-panel" id="tab-equity">
+        <div class="tab-panel" id="tab-equity" hidden>
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
                 <div>
                     <h3 style="margin:0;">Portfolio equity</h3>
@@ -168,7 +171,7 @@
             </table>
             </div>
         </div>
-        <div class="tab-panel" id="tab-positions" hidden>
+        <div class="tab-panel" id="tab-positions">
             <div class="pos-toolbar">
                 <div>
                     <h3 style="margin:0;">Open Positions — the live book</h3>
@@ -200,7 +203,7 @@
                         <th class="num" title="Option structures only: net delta per point, theta per day">Δ / Θ</th>
                         <th>Actions</th>
                     </tr></thead>
-                    <tbody id="aggregate-positions"></tbody>
+                    <tbody id="aggregate-positions"><tr><td colspan="11" class="muted" style="padding:16px">Waiting for the first snapshot…</td></tr></tbody>
                 </table>
             </div>
             <div id="pos-footnote" class="muted pos-footnote"></div>
@@ -581,9 +584,15 @@
                 <div class="form-row" id="spawn-symbol-row">
                     <label>Instrument</label>
                     <!-- Restricted strategies (eligible_instruments) get a dropdown;
-                         open strategies keep free text. JS swaps the element in place. -->
+                         open equity strategies get the shared SymbolPicker (Equity tab
+                         by default) with its tab strip + data hint below; free text
+                         remains the fallback. JS swaps the elements in place. -->
                     <select id="spawn-symbol-select" class="input input-select" hidden></select>
                     <input id="spawn-symbol" class="input" type="text" placeholder="RELIANCE" value="RELIANCE">
+                    <div id="spawn-symbol-picker-extras" hidden>
+                        <div id="spawn-symbol-tabs" class="sym-tabs"></div>
+                        <small id="spawn-symbol-hint" class="muted"></small>
+                    </div>
                 </div>
                 <div class="form-row" id="spawn-lots-row" hidden>
                     <label for="spawn-lots">Lots per leg (options)</label>

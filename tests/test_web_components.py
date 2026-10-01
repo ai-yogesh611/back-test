@@ -104,7 +104,9 @@ def test_symbol_picker_and_timeframes_behaviour():
     Pins the two defects the PRD names: a symbol with no cached bars silently
     disappearing from the picker, and a timeframe dropdown offering
     granularities that produce no bars (and annualising them with a daily
-    factor when they do).
+    factor when they do). Also pins issues.txt B1 (2026-10-01): a data-only
+    dropdown must count and explain what it hid, and a page capped by
+    PAGE_SIZE must say so instead of looking complete.
     """
     result = subprocess.run(
         ["node", str(_REPO_ROOT / "tests" / "js" / "test_symbol_picker.mjs")],
@@ -116,7 +118,7 @@ def test_symbol_picker_and_timeframes_behaviour():
     assert (
         result.returncode == 0
     ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    assert "18 tests passed" in result.stdout
+    assert "21 tests passed" in result.stdout
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not available")

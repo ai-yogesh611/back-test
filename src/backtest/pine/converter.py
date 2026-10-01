@@ -79,8 +79,8 @@ class PineScriptConverter:
             "has_long": self._has_long_trades(pine_ast),
             "has_short": self._has_short_trades(pine_ast),
             "complexity": self._estimate_complexity(pine_ast),
+            "readable": self._extract_readable_summary(pine_ast, pine_code),
         }
-
         return python_code, metadata
 
     def save_as_plugin(
@@ -241,6 +241,85 @@ import numpy as np
         elif score < 15:
             return "medium"
         return "complex"
+
+    def _condition_text(self, cond: Dict) -> str:
+        """Render a parsed Pine condition as a short readable phrase."""
+        if not isinstance(cond, dict):
+            return str(cond) if cond else ""
+        ctype = cond.get("type", "")
+        if ctype == "function_call":
+            args = ", ".join(str(a) for a in cond.get("args", []))
+            return f"{cond.get('namespace', '')}.{cond.get('function', '')}({args})"
+        if ctype == "change_flip":
+            return (f"{cond.get('variable', '')} flips "
+                    f"{cond.get('operator', '')} {cond.get('value', '')}")
+        if ctype == "comparison":
+            return (f"{cond.get('left', '')} {cond.get('operator', '')} "
+                    f"{cond.get('right', '')}")
+        if ctype == "identifier":
+            return str(cond.get("name", ""))
+        return str(ctype)
+
+    def _extract_readable_summary(self, ast: Dict, pine_code: str) -> dict:
+        """Extract a human-readable summary of a strategy from its Pine AST.
+
+        Covers the issue.txt S1 requirements: entry criteria, entry strike
+        (options), take profit and stop loss. Any of these that is missing is
+        flagged so the UI can highlight it before Save.
+        """
+        entry = exit = take_profit = stop_loss = entry_strike = expiry = None
+
+        def body_calls(kind: str):
+            for stmt in ast.get("statements", []):
+                if stmt.get("type") != "if_statement":
+                    continue
+                for inner in stmt.get("body", []):
+                    if (inner.get("type") == "strategy_call"
+                            and inner.get("function") == kind):
+                        yield stmt
+
+        # 1. Entry criteria: the condition(s) feeding strategy.entry.
+        for stmt in body_calls("strategy.entry"):
+            cond = self._condition_text(stmt.get("condition"))
+            entry = entry or cond
+
+        # 2. Exit: strategy.close triggers a reversal/exits.
+        for stmt in body_calls("strategy.close"):
+            cond = self._condition_text(stmt.get("condition"))
+            exit = exit or cond
+
+        # 3. Take profit / stop loss: the codegen binds *_tp / *_sl variable
+        # names by convention; their presence means the script manages exits.
+        for stmt in ast.get("statements", []):
+            if stmt.get("type") != "indicator_call":
+                continue
+            var = stmt.get("var_name", "")
+            if var.endswith("tp") or var.endswith("tp_price"):
+                take_profit = take_profit or var
+            if var.endswith("sl") or var.endswith("sl_price"):
+                stop_loss = stop_loss or var
+
+        # 4. Option strike / expiry: look for integer literals near the words
+        # strike/expiry in the source (Pine option strategies hardcode them).
+        # Each match is filed under the keyword it actually carries — an
+        # expiry literal is not a strike and vice versa.
+        for pat in re.finditer(
+            r"(?i)(\bstrike\b|expiry)[^;]{0,80}?(\d{1,3}(?:\.\d{1,2})?)", pine_code
+        ):
+            keyword = pat.group(1).lower()
+            if entry_strike is None and "strike" in keyword:
+                entry_strike = pat.group(2)
+            if expiry is None and "expiry" in keyword:
+                expiry = pat.group(2)
+
+        return {
+            "entry": entry,
+            "exit": exit,
+            "take_profit": take_profit,
+            "stop_loss": stop_loss,
+            "entry_strike": entry_strike,
+            "expiry": expiry,
+        }
 
 
 class PineConversionError(Exception):

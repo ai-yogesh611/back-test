@@ -345,7 +345,10 @@ def coverage() -> tuple:
 
     Rows carry ``data_available``, ``bars_count``, ``from_date``,
     ``to_date`` and ``timeframes_available``; a symbol with no bars carries
-    ``hint`` telling the user where to get it (PRD §1.3).
+    ``hint`` telling the user where to get it (PRD §1.3). With ``available``
+    set, ``hidden_total`` also reports how many matching symbols were omitted
+    for wanting bars, so the picker can prompt "load data first" instead of
+    dropping them silently (issues.txt 2026-10-01).
     """
     from backtest.data.coverage import filter_coverage
 
@@ -361,14 +364,24 @@ def coverage() -> tuple:
     except (TypeError, ValueError):
         return jsonify({"error": "offset must be a number"}), 400
 
+    query = request.args.get("q", "")
+    available_only = request.args.get("available") in ("1", "true", "yes")
     rows, total = filter_coverage(
         report,
-        query=request.args.get("q", ""),
+        query=query,
         types=types or None,
-        available_only=request.args.get("available") in ("1", "true", "yes"),
+        available_only=available_only,
         limit=limit or None,
         offset=offset,
     )
+    # issues.txt B1 (2026-10-01): a data-only dropdown must announce what it
+    # left out — an unlisted symbol otherwise reads as a symbol that does not
+    # exist, which is the §1.3 bug in new clothes. `total` is counted before
+    # paging, so limit=1 keeps this second pass cheap and still true.
+    _, matching = filter_coverage(
+        report, query=query, types=types or None, available_only=False, limit=1, offset=0
+    )
+    hidden_total = max(0, matching - total) if available_only else 0
     available = sum(1 for r in report.instruments if r["data_available"])
     return (
         jsonify(
@@ -380,6 +393,7 @@ def coverage() -> tuple:
                 "limit": limit or None,
                 "known_total": report.total,
                 "available_total": available,
+                "hidden_total": hidden_total,
                 "db_available": report.db_available,
                 "catalogue_source": report.catalogue_source,
                 "sources": report.sources,

@@ -16,6 +16,8 @@ class NiftyScalper(Strategy):
 
     name = "nifty_scalper"
     eligible_instruments = ["NIFTY", "BANKNIFTY", "DEMO", "INFY"]
+    # issues.txt S2: intraday equity segment link (spawn-form preselect).
+    default_segment = "equity_intraday"
     description = (
         "Nifty Scalper — fast intraday index momentum/scalp using dual EMAs and RSI confirmation, "
         "enforcing strict stop-loss and take-profit targets."

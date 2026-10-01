@@ -435,6 +435,7 @@ textarea.input { line-height: 1.7; }
 .dd-tabpanel { margin-bottom: 16px; }
 .signal-log { max-height: 260px; overflow-y: auto; font-size: .8rem; font-family: ui-monospace, monospace; }
 .signal-line { display: flex; gap: 8px; padding: 4px 6px; border-bottom: 1px solid rgba(51,65,85,.35); }
+.signal-ts { min-width: 64px; font-variant-numeric: tabular-nums; }
 .signal-kind { color: var(--accent); font-weight: 700; min-width: 78px; }
 .signal-symbol { color: var(--info); min-width: 70px; }
 .signal-entry .signal-kind { color: var(--success); }
@@ -1466,6 +1467,9 @@ body.has-alert-widget .toast-stack { bottom: 76px; }
 .sym-tab.active { background: rgba(59,130,246,.18); color: var(--info); border-color: rgba(59,130,246,.4); font-weight: 600; }
 .sym-no-data { color: var(--muted); opacity: .62; font-style: italic; }
 select.input option.sym-no-data:disabled { cursor: not-allowed; }
+/* issues.txt B1: the data-only picker's "N symbols hidden — load data first"
+   must be read, not skimmed: muted-grey counts next to a named action. */
+.sym-hidden-hint { color: var(--warning-text); font-weight: 600; }
 
 /* ------------------------------------------------------------------
  * Richer metric sections (PRD backTest-enhance §2.2).

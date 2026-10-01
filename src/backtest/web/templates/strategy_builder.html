@@ -35,6 +35,7 @@
       <textarea id="pine-output" class="input" rows="24" readonly
         style="width:100%; font-family:monospace; font-size:12px; background:var(--surface-2,#212a36);"></textarea>
       <div id="pine-status" class="muted" style="margin-top:10px; font-size:12px;"></div>
+      <div id="pine-summary" class="muted" style="margin-top:10px; font-size:12px; display:none"></div>
     </div>
   </div>
 </div>
@@ -61,6 +62,29 @@
   }
   function setStatus(msg) {
     statusEl.textContent = msg || '';
+  }
+  function setSummary(summary) {
+    // Render the readable form in a bordered box under the converted code.
+    var box = document.getElementById('pine-summary');
+    if (!summary || typeof summary !== 'object') { box.innerHTML = ''; return; }
+    var lines = [];
+    if (summary.entry) lines.push('<div class="summary-row"><strong>Entry criteria:</strong> ' + escapeHtml(summary.entry) + '</div>');
+    if (summary.exit) lines.push('<div class="summary-row"><strong>Exit:</strong> ' + escapeHtml(summary.exit) + '</div>');
+    if (summary.take_profit) lines.push('<div class="summary-row"><strong>Take profit:</strong> ' + escapeHtml(summary.take_profit) + '</div>');
+    if (summary.stop_loss) lines.push('<div class="summary-row"><strong>Stop loss:</strong> ' + escapeHtml(summary.stop_loss) + '</div>');
+    if (summary.entry_strike) lines.push('<div class="summary-row"><strong>Entry strike:</strong> ' + escapeHtml(summary.entry_strike) + '</div>');
+    if (summary.expiry) lines.push('<div class="summary-row"><strong>Expiry:</strong> ' + escapeHtml(summary.expiry) + '</div>');
+    if (!lines.length) {
+      box.innerHTML = '<p class="muted">No entry/exit thresholds recognised in this script.</p>';
+      return;
+    }
+    box.innerHTML = '<div class="strategy-summary">' + lines.join('') + '</div>';
+    box.hidden = false;
+  }
+  function escapeHtml(v) {
+    return String(v === null || v === undefined ? '' : v).replace(/[&<>"']/g, function (c) {
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
   }
 
   convertBtn.addEventListener('click', function () {
@@ -95,6 +119,7 @@
         } else {
           setStatus('Converted ✓ — validate it with a quick backtest, then save as a plugin.');
         }
+        setSummary(m.readable);
       })
       .catch(function (e) { setError('Network error: ' + e); setStatus(''); });
   });
@@ -124,6 +149,31 @@
   });
 
   saveBtn.addEventListener('click', function () {
+    // issues.txt S1: before Save, show the readable form (entry/strike/TP/SL)
+    // and highlight anything the user left out. The converter already flags
+    // the missing ones in metadata.readable; the UI now makes them visible
+    // (and the Save button gently refuses when a required one is blank).
+    var summary = document.getElementById('pine-summary');
+    if (converted && converted.metadata && converted.metadata.readable) {
+      var r = converted.metadata.readable;
+      var missing = [];
+      if (!r.entry) missing.push('entry');
+      if (!r.entry_strike) missing.push('entry strike');
+      if (!r.take_profit) missing.push('take profit');
+      if (!r.stop_loss) missing.push('stop loss');
+      if (missing.length) {
+        var msg = '⚠ ' + missing.join(', ') + ' missing — add them to the Pine script before saving.';
+        setError(msg);
+        summary.innerHTML = summary.innerHTML.replace(
+          /<div class="strategy-field-flag"[^>]*>/g, '')
+          + '<div class="strategy-field-flag">⚠ Missing: ' + missing.join(', ') + '</div>';
+        saveBtn.disabled = true;
+        return;
+      }
+      // Nothing missing: un-float the highlights (they were suppressed when
+      // everything was present, so the user sees a clean summary).
+      saveBtn.disabled = false;
+    }
     if (!converted) return;
     setError('');
     setStatus('Saving…');

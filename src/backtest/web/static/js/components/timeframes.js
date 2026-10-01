@@ -29,7 +29,9 @@
     const TIMEFRAMES = [
         { id: "1min", label: "1m", perDay: MINUTES_PER_DAY },
         { id: "5min", label: "5m", perDay: 75 },
+        { id: "10min", label: "10m", perDay: 60 },
         { id: "15min", label: "15m", perDay: 25 },
+        { id: "30min", label: "30m", perDay: 12 },
         { id: "1hour", label: "1H", perDay: 6 },
         { id: "4hour", label: "4H", perDay: 2 },
         { id: "1day", label: "1D", perDay: 1 },

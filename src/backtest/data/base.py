@@ -9,7 +9,7 @@ CANDLE_COLUMNS = ["open", "high", "low", "close", "volume"]
 #: The ONE canonical timeframe vocabulary (ticket P4.3). Every layer — API,
 #: config, DB (``market_data_cache.timeframe`` CHECK), UI, feeds — speaks
 #: these names. Resolved with the lead as the descriptive set.
-CANONICAL_TIMEFRAMES = ("1min", "5min", "15min", "1hour", "4hour", "1day", "1week")
+CANONICAL_TIMEFRAMES = ("1min", "5min", "10min", "15min", "30min", "1hour", "4hour", "1day", "1week")
 
 #: Canonical timeframe -> mStock TypeA wire interval. Broker-specific
 #: translation only; the rest of the codebase never speaks these names.
@@ -41,6 +41,7 @@ BARS_PER_TRADING_DAY: dict[str, float] = {
     "1hour": 6,
     "4hour": 2,
     "1day": 1,
+    "1week": 1,
 }
 
 #: Aliases accepted from the UI and from broker payloads. Same spirit as
@@ -63,6 +64,20 @@ _TIMEFRAME_ALIASES: dict[str, str] = {
     "30m": "30min",
     "m30": "30min",
     "30minute": "30min",
+    "1hour": "1hour",
+    "h1": "1hour",
+    "60min": "1hour",
+    "60minute": "1hour",
+    "hour": "1hour",
+    "4h": "4hour",
+    "h4": "4hour",
+    "240min": "4hour",
+    "4hour": "4hour",
+    "1day": "1day",
+    "1d": "1day",
+    "day": "1day",
+    "daily": "1day",
+    "1daily": "1day",
     "1h": "1hour",
     "h1": "1hour",
     "60min": "1hour",
@@ -77,7 +92,7 @@ _TIMEFRAME_ALIASES: dict[str, str] = {
     "day": "1day",
     "daily": "1day",
     "1daily": "1day",
-    "w": "1week",
+    "1week": "1week",
     "1w": "1week",
     "week": "1week",
     "weekly": "1week",

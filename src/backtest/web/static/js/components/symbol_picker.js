@@ -11,6 +11,10 @@
  *     out, with the server's hint as its title ("No data loaded. Go to Data
  *     tab → fetch data for this symbol.")
  *   - a one-line summary: how many symbols are known, how many can actually run
+ *   - when the query asks for WITH-DATA rows only, the summary also says how
+ *     many symbols that filter hid ("N symbols hidden — load data first"),
+ *     so an unlisted symbol never reads as a symbol that does not exist
+ *     (issues.txt 2026-10-01)
  *
  * Before this, each page kept its own hard-coded <option> list, so a symbol
  * silently vanished unless the page's author had remembered to add it. The
@@ -93,11 +97,16 @@
         const search = _el(opts.search);
         const tabsEl = _el(opts.tabs);
         const summary = _el(opts.summary);
+        const summaryBaseClass = (summary && summary.className) || "text-muted";
         const placeholder = opts.placeholder || "Select a symbol…";
 
         const state = {
-            tab: "", rows: [], total: 0, known: 0, available: 0,
-            dbAvailable: true, hint: "", error: null,
+            // defaultTab (issues.txt P1): a mount can start on a specific tab
+            // — the spawn form's equity picker opens on Equity so an equity
+            // strategy is offered equity instruments first.
+            tab: TABS.some((t) => t.id === opts.defaultTab) ? opts.defaultTab : "",
+            rows: [], total: 0, known: 0, available: 0,
+            hidden: 0, dbAvailable: true, hint: "", error: null,
         };
 
         function render() {
@@ -111,6 +120,10 @@
             state.rows.forEach((row) => select.appendChild(makeOption(row)));
 
             if (!summary) return;
+            // Reset first: a hint class/title from an earlier load must not
+            // survive into an error or a no-database answer.
+            summary.className = summaryBaseClass;
+            summary.title = "";
             if (state.error) {
                 summary.textContent = `Could not load symbols — ${state.error}`;
                 return;
@@ -120,7 +133,25 @@
                 return;
             }
             const runnable = state.rows.filter((r) => r.data_available).length;
-            summary.textContent = `${state.rows.length} shown · ${runnable} with data · ${state.known} known`;
+            let text = `${state.rows.length} shown · ${runnable} with data · ${state.known} known`;
+            // issues.txt B1: the data-only list must SAY what it left out.
+            // "No data" behind a short list reads as "no such symbol" and as
+            // "the indices are missing" — name the count and the fix.
+            const notes = [];
+            if (state.hidden > 0) {
+                const noun = state.hidden === 1 ? "symbol" : "symbols";
+                notes.push(`${state.hidden} ${noun} hidden — load data first (Data tab →)`);
+                summary.title = state.hint || NO_DATA_TITLE;
+            }
+            // Same complaint, second cause: more WITH-DATA rows match than one
+            // page carries (PAGE_SIZE). Say so rather than look truncated.
+            const paged = state.total - state.rows.length;
+            if (paged > 0) notes.push(`${paged} more with data — search to find them`);
+            if (notes.length) {
+                text += ` · ${notes.join(" · ")}`;
+                summary.className = (summaryBaseClass + " sym-hidden-hint").trim();
+            }
+            summary.textContent = text;
         }
 
         async function load() {
@@ -141,12 +172,14 @@
                 state.total = data.total || 0;
                 state.known = data.known_total || 0;
                 state.available = data.available_total || 0;
+                state.hidden = data.hidden_total || 0;
                 state.hint = data.hint || "";
                 state.dbAvailable = data.db_available;
                 state.error = null;
             } catch (err) {
                 state.error = err.message || String(err);
                 state.rows = [];
+                state.hidden = 0;
             }
             render();
         }
@@ -159,8 +192,8 @@
             });
         }
         if (tabsEl) {
-            tabsEl.innerHTML = TABS.map((t, i) => (
-                `<button type="button" class="sym-tab${i === 0 ? " active" : ""}" data-tab="${t.id}">${t.label}</button>`
+            tabsEl.innerHTML = TABS.map((t) => (
+                `<button type="button" class="sym-tab${t.id === state.tab ? " active" : ""}" data-tab="${t.id}">${t.label}</button>`
             )).join("");
             tabsEl.addEventListener("click", (e) => {
                 const btn = e.target.closest("[data-tab]");

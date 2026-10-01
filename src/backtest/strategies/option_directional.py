@@ -34,6 +34,10 @@ class DirectionalOptions(Strategy):
     # runner/create enforces the same set. Keep in sync with the chain
     # sources (synthetic BS generator + mStock FNO index set).
     eligible_instruments = ["NIFTY", "BANKNIFTY"]
+    # issues.txt S2: this strategy belongs in the index-options segment —
+    # the spawn form preselects it (backtest → paper → live stay in one
+    # capital partition). Must match a name in config/segments.yaml.
+    default_segment = "options_index"
     description = (
         "Directional options — emits a bullish/bearish MarketView from short-term "
         "EMA momentum; feed it into the expression layer (long call/put, spreads)."

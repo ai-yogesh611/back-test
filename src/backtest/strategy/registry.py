@@ -122,6 +122,9 @@ def get_all() -> list[dict[str, Any]]:
                 # 2026-09-22: None = any instrument; a list = spawn form shows
                 # exactly these as a dropdown and the create API enforces them.
                 "eligible_instruments": getattr(cls, "eligible_instruments", None),
+                # issues.txt S2: the spawn form preselects the segment a
+                # strategy is designed for; None → derived from signal_kind.
+                "default_segment": getattr(cls, "default_segment", None),
             }
         )
     logger.info(
