@@ -43,8 +43,7 @@
             // A fallback is stated in one quiet line under the badge —
             // provenance the operator can see, without alarm styling.
             const fallback = status.fell_back
-                ? `<div class="dsg-fallback muted small">Requested source '${esc(status.requested)}' is disabled — running on '
-                   + '${esc(labelFor(status))}' instead.</div>`
+                ? `<div class="dsg-fallback muted small">Requested source '${esc(status.requested)}' is disabled — running on '${esc(labelFor(status))}' instead.</div>`
                 : '';
             el.innerHTML = `<div class="dsg dsg--ok">Data source:
                 <strong>${esc(labelFor(status))}</strong> · ${cert}</div>${fallback}`;
