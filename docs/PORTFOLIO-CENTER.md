@@ -56,9 +56,28 @@ curl -X POST localhost:5000/api/portfolio/runner/create -H 'Content-Type: applic
   "mode": "paper", "source": "synthetic"}'
 ```
 
-`mode` (`paper`|`live`, default `paper`) and `source` (`synthetic`|`replay`|`mstock`,
-default `synthetic`) tag the instance (ticket P4.1); `live` execution wiring is the
-remaining F-12 item, so `mode: "live"` today still uses simulated fills.
+`mode` (`paper`|`live`, default `paper`) and `source`
+(`synthetic`|`replay`|`mstock`|`dhan`, default `synthetic`) tag the instance
+(ticket P4.1; `dhan` admitted by migration 016, 2026-10-01). `mode: "live"`
+routes equity fills through `LiveEquityGateway` (F-12 closed).
+
+**Spawn-time broker choice (2026-10-01):** the Add Instance modal has a
+**Broker** dropdown (fed by `/api/broker/list` — mStock, Dhan) alongside
+**Data source**. It maps to the optional `execution_broker` payload field:
+
+- empty ("— default routing —") → `resolve_execution_broker()` rules decide
+  (segment mapping for live, `paper` bucket for paper);
+- an explicit broker **overrides the segment** for that runner's orders.
+  Paper runners keep simulated fills regardless; live runners are refused
+  (409) unless that broker's session is authenticated — fail-closed, never
+  rerouted. Picking a Segment in the modal pre-selects its broker.
+
+```bash
+curl -X POST localhost:5000/api/portfolio/runner/create -H 'Content-Type: application/json' -d '{
+  "name": "Equity via Dhan", "strategy": "sma_crossover",
+  "symbol": "RELIANCE", "allocated_capital": 100000,
+  "mode": "live", "execution_broker": "dhan", "source": "mstock"}'
+```
 
 Circuit-breaker demo (PRD acceptance step 5):
 

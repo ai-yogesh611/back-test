@@ -2,7 +2,16 @@
 
 > **Status:** IMPLEMENTED — Phases A–D shipped 2026-09-28 on `arena/01a0e42c-back-test`
 > (sessions v2, segments & routing, per-broker execution, cross-broker risk).
-> Remaining: real-credential smoke test, DB migration 006 apply, open questions 3–7 (§8).
+> Remaining: real-credential smoke test, open questions 3–7 (§8).
+> **Update 2026-10-01:** spawn-time broker choice shipped — the Add Instance
+> modal has a dedicated **Broker** dropdown wired to `execution_broker`
+> (§4's "must carry a broker field" for spawns), and `dhan` is unlocked as a
+> runner data source (`SOURCE_TAGS` + migration 016 widening
+> `ck_portfolios_source`; the repo's multi-broker schema migration is
+> **008** — `008_multi_broker_segments.sql`). Schema drift found while
+> applying 016: the live DB was
+> create_all-built + stamped, missing 008's columns — reconciled and the ORM
+> mirror completed (portfolios.segment/execution_broker, positions/orders.broker).
 > **Author:** drafted 2026-09-27 from the working session on `arena/01a0c511-back-test`.
 > **Replaces in spirit:** the current "one active broker session at a time" rule in `BrokerSessionManager` (which was a deliberate V1 simplification, not a product goal).
 

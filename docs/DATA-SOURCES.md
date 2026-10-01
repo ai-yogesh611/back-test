@@ -107,6 +107,15 @@ candles = source.get_candles("RELIANCE", "2024-01-01", "2024-12-31", "1day")
 bars (minute-floor IST) + `/charts/intraday` candles. Requires an active Dhan
 session (`DHAN_API_KEY`, `DHAN_CLIENT_ID`).
 
+**Runner source tag (2026-10-01):** `DhanLiveFeed` is registered in
+`data/source_tags.py` (`SOURCE_TAGS[DhanLiveFeed] = "dhan"`), so `dhan` is a
+selectable **Data source** for spawned runners (dropdown + `RunnerConfig.source`
+validation) and a valid `portfolios.source` value (CHECK widened by migration
+016). Bars stamped `_source="dhan"` fan out only to runners configured with
+`source="dhan"` (source-isolated bar routing). Separate from the *execution*
+venue: a runner's orders route by `execution_broker`/segment, its bars by
+`source` — the two need not match.
+
 ### Source registry — how mode and source combine (`data/source_registry.py`)
 
 The single factory deciding where a run's bars come from:

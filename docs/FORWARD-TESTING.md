@@ -238,8 +238,8 @@ filter used to be a no-op).
   - **Format v3 (F-04 + ticket #7, 2026-09):** the payload carries
     `state_version: 3`, `engine_id` (the `portfolios.portfolio_id`), the run
     classification `mode` (`paper`|`live`) + `source`
-    (`synthetic`|`replay`|`mstock`) — the same vocabulary as the `portfolios`
-    columns (migration 002), derived from the engine's **actual** `config.data`
+    (`synthetic`|`replay`|`mstock`|`dhan`) — the same vocabulary as the `portfolios`
+    columns (migration 002, widened to admit `dhan` by 016), derived from the engine's **actual** `config.data`
     (a `backtest` data mode is stored as the `paper` bucket — simulated
     fills). Source strings come from the canonical
     `backtest.data.source_tags.SOURCE_TAGS`.

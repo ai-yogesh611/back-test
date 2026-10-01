@@ -170,6 +170,22 @@ Step 2 requires the same schema on SQLite, which has no `ENUM` type. `VARCHAR`
 `ALTER TABLE ... DROP/ADD CONSTRAINT`, not a catalog-locking `ALTER TYPE`.
 The Python `enum.Enum` classes in `models.py` provide the type safety.
 
+Widening a CHECK in practice (migration 016 admitted `dhan` to
+`portfolios.source`, 2026-10-01):
+
+- **PostgreSQL:** `DROP CONSTRAINT IF EXISTS` + re-`ADD CONSTRAINT` with the
+  wider value list — no table rewrite.
+- **SQLite:** a CHECK cannot be altered; the documented 12-step rebuild
+  applies (create `*_new`, copy rows, drop, rename, recreate index/trigger).
+  One trap: 001's views (`v_open_positions`, `v_portfolio_summary`) JOIN
+  `portfolios`, and SQLite refuses to drop a table a view references — drop
+  the views first and recreate them verbatim after the rename
+  (see `016_add_dhan_source.sqlite.sql`).
+- **Both paths:** the ORM mirror must move in the same change — the
+  `StrEnum` feeding the CHECK (`PortfolioSource` in `models.py`) and
+  `simulator/portfolio.py`'s `VALID_SOURCES` tuple, or writes keep failing
+  one layer above the database.
+
 ### `NUMERIC`, never `FLOAT`, for money
 Binary floating point cannot represent `0.1` exactly. Accumulate a few
 thousand fills and the equity curve stops reconciling with the sum of trade

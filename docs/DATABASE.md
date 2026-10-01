@@ -102,18 +102,23 @@ CREATE INDEX ix_mdc_symbol_tf_ts ON market_data_cache (symbol, timeframe, ts DES
 #### `portfolios` — Root Aggregate
 ```sql
 -- Columns: portfolio_id (UUID), name, initial_capital, current_cash, status,
---          mode (paper|live), source (synthetic|replay|mstock), created_at
--- mode/source added by 002_add_mode_source.sql (defaults: paper/synthetic)
+--          mode (paper|live), source (synthetic|replay|mstock|dhan),
+--          segment, execution_broker, created_at
+-- mode/source added by 002_add_mode_source.sql (defaults: paper/synthetic);
+-- source CHECK widened to admit 'dhan' by 016_add_dhan_source.sql (2026-10-01);
+-- segment/execution_broker added by 008_multi_broker_segments.sql (default '')
 ```
 
 #### `positions` — Open/Closed Exposure
 ```sql
 -- Columns: position_id, portfolio_id (FK), symbol, side, quantity, avg_entry_price, current_price, status
+-- broker (default 'paper') added by 008_multi_broker_segments.sql
 ```
 
 #### `orders` — Order Lifecycle
 ```sql
 -- Columns: order_id, portfolio_id (FK), symbol, side, order_type, quantity, price, status, created_at
+-- broker (default 'paper') added by 008_multi_broker_segments.sql
 -- Statuses: pending, filled, partially_filled, cancelled, rejected
 ```
 
