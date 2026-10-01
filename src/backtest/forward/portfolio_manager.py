@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Deque, Dict, List, Optional
@@ -231,6 +232,16 @@ class PortfolioManager:
         except Exception:  # noqa: BLE001 — analytics must never block trading
             logger.exception("portfolio intelligence disabled (init failed)")
         self._restore_state()
+
+        # MTM Staleness Watchdog (R6): periodic 60s mark-repair timer + manual
+        # operator trigger (~10s cooldown per runner).
+        self._refresh_marks_cooldown_s: float = 10.0
+        self._last_manual_refresh_mono: Dict[str, float] = {}
+        self.mtm_watchdog_interval_s: float = 60.0
+        self._watchdog_stop = threading.Event()
+        self._watchdog_thread: Optional[threading.Thread] = None
+        if auto_start_feed and "PYTEST_CURRENT_TEST" not in os.environ:
+            self._start_mtm_watchdog()
 
     # ------------------------------------------------------------------ #
     # Bucket helpers (C2: derived-not-duplicated)
@@ -1005,7 +1016,15 @@ class PortfolioManager:
             }
             try:
                 for row in runner.positions_detail():
-                    rows.append({**base, **row})
+                    rows.append(
+                        {
+                            **base,
+                            "mark_ts": None,
+                            "mark_stale": False,
+                            "quote_error": None,
+                            **row,
+                        }
+                    )
             except Exception:  # noqa: BLE001 — one bad book must not blank the table
                 logger.exception("positions_detail failed for %s", runner.instance_id[:8])
             summary = runner.options_summary() or {}
@@ -1025,6 +1044,11 @@ class PortfolioManager:
                         "unrealized_pnl": row.get("unrealized_pnl"),
                         "pnl_pct": row.get("open_pnl_pct"),
                         "entry_ts": row.get("entry_ts"),
+                        # R1: mark freshness contract on position rows
+                        "mark_ts": row.get("mark_ts"),
+                        "mark_stale": bool(row.get("mark_stale")),
+                        "quote_error": row.get("quote_error"),
+                        "mtm_failures": int(row.get("mtm_failures") or 0),
                         "stop_loss": row.get("stop_loss"),
                         "target": row.get("target"),
                         "structure_type": row.get("structure_type"),
@@ -1040,6 +1064,184 @@ class PortfolioManager:
                     }
                 )
         return rows
+
+    # ------------------------------------------------------------------ #
+    # MTM Staleness Watchdog & Manual Refresh (R6)
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _is_mtm_watchdog_enabled() -> bool:
+        """True unless ``MTM_WATCHDOG`` env flag disables it (``off``/``0``/``false``)."""
+        flag = os.environ.get("MTM_WATCHDOG", "on").strip().lower()
+        return flag not in ("off", "0", "false", "no", "disabled")
+
+    @staticmethod
+    def _in_trading_window(now_utc: Optional[datetime] = None) -> bool:
+        """NSE trading-window check (09:15–15:30 IST, Mon–Fri) — R6 / AC #9."""
+        from backtest.data.mstock_live_feed import _market_open
+
+        return bool(_market_open(now_utc))
+
+    def _start_mtm_watchdog(self) -> None:
+        if not self._is_mtm_watchdog_enabled():
+            return
+        if self._watchdog_thread is not None and self._watchdog_thread.is_alive():
+            return
+        self._watchdog_stop.clear()
+        thread = threading.Thread(
+            target=self._mtm_watchdog_loop,
+            name="mtm-watchdog",
+            daemon=True,
+        )
+        self._watchdog_thread = thread
+        thread.start()
+
+    def _mtm_watchdog_loop(self) -> None:
+        while not self._watchdog_stop.wait(timeout=max(1.0, float(self.mtm_watchdog_interval_s))):
+            try:
+                self.run_mtm_watchdog()
+            except Exception:  # noqa: BLE001 — watchdog must never crash
+                logger.exception("[mtm-watchdog] periodic pass failed")
+
+    def _repair_runner_marks_internal(
+        self,
+        runner: StrategyRunner,
+        *,
+        force: bool,
+        now_utc: Optional[datetime] = None,
+        max_age_s: float = 120.0,
+    ) -> Dict[str, Any]:
+        """Shared mark-repair + audit routine called by both timer and manual trigger (R6)."""
+        res = runner.refresh_option_marks(
+            force=force,
+            now_utc=now_utc,
+            max_age_s=max_age_s,
+        )
+        if force or int(res.get("checked") or 0) > 0:
+            self._audit_log(
+                f"REFRESH_MARKS {runner.config.name}",
+                scope=self._runner_bucket(runner),
+                instance_id=runner.instance_id,
+                detail=(
+                    f"checked={res.get('checked', 0)} "
+                    f"repaired={res.get('repaired', 0)} "
+                    f"still_failing={res.get('still_failing', 0)} "
+                    f"mark_stale={res.get('mark_stale', False)}"
+                ),
+            )
+            self._persist_state()
+        return res
+
+    def run_mtm_watchdog(
+        self,
+        *,
+        now_utc: Optional[datetime] = None,
+        max_age_s: float = 120.0,
+    ) -> Dict[str, Any]:
+        """Periodic 60s position watchdog pass (R6).
+
+        * Respects ``MTM_WATCHDOG=on/off`` config flag.
+        * Silent outside market hours (AC #9: zero broker calls, zero notifications).
+        * For every RUNNING option runner with open positions where
+          ``mark_age > 2 min`` (or failing marks), runs the shared repair routine.
+        """
+        if not self._is_mtm_watchdog_enabled():
+            return {
+                "skipped": True,
+                "reason": "watchdog_disabled",
+                "checked": 0,
+                "repaired": 0,
+                "still_failing": 0,
+                "runners": [],
+            }
+        if not self._in_trading_window(now_utc):
+            return {
+                "skipped": True,
+                "reason": "outside_market_hours",
+                "checked": 0,
+                "repaired": 0,
+                "still_failing": 0,
+                "runners": [],
+            }
+        with self._lock:
+            runners = [
+                r
+                for r in self._runners.values()
+                if r.status == STATUS_RUNNING and r.options_bridge is not None
+            ]
+        checked_total = 0
+        repaired_total = 0
+        failing_total = 0
+        runner_results: List[Dict[str, Any]] = []
+        for runner in runners:
+            res = self._repair_runner_marks_internal(
+                runner,
+                force=False,
+                now_utc=now_utc,
+                max_age_s=max_age_s,
+            )
+            if int(res.get("checked") or 0) > 0:
+                checked_total += int(res.get("checked") or 0)
+                repaired_total += int(res.get("repaired") or 0)
+                failing_total += int(res.get("still_failing") or 0)
+                runner_results.append(
+                    {"instance_id": runner.instance_id, "name": runner.config.name, **res}
+                )
+        return {
+            "skipped": False,
+            "checked": checked_total,
+            "repaired": repaired_total,
+            "still_failing": failing_total,
+            "runners": runner_results,
+        }
+
+    def refresh_runner_marks(
+        self,
+        instance_id: str,
+        *,
+        now_utc: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        """Manual operator mark refresh with ~10s per-runner rate-limit (R6/R7, AC #7)."""
+        with self._lock:
+            runner = self._runners.get(instance_id)
+            if runner is None:
+                raise KeyError(f"unknown runner: {instance_id}")
+            now_mono = time.monotonic()
+            last_mono = self._last_manual_refresh_mono.get(instance_id)
+            cooldown = float(self._refresh_marks_cooldown_s)
+            if last_mono is not None and (now_mono - last_mono) < cooldown:
+                retry_after = round(cooldown - (now_mono - last_mono), 2)
+                bridge = runner.options_bridge
+                return {
+                    "instance_id": runner.instance_id,
+                    "runner": runner.config.name,
+                    "cooldown": True,
+                    "rate_limited": True,
+                    "retry_after_s": retry_after,
+                    "checked": 0,
+                    "repaired": 0,
+                    "still_failing": 0,
+                    "mark_stale": bool(bridge.mark_stale) if bridge is not None else False,
+                    "mark_ts": bridge.mark_ts if bridge is not None else None,
+                    "quote_error": bridge.quote_error if bridge is not None else None,
+                    "message": f"cooldown active — retry in {max(1, int(round(retry_after)))}s",
+                }
+            self._last_manual_refresh_mono[instance_id] = now_mono
+
+        res = self._repair_runner_marks_internal(
+            runner,
+            force=True,
+            now_utc=now_utc,
+            max_age_s=0.0,
+        )
+        return {
+            "instance_id": runner.instance_id,
+            "runner": runner.config.name,
+            "cooldown": False,
+            "rate_limited": False,
+            "retry_after_s": 0.0,
+            **res,
+        }
 
     def position_action(self, instance_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Apply one manual action to one position and audit it.
@@ -2366,6 +2568,7 @@ class PortfolioManager:
             combined_daily = daily + dashboard_daily
             combined_realized = realized + dashboard_realized
             combined_positions = open_positions + dashboard_positions
+            stale_marks_count = sum(int(s.get("stale_positions") or 0) for s in states)
 
             return {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -2379,6 +2582,7 @@ class PortfolioManager:
                 "daily_pnl_pct": (round(combined_daily / day_start, 6) if day_start else 0.0),
                 "realized_pnl": round(combined_realized, 2),
                 "open_positions": combined_positions,
+                "stale_marks_count": stale_marks_count,
                 "runner_count": len(states),
                 "running": running,
                 "paused": paused,
@@ -2618,6 +2822,7 @@ class PortfolioManager:
         if self.feed is not None:
             self.feed.stop()
         self.mstock_feed.stop()
+        self._watchdog_stop.set()
         with self._lock:
             for runner in self._runners.values():
                 runner.stop()  # releases the runner's chain-bus subscription

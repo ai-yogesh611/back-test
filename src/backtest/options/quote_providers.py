@@ -331,10 +331,14 @@ class SyntheticQuoteProvider:
         """
         contracts = chain.values() if hasattr(chain, "values") else chain
         for contract in contracts:
-            self._contracts[contract.instrument_token] = contract
+            self._contracts[str(contract.instrument_token)] = contract
 
     def register_contract(self, contract: OptionContract) -> None:
-        self._contracts[contract.instrument_token] = contract
+        self._contracts[str(contract.instrument_token)] = contract
+
+    def invalidate(self, instrument_token: str | None = None) -> None:
+        """No-op cache invalidation hook (protocol symmetry)."""
+        return None
 
     # -- spot control ----------------------------------------------------
 
@@ -389,26 +393,58 @@ class LiveQuoteProvider:
         self.broker = broker
         self.cache_ttl = int(cache_ttl_seconds)
         self._cache: dict[str, tuple[dict[str, Any], float]] = {}
+        self._contracts: dict[str, Any] = {}
 
     @property
     def source_name(self) -> str:
         return "live:mstock"
 
+    def register_contract(self, contract: Any) -> None:
+        """Remember token → contract so numeric tokens translate to trading_symbol."""
+        token = str(getattr(contract, "instrument_token", "") or "")
+        if token:
+            self._contracts[token] = contract
+
+    def register_chain(self, chain: Any) -> None:
+        """Remember token → contract for every contract in ``chain``."""
+        contracts = chain.values() if hasattr(chain, "values") else chain
+        for contract in contracts:
+            self.register_contract(contract)
+
+    def clear(self) -> None:
+        """Drop all cached quotes."""
+        self._cache.clear()
+
+    def invalidate(self, instrument_token: str | None = None) -> None:
+        """Evict one token (and its mapped symbol) or all tokens from cache."""
+        if instrument_token is None:
+            self._cache.clear()
+            return
+        key = str(instrument_token)
+        self._cache.pop(key, None)
+        contract = self._contracts.get(key)
+        if contract is not None and getattr(contract, "trading_symbol", None):
+            self._cache.pop(str(contract.trading_symbol), None)
+
     def get_quote(self, instrument_token: str) -> dict[str, Any]:
+        key = str(instrument_token)
+        contract = self._contracts.get(key)
+        if contract is not None and getattr(contract, "trading_symbol", None):
+            key = str(contract.trading_symbol)
         now = time.monotonic()
-        cached = self._cache.get(instrument_token)
+        cached = self._cache.get(key)
         if cached is not None:
             quote, ts = cached
             if now - ts < self.cache_ttl:
                 return quote
 
-        quote = self._fetch(instrument_token)
+        quote = self._fetch(key)
         # Never cache a failure (live-session lesson 2026-09-21): a transient
         # broker hiccup returns ltp=0; caching it pins the zero for the whole
         # TTL and a fill landing inside that window books a phantom ₹0 entry.
         # Let the next call retry instead.
-        if float(quote.get("ltp", 0) or 0) > 0:
-            self._cache[instrument_token] = (quote, now)
+        if float(quote.get("ltp", 0) or 0) > 0 and not quote.get("error"):
+            self._cache[key] = (quote, now)
         return quote
 
     def _fetch(self, instrument_token: str) -> dict[str, Any]:
@@ -427,13 +463,19 @@ class LiveQuoteProvider:
             except (TypeError, ValueError):
                 return 0.0
 
-        return {
-            "ltp": _f("ltp") or _f("last_price") or _f("last_price"),
+        ltp = _f("ltp") or _f("last_price")
+        out: dict[str, Any] = {
+            "ltp": ltp,
             "bid": _f("bid") or _f("best_bid"),
             "ask": _f("ask") or _f("best_ask"),
             "volume": _f("volume"),
             "oi": _f("oi"),
         }
+        if raw.get("error"):
+            out["error"] = str(raw["error"])
+        elif ltp <= 0:
+            out["error"] = "zero or missing ltp"
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -456,6 +498,31 @@ class CachedQuoteProvider:
         """Drop every cached quote (e.g. after a synthetic spot change —
         cached prices would otherwise mask the move for up to ``ttl`` s)."""
         self._cache.clear()
+        inner_clear = getattr(self.inner, "clear", None)
+        if callable(inner_clear):
+            inner_clear()
+
+    def invalidate(self, instrument_token: str | None = None) -> None:
+        """Evict one token or all tokens from this and any inner cache."""
+        if instrument_token is None:
+            self._cache.clear()
+        else:
+            self._cache.pop(str(instrument_token), None)
+        inner_inv = getattr(self.inner, "invalidate", None)
+        if callable(inner_inv):
+            inner_inv(instrument_token)
+
+    def register_contract(self, contract: Any) -> None:
+        """Delegate contract registration to the wrapped provider (R3)."""
+        reg = getattr(self.inner, "register_contract", None)
+        if callable(reg):
+            reg(contract)
+
+    def register_chain(self, chain: Any) -> None:
+        """Delegate chain registration to the wrapped provider."""
+        reg = getattr(self.inner, "register_chain", None)
+        if callable(reg):
+            reg(chain)
 
     def get_quote(self, instrument_token: str) -> dict[str, Any]:
         now = time.monotonic()
@@ -510,6 +577,18 @@ class BidAskQuoteProvider:
             quote["ltp"] = price
             quote["execution_side"] = str(side).upper()
         return quote
+
+    def register_contract(self, contract: Any) -> None:
+        """Delegate contract registration to the wrapped provider (R3)."""
+        reg = getattr(self.inner, "register_contract", None)
+        if callable(reg):
+            reg(contract)
+
+    def invalidate(self, instrument_token: str | None = None) -> None:
+        """Delegate cache invalidation to the wrapped provider."""
+        inv = getattr(self.inner, "invalidate", None)
+        if callable(inv):
+            inv(instrument_token)
 
     # -- delegation so the wrapper can sit anywhere in the chain ----------
 
@@ -612,7 +691,31 @@ class LiveChainProvider:
         """
         contracts = chain.values() if hasattr(chain, "values") else chain
         for contract in contracts:
-            self._contracts[str(contract.instrument_token)] = contract
+            self.register_contract(contract)
+
+    def register_contract(self, contract: Any) -> None:
+        """Remember token → contract for one contract (R3/R5 restart recovery).
+
+        Restored open structures carry real numeric mStock tokens on their legs,
+        while the fresh process's ``LiveChainProvider`` starts with an empty
+        registry. Registering each restored leg here restores the
+        ``instrument_token → trading_symbol`` translation for ``get_quote``.
+        """
+        token = str(getattr(contract, "instrument_token", "") or "")
+        if token:
+            self._contracts[token] = contract
+        self._quotes.register_contract(contract)
+
+    def invalidate(self, instrument_token: str | None = None) -> None:
+        """Evict cached quote(s) so a manual/watchdog refresh fetches live LTP."""
+        if instrument_token is None:
+            self._quotes.clear()
+            return
+        key = str(instrument_token)
+        self._quotes.invalidate(key)
+        contract = self._contracts.get(key)
+        if contract is not None and getattr(contract, "trading_symbol", None):
+            self._quotes.invalidate(str(contract.trading_symbol))
 
     def get_quote(self, instrument_token: str) -> dict[str, Any]:
         """Real L1 quote (TTL-cached) for one contract token.

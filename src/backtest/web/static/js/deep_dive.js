@@ -120,21 +120,21 @@
       '<th class="num">P&amp;L</th><th class="num">Expiry</th><th class="num">Bars</th>' +
       '</tr></thead><tbody>' +
       rows.map((s) =>
-        '<tr><td>' + esc(s.structure) + ' <span class="muted">(' + esc(s.side) + ')</span></td>' +
+        '<tr' + (s.markStale ? ' class="stale-mark-row"' : "") + '><td>' + esc(s.structure) + ' <span class="muted">(' + esc(s.side) + ')</span></td>' +
         '<td>' + esc(s.strikes) + " " + esc(s.optionType) + '</td>' +
         '<td class="num">' + s.lots + '</td>' +
         '<td class="num">' + s.entryPrice.toFixed(2) + '</td>' +
-        '<td class="num">' + s.currentPrice.toFixed(2) + '</td>' +
+        '<td class="num">' + s.currentPrice.toFixed(2) + OptionView.staleBadgeHtml(s) + '</td>' +
         '<td class="num ' + pnlClass(s.pnl) + '">' + fmtSigned(s.pnl) +
           '<div class="cell-sub">' + (s.pnlPct * 100).toFixed(1) + '% of premium</div></td>' +
         '<td class="num">' + esc(s.expiryText) + '</td>' +
         '<td class="num">' + s.barsHeld + '</td></tr>' +
         s.legs.map((leg) =>
-          '<tr class="opt-leg"><td class="muted">↳ leg</td>' +
+          '<tr class="opt-leg' + (leg.markStale ? " stale-mark-row" : "") + '"><td class="muted">↳ leg</td>' +
           '<td>' + esc(leg.tradingSymbol || "") + '</td>' +
           '<td class="num">' + leg.qty + '</td>' +
           '<td class="num">' + leg.entryPrice.toFixed(2) + '</td>' +
-          '<td class="num">' + leg.currentPrice.toFixed(2) + '</td>' +
+          '<td class="num">' + leg.currentPrice.toFixed(2) + OptionView.staleBadgeHtml(leg) + '</td>' +
           '<td class="num ' + pnlClass(leg.pnl) + '">' + fmtSigned(leg.pnl) + '</td>' +
           '<td class="num muted">' + esc(leg.side) + " " + esc(leg.optionType) + '</td>' +
           '<td class="num muted">' + leg.strike.toLocaleString("en-IN") + '</td></tr>').join("")

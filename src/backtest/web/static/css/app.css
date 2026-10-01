@@ -1139,6 +1139,49 @@ textarea.input { line-height: 1.7; }
    paused runner's position) but they read as not-live. */
 .matrix-table tr.pos-row-stale td { background: rgba(148,163,184,.06); color: var(--text); }
 .matrix-table tr.pos-row-stale .cell-name { font-style: italic; }
+/* MTM Staleness Observability (R2, R7): stale mark badge, row highlight, and refresh button. */
+.badge-stale-mark {
+    display: inline-block;
+    margin-left: 4px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: .7rem;
+    font-weight: 600;
+    background: rgba(245,158,11,.18);
+    color: var(--warning-text, #f59e0b);
+    border: 1px solid rgba(245,158,11,.45);
+    cursor: help;
+    vertical-align: middle;
+}
+.matrix-table tr.stale-mark-row td,
+.dd-table tr.stale-mark-row td {
+    background: rgba(245,158,11,.08);
+}
+.matrix-table tr.stale-mark-row td:first-child,
+.dd-table tr.stale-mark-row td:first-child {
+    box-shadow: inset 3px 0 0 rgba(245,158,11,.75);
+}
+.row-btn-refresh-marks {
+    font-size: .74rem;
+    padding: 3px 8px;
+    border-color: rgba(245,158,11,.5);
+    color: var(--warning-text, #f59e0b);
+    background: rgba(245,158,11,.12);
+    white-space: nowrap;
+}
+.row-btn-refresh-marks:hover {
+    border-color: var(--warning-text, #f59e0b);
+    background: rgba(245,158,11,.24);
+}
+.refresh-marks-result {
+    color: var(--warning-text, #f59e0b);
+    font-size: .72rem;
+    margin-top: 3px;
+}
+.stale-mark-summary {
+    color: var(--warning-text, #f59e0b);
+    font-weight: 600;
+}
 .matrix-table tr.opt-leg-row td { background: rgba(148,163,184,.05); font-size: .8rem; }
 .matrix-table tr.opt-leg-row .cell-sub { padding-left: 14px; }
 .pos-sl { color: var(--danger-text); }
@@ -1470,6 +1513,26 @@ select.input option.sym-no-data:disabled { cursor: not-allowed; }
 /* issues.txt B1: the data-only picker's "N symbols hidden — load data first"
    must be read, not skimmed: muted-grey counts next to a named action. */
 .sym-hidden-hint { color: var(--warning-text); font-weight: 600; }
+
+/* Data-tab instrument picker: a tick-list of fetchable instruments
+ * (All/Equity/Index tabs), sharing the .sym-tab styling above. */
+.dm-picker-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 4px 0; }
+.dm-symbol-list {
+    max-height: 220px; overflow-y: auto; border: 1px solid var(--border);
+    border-radius: 8px; background: var(--surface-2);
+}
+.dm-symbol-list:empty { display: none; }
+.dm-symbol-row {
+    display: flex; align-items: center; gap: 8px; padding: 5px 10px;
+    font-size: .78rem; cursor: pointer; border-bottom: 1px solid rgba(148,163,184,.07);
+}
+.dm-symbol-row:hover { background: rgba(59,130,246,.08); }
+.dm-symbol-row input { accent-color: var(--primary); flex: 0 0 auto; }
+.dm-symbol-sym { font-weight: 600; white-space: nowrap; }
+.dm-symbol-name { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; }
+.dm-symbol-cov { margin-left: auto; color: var(--muted); font-size: .7rem; white-space: nowrap; }
+.dm-symbol-nodata { font-style: italic; opacity: .7; }
+.dm-symbol-empty { padding: 10px; font-size: .78rem; color: var(--muted); font-style: italic; }
 
 /* ------------------------------------------------------------------
  * Richer metric sections (PRD backTest-enhance §2.2).

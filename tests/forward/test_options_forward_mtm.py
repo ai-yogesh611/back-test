@@ -20,7 +20,7 @@ See ``docs/OPTIONS-FORWARD-TESTING.md`` → task A1.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -423,3 +423,610 @@ class TestEquityRunnersUnaffected:
             runner.process_candle_event("NIFTY", bar)
         assert runner.equity() == float(runner.portfolio.calculate_total_equity())
         assert runner.unrealized_pnl() == float(runner.portfolio.unrealized_pnl)
+
+
+# ---------------------------------------------------------------------------
+# 6. MTM Staleness Observability (R1–R7, AC #1–#10)
+# ---------------------------------------------------------------------------
+
+
+def _bull_view(spot: float) -> MarketView:
+    return MarketView(
+        direction=Direction.BULLISH,
+        confidence=0.9,
+        underlying="NIFTY",
+        spot_price=Decimal(str(spot)),
+    )
+
+
+_option_runner_config = _option_config
+
+
+class TestMtmStalenessObservability:
+    """Acceptance criteria AC #1–#10 for MTM Staleness Observability."""
+
+    def test_restart_with_open_structure_refreshes_leg_marks_from_live_quotes(self):
+        """AC #1: Bridge-level restart with open structure holding numeric mStock
+        token → first bar after resume rebinds via register_contract and updates
+        leg marks from live quotes.
+        """
+        from backtest.forward.state_store import capture_bridge, restore_bridge
+        from backtest.options.quote_providers import LiveChainProvider
+
+        class _LiveBroker:
+            def __init__(self, quotes):
+                self.quotes = dict(quotes)
+                self.quote_calls = []
+
+            def get_option_chain(self, symbol, expiry=None):
+                return []
+
+            def get_option_quote(self, symbol, exchange="NFO"):
+                self.quote_calls.append((symbol, exchange))
+                return {"ltp": self.quotes[symbol]}
+
+        # 1. Open a structure on bridge1 with numeric token "49228"
+        broker1 = _LiveBroker({"NIFTY261024800CE": 120.0})
+        provider1 = LiveChainProvider(broker1)
+        bridge1 = OptionsBridge(capital=500_000, quote_provider=provider1)
+        from backtest.options.paper_trading import OptionPosition, StructurePosition
+
+        leg = OptionPosition(
+            position_id="pos-1",
+            structure_id="str-1",
+            strategy_name="directional_options",
+            instrument_token="49228",
+            trading_symbol="NIFTY261024800CE",
+            underlying="NIFTY",
+            option_type="CE",
+            strike=Decimal("24800"),
+            expiry=date(2026, 10, 29),
+            lot_size=25,
+            side="BUY",
+            quantity=2,
+            entry_price=Decimal("120.0"),
+            current_price=Decimal("120.0"),
+        )
+        structure = StructurePosition(
+            structure_id="str-1",
+            structure_type="long_call",
+            strategy_name="directional_options",
+            underlying="NIFTY",
+            expiry=date(2026, 10, 29),
+            legs=[leg],
+        )
+        bridge1.option_broker.restore_structure(structure)
+        bridge1.open_structure_id = "str-1"
+        snap = capture_bridge(bridge1)
+
+        # 2. Simulate process restart: fresh LiveChainProvider (empty registry)
+        broker2 = _LiveBroker({"NIFTY261024800CE": 165.0})
+        provider2 = LiveChainProvider(broker2)
+        bridge2 = OptionsBridge(capital=500_000, quote_provider=provider2)
+        restore_bridge(bridge2, snap)
+
+        # 3. First bar after resume refreshes leg marks from live quotes
+        pnl = bridge2.on_bar("NIFTY", 25_050.0, "2026-10-05T09:16:00")
+        assert pnl == Decimal("2250.0")  # (165 - 120) * (2 * 25)
+        restored_leg = bridge2.option_broker.get_open_positions()[0]
+        assert restored_leg.current_price == Decimal("165.0")
+        assert bridge2.mark_stale is False
+        assert bridge2.quote_error is None
+        assert broker2.quote_calls == [("NIFTY261024800CE", "NFO")]
+
+    def test_mark_stale_after_two_failed_bars_and_clears_on_recovery(self):
+        """AC #2: Quote provider fails for >= 2 bars while RUNNING → payload shows
+        mark_stale: true, quote_error set, mark_ts = last success; clears on next
+        good quote.
+        """
+        bridge = OptionsBridge(capital=500_000, expression={"type": "long_call", "quantity": 1})
+        bridge.on_bar("NIFTY", 25_000.0, "2026-10-01T09:15:00")
+        bridge.on_market_view(_bull_view(25_000.0), "test")
+
+        # Bar 1: healthy quote
+        bridge.on_bar("NIFTY", 25_050.0, "2026-10-01T09:16:00")
+        good_mark_ts = bridge.mark_ts
+        assert good_mark_ts is not None
+        assert bridge.mark_stale is False
+        assert bridge.quote_error is None
+
+        # Inject quote failure
+        good_provider = bridge.quote_provider
+
+        class _FailingQuoteProvider:
+            source_name = "live:mstock"
+            generator = good_provider.generator
+
+            def register_contract(self, contract):
+                pass
+
+            def get_quote(self, token):
+                return {"error": f"unknown option contract {token!r}"}
+
+        bridge.quote_provider = _FailingQuoteProvider()
+
+        # Failure #1 (< STALE_AFTER_BARS=2): not yet stale
+        bridge.on_bar("NIFTY", 25_060.0, "2026-10-01T09:17:00")
+        assert bridge.mark_stale is False
+        assert bridge.mark_ts == good_mark_ts
+
+        # Failure #2 (>= STALE_AFTER_BARS=2): mark_stale flips to True
+        bridge.on_bar("NIFTY", 25_070.0, "2026-10-01T09:18:00")
+        assert bridge.mark_stale is True
+        assert "unknown option contract" in (bridge.quote_error or "")
+        assert bridge.mark_ts == good_mark_ts
+
+        snap = bridge.summary()
+        assert snap["mark_stale"] is True
+        assert snap["mark_ts"] == good_mark_ts
+        assert "unknown option contract" in snap["quote_error"]
+        s_row = snap["open_structures_detail"][0]
+        assert s_row["mark_stale"] is True
+        assert s_row["legs_detail"][0]["mark_stale"] is True
+
+        # Recovery: restore good provider → next bar clears mark_stale
+        bridge.quote_provider = good_provider
+        bridge.on_bar("NIFTY", 25_100.0, "2026-10-01T09:19:00")
+        assert bridge.mark_stale is False
+        assert bridge.quote_error is None
+
+    def test_paused_or_stopped_runner_never_reports_mark_stale(self):
+        """R1 / §5: Paused or stopped runners report mark_stale: false even if
+        mtm_failures >= STALE_AFTER_BARS.
+        """
+        runner = StrategyRunner(_option_runner_config(), ledger=OrderLedger())
+        runner.start()
+        for bar in _bars(RISING[:4]):
+            runner.process_candle_event("NIFTY", bar)
+        assert runner.options_bridge is not None
+        assert runner.options_bridge.open_structure_id is not None
+
+        class _DeadQuotes:
+            source_name = "live:mstock"
+            generator = runner.options_bridge.quote_provider.generator
+
+            def register_contract(self, contract):
+                pass
+
+            def get_quote(self, token):
+                return {"error": "session expired"}
+
+        runner.options_bridge.quote_provider = _DeadQuotes()
+        for bar in _bars([25_250, 25_260], start_day=5):
+            runner.process_candle_event("NIFTY", bar)
+
+        assert runner.get_state()["mark_stale"] is True
+        runner.pause()
+        assert runner.get_state()["mark_stale"] is False
+        assert runner.options_summary()["mark_stale"] is False
+
+    def test_genuine_zero_ltp_with_no_error_marks_zero_without_staleness(self):
+        """AC #3: Quote row with ltp: 0 and NO error key → mark updates to 0,
+        mark_stale stays false (genuine deep-OTM zero).
+        """
+        bridge = OptionsBridge(capital=500_000, expression={"type": "long_call", "quantity": 1})
+        bridge.on_bar("NIFTY", 25_000.0, "2026-10-01T09:15:00")
+        bridge.on_market_view(_bull_view(25_000.0), "test")
+
+        class _ZeroQuoteProvider:
+            source_name = "live:mstock"
+            generator = bridge.quote_provider.generator
+
+            def register_contract(self, contract):
+                pass
+
+            def get_quote(self, token):
+                return {"ltp": 0, "bid": 0.0, "ask": 0.05}
+
+        bridge.quote_provider = _ZeroQuoteProvider()
+        for i in range(3):
+            bridge.on_bar("NIFTY", 24_000.0, f"2026-10-02T09:1{i}:00")
+
+        leg = bridge.option_broker.get_open_positions()[0]
+        assert leg.current_price == Decimal("0")
+        assert leg.mtm_failures == 0
+        assert bridge.mark_stale is False
+        assert bridge.quote_error is None
+
+    def test_mtm_failure_warnings_are_rate_limited(self, caplog):
+        """R4 / AC #5: 10 consecutive failed MTM cycles produce <= 2 WARNING log lines."""
+        bridge = OptionsBridge(capital=500_000, expression={"type": "long_call", "quantity": 1})
+        bridge.on_bar("NIFTY", 25_000.0, "2026-10-01T09:15:00")
+        bridge.on_market_view(_bull_view(25_000.0), "test")
+
+        class _FailProvider:
+            source_name = "live:mstock"
+            generator = bridge.quote_provider.generator
+
+            def register_contract(self, contract):
+                pass
+
+            def get_quote(self, token):
+                return {"error": "broker timeout"}
+
+        bridge.quote_provider = _FailProvider()
+        caplog.clear()
+        with caplog.at_level("WARNING", logger="backtest.forward.options_bridge"):
+            for i in range(10):
+                bridge.on_bar("NIFTY", 25_010.0 + i, f"2026-10-02T10:{10 + i:02d}:00")
+
+        warnings = [
+            r for r in caplog.records
+            if r.levelname == "WARNING" and "MTM quote failed" in r.message
+        ]
+        assert 1 <= len(warnings) <= 2
+
+    def test_watchdog_repairs_unbound_open_leg(self, monkeypatch):
+        """R6 / AC #6: With a broken token→contract binding injected into a
+        running runner, the 60s watchdog pass repairs marks within 2 cycles
+        without restart.
+        """
+        from datetime import timezone
+        from backtest.forward.portfolio_manager import PortfolioManager
+        from backtest.options.quote_providers import LiveChainProvider
+
+        class _WatchdogBroker:
+            def __init__(self):
+                self.calls = []
+
+            def get_option_chain(self, symbol, expiry=None):
+                return []
+
+            def get_option_quote(self, symbol, exchange="NFO"):
+                self.calls.append((symbol, exchange))
+                return {"ltp": 182.5}
+
+        pm = PortfolioManager(auto_start_feed=False)
+        try:
+            iid = pm.add_runner(_option_runner_config(name="WD-NIFTY"))
+            runner = pm.get_runner(iid)
+            runner.start()
+            bridge = runner.options_bridge
+            assert bridge is not None
+
+            live_broker = _WatchdogBroker()
+            live_provider = LiveChainProvider(live_broker)
+            live_provider.set_spot("NIFTY", 25_000.0)
+            bridge.quote_provider = live_provider
+
+            from backtest.options.paper_trading import OptionPosition, StructurePosition
+
+            old_time = datetime(2026, 10, 1, 4, 0, 0)  # > 2 min old
+            leg = OptionPosition(
+                position_id="wd-pos-1",
+                structure_id="wd-str-1",
+                strategy_name="directional_options",
+                instrument_token="49228",  # unbound numeric token!
+                trading_symbol="NIFTY261024800CE",
+                underlying="NIFTY",
+                option_type="CE",
+                strike=Decimal("24800"),
+                expiry=date(2026, 10, 29),
+                lot_size=25,
+                side="BUY",
+                quantity=1,
+                entry_price=Decimal("120.0"),
+                current_price=Decimal("120.0"),
+                last_updated=old_time,
+            )
+            structure = StructurePosition(
+                structure_id="wd-str-1",
+                structure_type="long_call",
+                strategy_name="directional_options",
+                underlying="NIFTY",
+                expiry=date(2026, 10, 29),
+                legs=[leg],
+            )
+            bridge.option_broker.restore_structure(structure)
+            bridge.open_structure_id = "wd-str-1"
+            # Corrupt the rebind flag so only the watchdog repairs it
+            bridge._restored_contracts_rebound = True
+            live_provider._contracts.clear()
+
+            # Watchdog pass during market hours (10:30 IST = 05:00 UTC on a Thursday)
+            market_now = datetime(2026, 10, 1, 5, 0, 0, tzinfo=timezone.utc)
+            report = pm.run_mtm_watchdog(now_utc=market_now)
+
+            assert report["skipped"] is False
+            assert report["repaired"] == 1
+            assert leg.current_price == Decimal("182.5")
+            assert bridge.mark_stale is False
+            assert ("NIFTY261024800CE", "NFO") in live_broker.calls
+        finally:
+            pm.shutdown()
+
+    def test_manual_refresh_marks_endpoint_and_rate_limit(self, monkeypatch):
+        """R6 / R7 / AC #7: POST /api/portfolio/runner/<iid>/refresh-marks calls
+        the same repair routine as the timer, enforces the 10s rate-limit
+        (second press within 10s returns cooldown response without hitting the
+        broker), and writes the same audit entry.
+        """
+        from datetime import timezone
+        from flask import Flask
+        from backtest.api.portfolio import portfolio_bp
+        from backtest.forward.portfolio_manager import reset_portfolio_manager
+        from backtest.options.quote_providers import LiveChainProvider
+
+        class _CountingBroker:
+            def __init__(self):
+                self.calls = 0
+
+            def get_option_chain(self, symbol, expiry=None):
+                return []
+
+            def get_option_quote(self, symbol, exchange="NFO"):
+                self.calls += 1
+                return {"ltp": 155.0}
+
+        pm = reset_portfolio_manager(auto_start_feed=False)
+        try:
+            iid = pm.add_runner(_option_runner_config(name="MANUAL-REFRESH"))
+            runner = pm.get_runner(iid)
+            runner.start()
+            bridge = runner.options_bridge
+            broker = _CountingBroker()
+            provider = LiveChainProvider(broker)
+            provider.set_spot("NIFTY", 25_000.0)
+            bridge.quote_provider = provider
+
+            from backtest.options.paper_trading import OptionPosition, StructurePosition
+
+            leg = OptionPosition(
+                position_id="mr-pos-1",
+                structure_id="mr-str-1",
+                strategy_name="directional_options",
+                instrument_token="49228",
+                trading_symbol="NIFTY261024800CE",
+                underlying="NIFTY",
+                option_type="CE",
+                strike=Decimal("24800"),
+                expiry=date(2026, 10, 29),
+                lot_size=25,
+                side="BUY",
+                quantity=1,
+                entry_price=Decimal("110.0"),
+                current_price=Decimal("110.0"),
+                last_updated=datetime(2026, 10, 1, 4, 0, 0),
+                mtm_failures=3,
+                last_quote_error="unknown option contract '49228'",
+            )
+            structure = StructurePosition(
+                structure_id="mr-str-1",
+                structure_type="long_call",
+                strategy_name="directional_options",
+                underlying="NIFTY",
+                expiry=date(2026, 10, 29),
+                legs=[leg],
+            )
+            bridge.option_broker.restore_structure(structure)
+            bridge.open_structure_id = "mr-str-1"
+
+            app = Flask(__name__)
+            app.register_blueprint(portfolio_bp)
+            client = app.test_client()
+
+            # 1st press: repairs the mark and writes REFRESH_MARKS audit entry
+            resp1 = client.post(f"/api/portfolio/runner/{iid}/refresh-marks")
+            assert resp1.status_code == 200
+            data1 = resp1.get_json()
+            assert data1["success"] is True
+            assert data1["cooldown"] is False
+            assert data1["repaired"] == 1
+            assert data1["mark_stale"] is False
+            assert broker.calls == 1
+
+            # 2nd press within 10s: returns cooldown without hitting broker
+            resp2 = client.post(f"/api/portfolio/runner/{iid}/refresh-marks")
+            assert resp2.status_code == 200
+            data2 = resp2.get_json()
+            assert data2["cooldown"] is True
+            assert data2["rate_limited"] is True
+            assert data2["retry_after_s"] > 0
+            assert broker.calls == 1, "cooldown must not hit the broker"
+
+            # Verify timer and manual trigger write the exact same audit action format
+            leg.last_updated = datetime(2026, 10, 1, 4, 0, 0)
+            leg.mtm_failures = 2
+            pm.run_mtm_watchdog(now_utc=datetime(2026, 10, 1, 5, 0, 0, tzinfo=timezone.utc))
+            audits = [
+                a for a in pm.get_audit_log(scope="all")
+                if a["action"] == "REFRESH_MARKS MANUAL-REFRESH"
+            ]
+            assert len(audits) == 2
+            assert audits[0]["detail"] == audits[1]["detail"]
+        finally:
+            pm.shutdown()
+
+    def test_stale_notification_fires_once_per_episode(self):
+        """R6 / R7 / AC #8: Across a 10-minute stale episode, the user receives
+        exactly 1 notification/alert on the healthy → stale transition.
+        """
+        from backtest.alerts.broker import reset_alert_broker
+
+        reset_alert_broker()
+        bridge = OptionsBridge(capital=500_000, expression={"type": "long_call", "quantity": 1})
+        bridge.runner_id = "runner-ep1"
+        bridge.runner_name = "NIFTY-EPISODE"
+        bridge.on_bar("NIFTY", 25_000.0, "2026-10-01T09:15:00")
+        bridge.on_market_view(_bull_view(25_000.0), "test")
+
+        good_provider = bridge.quote_provider
+
+        class _DeadProvider:
+            source_name = "live:mstock"
+            generator = good_provider.generator
+
+            def register_contract(self, contract):
+                pass
+
+            def get_quote(self, token):
+                return {"error": "session expired"}
+
+        bridge.quote_provider = _DeadProvider()
+        # Run 10 consecutive 1-minute bars (10-minute stale episode)
+        for i in range(10):
+            bridge.on_bar("NIFTY", 25_010.0 + i, f"2026-10-01T09:{16 + i:02d}:00")
+
+        assert bridge.mark_stale is True
+        assert len(bridge.stale_notifications) == 1
+
+        # Recover on bar 11, then enter a SECOND stale episode → fires once more
+        bridge.quote_provider = good_provider
+        bridge.on_bar("NIFTY", 25_050.0, "2026-10-01T09:30:00")
+        assert bridge.mark_stale is False
+
+        bridge.quote_provider = _DeadProvider()
+        for i in range(5):
+            bridge.on_bar("NIFTY", 25_060.0 + i, f"2026-10-01T09:{31 + i:02d}:00")
+        assert len(bridge.stale_notifications) == 2
+
+    def test_watchdog_silent_outside_market_hours(self):
+        """R6 / AC #9: Outside the runner's trading window the watchdog performs
+        zero broker calls and emits zero notifications.
+        """
+        from datetime import timezone
+        from backtest.forward.portfolio_manager import PortfolioManager
+        from backtest.options.quote_providers import LiveChainProvider
+
+        class _SpyBroker:
+            def __init__(self):
+                self.calls = 0
+
+            def get_option_chain(self, symbol, expiry=None):
+                self.calls += 1
+                return []
+
+            def get_option_quote(self, symbol, exchange="NFO"):
+                self.calls += 1
+                return {"error": "should never be called"}
+
+        pm = PortfolioManager(auto_start_feed=False)
+        try:
+            iid = pm.add_runner(_option_runner_config(name="OFF-HOURS"))
+            runner = pm.get_runner(iid)
+            runner.start()
+            bridge = runner.options_bridge
+            spy = _SpyBroker()
+            bridge.quote_provider = LiveChainProvider(spy)
+
+            from backtest.options.paper_trading import OptionPosition, StructurePosition
+
+            leg = OptionPosition(
+                position_id="oh-pos-1",
+                structure_id="oh-str-1",
+                strategy_name="directional_options",
+                instrument_token="49228",
+                trading_symbol="NIFTY261024800CE",
+                underlying="NIFTY",
+                option_type="CE",
+                strike=Decimal("24800"),
+                expiry=date(2026, 10, 29),
+                lot_size=25,
+                side="BUY",
+                quantity=1,
+                entry_price=Decimal("110.0"),
+                current_price=Decimal("110.0"),
+                last_updated=datetime(2026, 10, 1, 4, 0, 0),
+            )
+            structure = StructurePosition(
+                structure_id="oh-str-1",
+                structure_type="long_call",
+                strategy_name="directional_options",
+                underlying="NIFTY",
+                expiry=date(2026, 10, 29),
+                legs=[leg],
+            )
+            bridge.option_broker.restore_structure(structure)
+            bridge.open_structure_id = "oh-str-1"
+
+            # 20:00 IST (14:30 UTC) is after NSE close (15:30 IST)
+            off_hours_utc = datetime(2026, 10, 1, 14, 30, 0, tzinfo=timezone.utc)
+            report = pm.run_mtm_watchdog(now_utc=off_hours_utc)
+
+            assert report["skipped"] is True
+            assert report["reason"] == "outside_market_hours"
+            assert spy.calls == 0
+            assert len(bridge.stale_notifications) == 0
+        finally:
+            pm.shutdown()
+
+    def test_atomic_structure_marking_holds_sibling_legs_on_partial_failure(self):
+        """Approved Gap Fix: In a 2-leg bull_call_spread, if one leg's quote
+        succeeds and the sibling leg's quote fails, neither leg overwrites its
+        price (preventing a partial-leg 'Frankenstein spread' stop-out).
+        """
+        bridge = OptionsBridge(
+            capital=500_000,
+            expression={
+                "type": "bull_call_spread",
+                "quantity": 1,
+                "exit": {"stop_loss_pct": 0.20},
+            },
+        )
+        bridge.on_bar("NIFTY", 25_000.0, "2026-10-01T09:15:00")
+        bridge.on_market_view(_bull_view(25_000.0), "test")
+
+        legs = bridge.option_broker.get_open_positions()
+        assert len(legs) == 2
+        long_leg = next(l for l in legs if l.is_long)
+        short_leg = next(l for l in legs if l.is_short)
+        long_entry = long_leg.current_price
+        short_entry = short_leg.current_price
+
+        # Short leg succeeds at a huge adverse spike while long leg quote fails:
+        # without atomic marking + stale stop suppression, the spread would
+        # falsely stop out!
+        class _PartialFailProvider:
+            source_name = "live:mstock"
+            generator = bridge.quote_provider.generator
+
+            def register_contract(self, contract):
+                pass
+
+            def get_quote(self, token):
+                if token == long_leg.instrument_token:
+                    return {"error": "timeout on long leg"}
+                return {"ltp": float(short_entry) * 3.0}
+
+        bridge.quote_provider = _PartialFailProvider()
+        bridge.on_bar("NIFTY", 25_200.0, "2026-10-01T09:16:00")
+        bridge.on_bar("NIFTY", 25_250.0, "2026-10-01T09:17:00")
+
+        # Structure must still be open and both legs held at their last consistent prices
+        assert bridge.open_structure_id is not None
+        assert long_leg.current_price == long_entry
+        assert short_leg.current_price == short_entry
+        assert bridge.mark_stale is True
+
+    def test_stale_marks_tag_equity_curve_and_freeze_drawdown(self):
+        """§8 Q4: Equity curve points recorded while mark_stale=True carry
+        stale=True, and peak_equity / max_drawdown_pct are frozen.
+        """
+        runner = StrategyRunner(_option_runner_config(), ledger=OrderLedger())
+        runner.start()
+        for bar in _bars(RISING[:4]):
+            runner.process_candle_event("NIFTY", bar)
+
+        peak_before = runner.peak_equity
+        dd_before = runner.max_drawdown_pct
+
+        class _DeadQuotes:
+            source_name = "live:mstock"
+            generator = runner.options_bridge.quote_provider.generator
+
+            def register_contract(self, contract):
+                pass
+
+            def get_quote(self, token):
+                return {"error": "quote feed down"}
+
+        runner.options_bridge.quote_provider = _DeadQuotes()
+        for bar in _bars([25_300, 25_350, 25_400], start_day=5):
+            runner.process_candle_event("NIFTY", bar)
+
+        assert runner.options_bridge.mark_stale is True
+        assert runner.equity_curve[-1].get("stale") is True
+        assert runner.peak_equity == peak_before
+        assert runner.max_drawdown_pct == dd_before
+        runner.stop()
+

@@ -26,7 +26,7 @@ from flask import Blueprint, jsonify, request
 from sqlalchemy import create_engine, text
 
 from backtest.data.base import MSTOCK_INTERVAL_MAP
-from backtest.data.coverage import INSTRUMENT_TYPES, NO_DATA_HINT
+from backtest.data.coverage import INSTRUMENT_TYPES, NO_DATA_HINT, classify_instrument
 from backtest.db.config import get_db_url
 from backtest.logging_config import get_logger
 
@@ -48,11 +48,16 @@ _job: dict[str, Any] = {
     "failed_list": [],  # list of (symbol, error) tuples
     "from_date": "",
     "to_date": "",
-    "timeframe": "day",
+    "timeframe": "1min",
     "error": None,  # last error message
     "started_at": None,
     "elapsed": "",
     "cancel": False,  # flag to stop the job
+    # Chunk-level progress for the symbol being fetched. Without these the
+    # bar only ever moved once per symbol (6-8 min of "frozen" progress at
+    # 1-minute granularity — it looked hung, 2026-10-02).
+    "chunk_done": 0,
+    "chunk_total": 0,
 }
 
 # Single DB-URL authority (ticket P4.3): FORWARD_TEST_DB_URL env >
@@ -170,6 +175,8 @@ def fetch_start() -> tuple:
             started_at=time.time(),
             elapsed="",
             cancel=False,
+            chunk_done=0,
+            chunk_total=0,
         )
 
     # Launch background thread
@@ -339,6 +346,9 @@ def coverage() -> tuple:
       * ``types``      - comma list of ``equity``/``index``/``futures``/
                          ``options``/``fno`` (the All/Equity/Index/F&O tabs)
       * ``available``  - ``1`` to list only symbols that have bars
+      * ``curated``    - ``1`` to list only the built-in universe (NIFTY 200
+                         + indices, human-readable names) — the Data tab's
+                         fetch picker
       * ``limit``      - page size (default 500, ``0`` = no paging)
       * ``offset``     - page offset
       * ``refresh``    - ``1`` to bypass the short-lived cache
@@ -371,6 +381,7 @@ def coverage() -> tuple:
         query=query,
         types=types or None,
         available_only=available_only,
+        curated_only=request.args.get("curated") in ("1", "true", "yes"),
         limit=limit or None,
         offset=offset,
     )
@@ -430,20 +441,26 @@ def _run_fetch_job(
         "set" if api_key else "MISSING — every request will fail",
     )
 
-    # Load instruments
-    instruments = _load_instruments(engine, symbols)
-    total = len(instruments)
-    if not total:
+    # Load instruments (equities from the catalogue, indices from the token map)
+    instruments, not_found = _load_instruments(engine, symbols)
+    total = len(instruments) + len(not_found)
+    if not instruments:
         log.warning(
             "[data] no instruments matched (symbols=%s) — is the `instruments` table "
             "populated? Run scripts/fetch_nifty500_historical.py first",
             ",".join(symbols) if symbols else "NSE/BSE equities",
         )
     else:
-        log.info("[data] %d instruments to fetch", total)
+        log.info("[data] %d instruments to fetch (%d not found)", len(instruments), len(not_found))
 
     with _lock:
         _job["total"] = total
+        for sym in not_found:
+            _job["fetched"] += 1
+            _job["failed"] += 1
+            _job["failed_list"].append(
+                (sym, "Symbol not found in the instruments catalogue or the index map")
+            )
 
     for i, inst in enumerate(instruments, 1):
         if _job.get("cancel"):
@@ -460,10 +477,26 @@ def _run_fetch_job(
         with _lock:
             _job["symbol"] = symbol
             _job["bars_symbol"] = 0
+            _job["chunk_done"] = 0
+            _job["chunk_total"] = 0
+
+        def _on_chunk(done: int, tot: int) -> None:
+            with _lock:
+                _job["chunk_done"] = done
+                _job["chunk_total"] = tot
 
         try:
-            bars = _fetch_bars_chunked(
-                api_key, token, sec_token, from_date, to_date, inst_exchange, mstock_tf, chunk_days
+            bars, chunk_errors = _fetch_bars_chunked(
+                api_key,
+                token,
+                sec_token,
+                from_date,
+                to_date,
+                inst_exchange,
+                mstock_tf,
+                chunk_days,
+                should_cancel=lambda: bool(_job.get("cancel")),
+                on_progress=_on_chunk,
             )
             if not bars:
                 log.warning(
@@ -473,8 +506,19 @@ def _run_fetch_job(
                     to_date,
                     mstock_tf,
                 )
-                with _lock:
-                    _job["fetched"] += 1
+                if chunk_errors:
+                    # Every request for this symbol failed (expired broker
+                    # session looks exactly like this) — count it FAILED so
+                    # the UI stops reporting silent zero-bar "successes".
+                    err = f"{chunk_errors} chunk request(s) failed, 0 bars stored (broker session?)"
+                    log.warning("[data] %s: %s", symbol, err)
+                    with _lock:
+                        _job["failed"] += 1
+                        _job["failed_list"].append((symbol, err[:160]))
+                        _job["fetched"] += 1
+                else:
+                    with _lock:
+                        _job["fetched"] += 1
                 continue
 
             inserted = _persist_bars(engine, bars, symbol, inst_exchange, timeframe)
@@ -526,10 +570,79 @@ def _run_fetch_job(
     engine.dispose()
 
 
-def _load_instruments(engine, symbols: list[str] | None) -> list[dict]:
-    """Load instruments from DB. If symbols list provided, filter to those."""
-    if symbols:
-        placeholders = ", ".join([f":s{i}" for i in range(len(symbols))])
+def _index_row(symbol: str) -> dict | None:
+    """Catalogue row for an index symbol, or ``None`` when it is unknown.
+
+    Indexes are NOT in the scriptmaster ``instruments`` table — they resolve
+    through the fixed token map the live feed already uses
+    (:mod:`backtest.data.mstock_live_feed`), verified live against the TypeA
+    historical endpoint (2026-09-18). Aliases ("NIFTY BANK") are normalised to
+    the canonical universe symbol ("BANKNIFTY") so the bars land under the
+    same key the coverage report and backtest pages read.
+    """
+    from backtest.data.coverage import INDEX_UNIVERSE
+    from backtest.data.mstock_live_feed import INDEX_SECURITY_TOKENS
+
+    sym = str(symbol).strip().upper()
+    token = INDEX_SECURITY_TOKENS.get(sym) or INDEX_SECURITY_TOKENS.get(sym.replace(" ", ""))
+    if token is None:
+        return None
+    canonical = {sym.upper(): s for s, sym in INDEX_UNIVERSE}
+    canonical.update({s: s for s, _ in INDEX_UNIVERSE})
+    sym = canonical.get(sym, sym)
+    exchange = "BSE" if "SENSEX" in sym else "NSE"
+    return {
+        "tradingsymbol": sym,
+        "instrument_token": token,
+        "name": sym,
+        "exchange": exchange,
+    }
+
+
+def _load_instruments(
+    engine, symbols: list[str] | None
+) -> tuple[list[dict], list[str]]:
+    """Resolve requested symbols to fetchable instrument rows.
+
+    Returns ``(rows, not_found)``. Each requested symbol is classified first:
+    index names go through the fixed index token map (they are absent from
+    the equity-only ``instruments`` table), everything else is looked up in
+    the catalogue as before. With no symbol list the job keeps its historic
+    meaning: fetch every NSE/BSE equity.
+    """
+    if not symbols:
+        sql = text(
+            "SELECT tradingsymbol, instrument_token, name, exchange "
+            "FROM instruments "
+            "WHERE (exchange = 'NSE' AND instrument_type = 'EQ') OR "
+            "      (exchange = 'BSE' AND instrument_type = 'Equity') "
+            "ORDER BY tradingsymbol"
+        )
+        with engine.connect() as conn:
+            rows = conn.execute(sql, {}).mappings().all()
+        return [dict(r) for r in rows], []
+
+    index_rows: list[dict] = []
+    equity_syms: list[str] = []
+    not_found: list[str] = []
+    for s in symbols:
+        sym = str(s).strip().upper()
+        if not sym:
+            continue
+        row = _index_row(sym)
+        if row is not None:
+            # Token map wins: it also carries the alias spellings
+            # ("NIFTY BANK") that classify_instrument resolves as equity.
+            index_rows.append(row)
+        elif classify_instrument(sym) == "index":
+            not_found.append(sym)  # an index the map does not have a token for
+        else:
+            equity_syms.append(sym)
+
+    rows: list[dict] = []
+
+    if equity_syms:
+        placeholders = ", ".join([f":s{i}" for i in range(len(equity_syms))])
         sql = text(
             f"SELECT tradingsymbol, instrument_token, name, exchange "
             f"FROM instruments "
@@ -538,20 +651,15 @@ def _load_instruments(engine, symbols: list[str] | None) -> list[dict]:
             f"AND UPPER(tradingsymbol) IN ({placeholders}) "
             f"ORDER BY tradingsymbol"
         )
-        params = {f"s{i}": s.upper() for i, s in enumerate(symbols)}
-    else:
-        sql = text(
-            "SELECT tradingsymbol, instrument_token, name, exchange "
-            "FROM instruments "
-            "WHERE (exchange = 'NSE' AND instrument_type = 'EQ') OR "
-            "      (exchange = 'BSE' AND instrument_type = 'Equity') "
-            "ORDER BY tradingsymbol"
-        )
-        params = {}
+        params = {f"s{i}": s.upper() for i, s in enumerate(equity_syms)}
+        with engine.connect() as conn:
+            found = conn.execute(sql, params).mappings().all()
+        rows.extend(dict(r) for r in found)
+        matched = {str(r["tradingsymbol"]).strip().upper() for r in found}
+        not_found.extend(s for s in equity_syms if s not in matched)
 
-    with engine.connect() as conn:
-        rows = conn.execute(sql, params).mappings().all()
-    return [dict(r) for r in rows]
+    rows.extend(index_rows)
+    return rows, not_found
 
 
 def _fetch_bars_chunked(
@@ -563,8 +671,25 @@ def _fetch_bars_chunked(
     segment: str,
     mstock_tf: str,
     chunk_days: int,
-) -> list[dict]:
-    """Fetch OHLCV bars from mStock, chunked by date range."""
+    should_cancel=None,
+    on_progress=None,
+) -> tuple[list[dict], int]:
+    """Fetch OHLCV bars from mStock, chunked by date range.
+
+    Returns ``(bars, chunk_errors)`` — the error count lets the caller mark a
+    symbol as FAILED when every chunk request errored (e.g. an expired broker
+    session returning 401 for all of them) instead of reporting a silent
+    zero-bar "success".
+
+    ``should_cancel`` is checked before every chunk so a Stop request lands
+    within seconds even for a wide date range at 1-minute granularity
+    (the per-symbol cancel check alone left the user watching a single
+    symbol churn through hundreds of chunks).
+
+    ``on_progress(done, total)`` is called before the loop and after every
+    chunk, so the UI can draw a moving bar inside a multi-minute symbol
+    instead of jumping once per symbol.
+    """
     from datetime import datetime, timedelta
 
     headers = {"X-Mirae-Version": "1", "Authorization": f"token {api_key}:{token}"}
@@ -574,10 +699,21 @@ def _fetch_bars_chunked(
 
     start = datetime.strptime(from_date, "%Y-%m-%d")
     end = datetime.strptime(to_date, "%Y-%m-%d")
+    # Each iteration covers chunk_days and then skips one day (chunk_end+1).
+    step = chunk_days + 1
+    total_chunks = max(1, -(-(end - start).days // step))
+    if on_progress is not None:
+        on_progress(0, total_chunks)
     all_bars = []
+    chunk_errors = 0
+    chunk_done = 0
     chunk_start = start
 
     while chunk_start < end:
+        if should_cancel is not None and should_cancel():
+            log.info("[data] chunk loop cancelled at %s — returning %d bars so far",
+                     chunk_start, len(all_bars))
+            break
         chunk_end = min(chunk_start + timedelta(days=chunk_days), end)
         params = {"from": chunk_start.strftime("%Y-%m-%d"), "to": chunk_end.strftime("%Y-%m-%d")}
         try:
@@ -587,6 +723,7 @@ def _fetch_bars_chunked(
             bars = _extract_bars(payload)
             all_bars.extend(bars)
         except Exception as exc:  # noqa: BLE001 — skip bad chunks, but say so
+            chunk_errors += 1
             log.warning(
                 "[data] chunk %s..%s failed (%s: %s) — those bars are missing",
                 chunk_start,
@@ -594,10 +731,13 @@ def _fetch_bars_chunked(
                 exc.__class__.__name__,
                 exc,
             )
+        chunk_done += 1
+        if on_progress is not None:
+            on_progress(chunk_done, total_chunks)
         chunk_start = chunk_end + timedelta(days=1)
         time.sleep(0.15)
 
-    return all_bars
+    return all_bars, chunk_errors
 
 
 def _extract_bars(payload) -> list[dict]:

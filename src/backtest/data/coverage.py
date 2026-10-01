@@ -414,6 +414,15 @@ def build_coverage(
         db_available=db_available, generated_at=datetime.now().strftime("%Y-%m-%d")
     )
     bar_map = dict(bars or {})
+    universe_rows = list(universe) if universe is not None else []
+
+    #: The curated, human-readable universe: the built-in index list plus the
+    #: shipped equity universe (NIFTY 200), both with display names. The Data
+    #: tab's fetch picker lists ONLY these — the full scriptmaster catalogue
+    #: carries ~150k raw broker rows (contract ids, ISINs) that are neither
+    #: readable nor fetchable by that tab. See ``curated`` on each row.
+    curated_symbols = {str(r.get("symbol") or "").strip().upper() for r in index_universe()}
+    curated_symbols |= {str(r.get("symbol") or "").strip().upper() for r in universe_rows}
 
     # symbol -> row, first source wins the name/type, every source sets flags
     merged: dict[str, dict[str, Any]] = {}
@@ -461,8 +470,8 @@ def build_coverage(
         report.sources.append(source)
 
     absorb(index_universe(), "index_universe")
-    if universe is not None:
-        absorb(universe, "nifty200")
+    if universe_rows:
+        absorb(universe_rows, "nifty200")
     if catalogue is not None:
         absorb(catalogue, "instruments")
     if bar_map:
@@ -476,6 +485,7 @@ def build_coverage(
             "name": row["name"],
             "instrument_type": row["instrument_type"],
             "exchange": row["exchange"],
+            "curated": symbol in curated_symbols,
         }
         entry.update(cov.as_dict() if cov else BarCoverage().as_dict())
         if not entry["data_available"]:
@@ -502,6 +512,7 @@ def filter_coverage(
     query: str = "",
     types: Iterable[str] | None = None,
     available_only: bool = False,
+    curated_only: bool = False,
     limit: int | None = None,
     offset: int = 0,
 ) -> tuple[list[dict[str, Any]], int]:
@@ -509,7 +520,9 @@ def filter_coverage(
 
     ``types`` accepts the four instrument types; ``fno`` is a UI-level filter
     meaning "has derivatives", resolved here so the page does not have to
-    know how derivatives are marked.
+    know how derivatives are marked. ``curated_only`` keeps just the built-in
+    universe rows (NIFTY 200 + indices) — the readable list the Data tab's
+    fetch picker shows.
     """
     wanted = {t.strip().lower() for t in types} if types else set()
     fno_only = "fno" in wanted
@@ -519,6 +532,8 @@ def filter_coverage(
     needle = query.strip().upper()
     rows = []
     for row in report.instruments:
+        if curated_only and not row.get("curated"):
+            continue
         if wanted and row["instrument_type"] not in wanted:
             continue
         if fno_only and not (row.get("has_futures") or row.get("has_options")):

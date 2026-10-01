@@ -1097,6 +1097,9 @@ class StrategyRunner:
                 expression=config.instrument.get("expression"),
                 quote_provider=provider,
             )
+            self.options_bridge.runner_id = self.instance_id
+            self.options_bridge.runner_name = self.config.name
+            self.options_bridge.runner_running = False
 
         # -- rolling candle buffers ----------------------------------------
         self._bars: Dict[str, Deque[Dict[str, Any]]] = {
@@ -1419,6 +1422,13 @@ class StrategyRunner:
             self._chain_underlying,
         )
 
+    def _sync_bridge_runner_state(self) -> None:
+        bridge = self.options_bridge
+        if bridge is not None:
+            bridge.runner_id = self.instance_id
+            bridge.runner_name = self.config.name
+            bridge.runner_running = self.status == STATUS_RUNNING
+
     def start(self) -> None:
         with self._lock:
             if self.status == STATUS_RUNNING:
@@ -1429,6 +1439,7 @@ class StrategyRunner:
                 return
             self.status = STATUS_RUNNING
             self.error = None
+            self._sync_bridge_runner_state()
             # U6.2: re-acquire the chain subscription if this runner was
             # previously stopped (stop released it); start is idempotent.
             if self.options_bridge is not None and self._chain_released:
@@ -1455,6 +1466,7 @@ class StrategyRunner:
         with self._lock:
             if self.status == STATUS_RUNNING:
                 self.status = STATUS_PAUSED
+                self._sync_bridge_runner_state()
                 logger.info("Runner %s paused", self.instance_id[:8])
 
     def resume(self) -> None:
@@ -1466,6 +1478,7 @@ class StrategyRunner:
                 self._maybe_upgrade_to_live_chain()
                 self.status = STATUS_RUNNING
                 self.error = None
+                self._sync_bridge_runner_state()
                 logger.info("Runner %s resumed", self.instance_id[:8])
 
     def stop(self) -> None:
@@ -1484,6 +1497,7 @@ class StrategyRunner:
                         logger.exception("chain bus release failed for %s", self.instance_id[:8])
                 self._chain_released = True
             self.status = STATUS_STOPPED
+            self._sync_bridge_runner_state()
             logger.info("Runner %s stopped", self.instance_id[:8])
 
     def flatten_all(self, reason: str = "emergency_flatten") -> int:
@@ -2116,6 +2130,19 @@ class StrategyRunner:
             return
         if (
             view is not None
+            and self.options_bridge.mark_stale
+            and not self.options_bridge._has_open_structure()
+        ):
+            self._log_signal(
+                symbol,
+                "OPTION_BLOCKED",
+                None,
+                bar["close"],
+                "entry paused while option mark is stale",
+            )
+            view = None
+        if (
+            view is not None
             and self._entries_paused_by_strategy()
             and not self.options_bridge._has_open_structure()
         ):
@@ -2174,7 +2201,36 @@ class StrategyRunner:
         if self.options_bridge is None:
             return None
         with self._lock:
+            self._sync_bridge_runner_state()
             return self.options_bridge.summary()
+
+    def refresh_option_marks(
+        self,
+        *,
+        force: bool = True,
+        now_utc: Optional[datetime] = None,
+        max_age_s: float = 120.0,
+    ) -> Dict[str, Any]:
+        """Run the R6 mark-repair routine on this runner's option book."""
+        with self._lock:
+            self._sync_bridge_runner_state()
+            bridge = self.options_bridge
+            if bridge is None:
+                return {
+                    "checked": 0,
+                    "repaired": 0,
+                    "still_failing": 0,
+                    "mark_stale": False,
+                    "mark_ts": None,
+                    "quote_error": None,
+                    "refreshed_at": (now_utc or datetime.now(timezone.utc)).isoformat(),
+                    "message": "runner has no option book",
+                }
+            res = bridge.repair_marks(
+                force=force, now_utc=now_utc, max_age_s=max_age_s
+            )
+            self.last_option_pnl = float(bridge.unrealized_pnl)
+            return res
 
     def _mark_option_book(self, symbol: str, price: float, ts: Optional[str]) -> None:
         """Mark the option book to market for one bar (task A1).
@@ -2188,6 +2244,7 @@ class StrategyRunner:
         bridge = self.options_bridge
         if bridge is None:
             return
+        self._sync_bridge_runner_state()
         pnl = bridge.on_bar(symbol, price, ts)
         if pnl is None:
             return
@@ -2791,16 +2848,20 @@ class StrategyRunner:
 
     def _mark_to_market(self, record: bool = False) -> None:
         equity = self.equity()
-        if equity > self.peak_equity:
-            self.peak_equity = equity
-        if self.peak_equity > 0:
-            dd = (self.peak_equity - equity) / self.peak_equity
-            if dd > self.max_drawdown_pct:
-                self.max_drawdown_pct = dd
+        is_stale = bool(self.options_bridge is not None and self.options_bridge.mark_stale)
+        # §8 Q4: freeze peak_equity / max_drawdown_pct updates while option
+        # marks are stale so a frozen mark cannot corrupt drawdown breakers.
+        if not is_stale:
+            if equity > self.peak_equity:
+                self.peak_equity = equity
+            if self.peak_equity > 0:
+                dd = (self.peak_equity - equity) / self.peak_equity
+                if dd > self.max_drawdown_pct:
+                    self.max_drawdown_pct = dd
         if record:
-            self._record_equity_point(equity)
+            self._record_equity_point(equity, stale=is_stale)
 
-    def _record_equity_point(self, equity: float) -> None:
+    def _record_equity_point(self, equity: float, stale: bool = False) -> None:
         """Append one equity-curve point, downsampling when the buffer is full.
 
         ``MAX_EQUITY_POINTS`` used to be a hard stop: once the buffer filled,
@@ -2812,12 +2873,13 @@ class StrategyRunner:
         """
         if len(self.equity_curve) >= MAX_EQUITY_POINTS:
             self.equity_curve = self.equity_curve[::2]
-        self.equity_curve.append(
-            {
-                "ts": datetime.now(timezone.utc).isoformat(),
-                "equity": round(equity, 2),
-            }
-        )
+        point: Dict[str, Any] = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "equity": round(equity, 2),
+        }
+        if stale or (self.options_bridge is not None and self.options_bridge.mark_stale):
+            point["stale"] = True
+        self.equity_curve.append(point)
 
     def _roll_trading_day(self, ts: str) -> None:
         # Daily PnL is session-anchored: the baseline is fixed at the first
@@ -2867,6 +2929,7 @@ class StrategyRunner:
             self._log_signal("-", "RISK_HALT", None, None, breach)
             if self.status == STATUS_RUNNING:
                 self.status = STATUS_PAUSED
+                self._sync_bridge_runner_state()
                 self.error = breach
 
     # ------------------------------------------------------------------ #
@@ -2915,6 +2978,7 @@ class StrategyRunner:
         structure-level detail the matrix and deep-dive render.
         """
         with self._lock:
+            self._sync_bridge_runner_state()
             equity = self.equity()
             options_summary = (
                 self.options_bridge.summary() if self.options_bridge is not None else None
@@ -2959,6 +3023,11 @@ class StrategyRunner:
                 "created_ts": self.created_ts,
                 "instrument": dict(self.config.instrument or {"type": "equity"}),
                 "options": options_summary,
+                # R1: runner-level mark freshness fields (mirrored from options_summary)
+                "mark_ts": (options_summary or {}).get("mark_ts"),
+                "mark_stale": bool((options_summary or {}).get("mark_stale")),
+                "quote_error": (options_summary or {}).get("quote_error"),
+                "stale_positions": int((options_summary or {}).get("stale_positions") or 0),
                 # A1: the book's most recent MTM, mirrored onto the row so a
                 # card can show option P&L before it is folded into equity (A2).
                 "option_pnl": round(self.last_option_pnl, 2),

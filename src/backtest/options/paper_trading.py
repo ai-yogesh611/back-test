@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from enum import Enum
 from typing import Any, Protocol
@@ -34,6 +34,19 @@ from backtest.strategy.intent import (
 logger = logging.getLogger("backtest.options.paper_trading")
 
 ZERO = Decimal("0")
+
+#: Number of consecutive failed MTM attempts before a leg/structure mark is
+#: flagged stale (R1, §8 Q2 default = 2 bars).
+STALE_AFTER_BARS = 2
+
+
+def _iso_utc(dt: datetime | None) -> str | None:
+    """Format ``dt`` as an unambiguous ISO-8601 UTC string."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc).isoformat()
+    return dt.astimezone(timezone.utc).isoformat()
 
 
 # ---------------------------------------------------------------------------
@@ -96,8 +109,21 @@ class OptionPosition:
     closed_at: datetime | None = None
     last_updated: datetime = field(default_factory=datetime.utcnow)
 
+    # Mark freshness observability (MTM Staleness PRD R1)
+    mtm_failures: int = 0
+    last_quote_error: str | None = None
+
     # Metadata
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def mark_ts(self) -> str | None:
+        """ISO-8601 UTC timestamp of the last successful quote mark (R1)."""
+        return _iso_utc(self.last_updated)
+
+    def is_mark_stale(self, stale_after_bars: int = STALE_AFTER_BARS) -> bool:
+        """True when MTM has failed at least ``stale_after_bars`` times in a row."""
+        return self.status == PositionStatus.OPEN and self.mtm_failures >= int(stale_after_bars)
 
     @property
     def total_quantity(self) -> int:
@@ -161,6 +187,21 @@ class OptionPosition:
         """Update current price and recalculate unrealized P&L."""
         self.current_price = price
         self.last_updated = datetime.utcnow()
+        self.mtm_failures = 0
+        self.last_quote_error = None
+        return self.calculate_unrealized_pnl()
+
+    def record_mtm_failure(self, error: str | None = None) -> Decimal:
+        """Record a failed quote attempt while holding the last known mark (R1).
+
+        Increments ``mtm_failures`` and records ``last_quote_error`` without
+        advancing ``last_updated`` (so ``mark_ts`` remains the timestamp of
+        the last *successful* mark).
+        """
+        self.mtm_failures += 1
+        self.last_quote_error = str(error or "empty quote row")
+        if self.current_price <= 0 and self.entry_price > 0:
+            self.current_price = self.entry_price
         return self.calculate_unrealized_pnl()
 
 
@@ -213,6 +254,40 @@ class StructurePosition:
     def total_commission(self) -> Decimal:
         return sum(leg.commission for leg in self.legs)
 
+    @property
+    def mark_ts(self) -> str | None:
+        """Oldest successful mark timestamp across open legs (R1)."""
+        open_legs = [leg for leg in self.legs if leg.status == PositionStatus.OPEN]
+        if not open_legs:
+            open_legs = list(self.legs)
+        stamps = [leg.last_updated for leg in open_legs if leg.last_updated is not None]
+        if not stamps:
+            return None
+        norm = [
+            dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+            for dt in stamps
+        ]
+        return min(norm).isoformat()
+
+    @property
+    def mtm_failures(self) -> int:
+        open_legs = [leg for leg in self.legs if leg.status == PositionStatus.OPEN]
+        return max((leg.mtm_failures for leg in open_legs), default=0)
+
+    @property
+    def quote_error(self) -> str | None:
+        for leg in self.legs:
+            if leg.status == PositionStatus.OPEN and leg.last_quote_error:
+                return leg.last_quote_error
+        return None
+
+    def is_mark_stale(self, stale_after_bars: int = STALE_AFTER_BARS) -> bool:
+        return any(
+            leg.is_mark_stale(stale_after_bars)
+            for leg in self.legs
+            if leg.status == PositionStatus.OPEN
+        )
+
 
 # ---------------------------------------------------------------------------
 # Quote provider protocol
@@ -223,6 +298,10 @@ class QuoteProvider(Protocol):
 
     def get_quote(self, instrument_token: str) -> dict[str, Any]:
         """Return ``{"ltp": float, "bid": float, "ask": float, ...}``."""
+        ...
+
+    def register_contract(self, contract: Any) -> None:
+        """Register an option contract so token → symbol resolution survives restarts (R3)."""
         ...
 
 
@@ -250,6 +329,12 @@ class FakeQuoteProvider:
     def __init__(self, default_price: float = 100.0) -> None:
         self.default_price = default_price
         self.prices: dict[str, float] = {}
+        self._contracts: dict[str, Any] = {}
+
+    def register_contract(self, contract: Any) -> None:
+        token = str(getattr(contract, "instrument_token", "") or "")
+        if token:
+            self._contracts[token] = contract
 
     def get_quote(self, instrument_token: str) -> dict[str, Any]:
         price = self.prices.get(instrument_token, self.default_price)
@@ -535,7 +620,22 @@ class OptionPaperBroker:
                 position.instrument_token,
                 "SELL" if position.is_long else "BUY",
             )
-            exit_price = Decimal(str(quote.get("ltp", 0)))
+            is_failed_quote = (
+                not isinstance(quote, dict)
+                or not quote
+                or bool(quote.get("error"))
+            )
+            if is_failed_quote:
+                # Fail-closed exit: if the quote provider fails during a close,
+                # settle at the last known mark (or entry price) rather than
+                # booking a fake ₹0.00 fill.
+                exit_price = (
+                    position.current_price
+                    if position.current_price > 0
+                    else position.entry_price
+                )
+            else:
+                exit_price = Decimal(str(quote.get("ltp", 0) or 0))
             exit_price = self._apply_slippage(exit_price, "SELL" if position.is_long else "BUY")
 
             pnl = position.close(exit_price, ts)
@@ -604,36 +704,76 @@ class OptionPaperBroker:
         ``timestamp`` is accepted for interface symmetry with
         :meth:`execute_structure` / :meth:`close_structure`; MTM updates
         always stamp positions with wall-clock time.
+
+        Atomic structure marking: for multi-leg structures, quotes are fetched
+        for all open legs first. If any leg of a structure fails its quote,
+        none of the legs in that structure overwrite ``current_price`` (avoiding
+        a partial-leg "Frankenstein spread" mark), while failing legs increment
+        ``mtm_failures`` and store ``last_quote_error``.
         """
         total_unrealized = ZERO
+        open_positions = [
+            p for p in self._positions.values() if p.status == PositionStatus.OPEN
+        ]
+        if not open_positions:
+            return total_unrealized
 
-        for position in self._positions.values():
-            if position.status != PositionStatus.OPEN:
-                continue
+        # Group open positions by structure_id so multi-leg structures mark atomically.
+        groups: dict[str, list[OptionPosition]] = {}
+        for pos in open_positions:
+            key = pos.structure_id or f"_pos:{pos.position_id}"
+            groups.setdefault(key, []).append(pos)
 
-            quote = quote_provider.get_quote(position.instrument_token)
-            price = Decimal(str(quote.get("ltp", 0)))
-            # Fail-closed marking (2026-09-23): a FAILED quote (empty row /
-            # error key from a dead session or unknown token) must not
-            # overwrite the last known price — zeros zeroed restored legs
-            # and read as a -100% position. A GENUINE zero still passes
-            # through: a deep-OTM option can legitimately be worth ₹0.00
-            # (the synthetic provider tags real prices with "synthetic";
-            # failure rows are empty or carry an "error" key).
-            is_failure = bool(quote.get("error")) or (
-                price <= 0 and not quote.get("synthetic") and not quote
-            )
-            if is_failure:
-                if position.current_price > 0:
-                    total_unrealized += position.calculate_unrealized_pnl()
-                elif position.entry_price > 0:
-                    # No good mark ever seen — hold at entry premium rather
-                    # than flashing a fake total loss.
-                    position.current_price = position.entry_price
-                    total_unrealized += position.calculate_unrealized_pnl()
-                continue
-            pnl = position.update_mtm(price)
-            total_unrealized += pnl
+        raised_exc: Exception | None = None
+
+        for group_positions in groups.values():
+            leg_outcomes: list[tuple[OptionPosition, bool, Decimal, str | None]] = []
+            for position in group_positions:
+                try:
+                    quote = quote_provider.get_quote(position.instrument_token)
+                except Exception as exc:  # noqa: BLE001 — record failure before re-raising
+                    raised_exc = exc
+                    leg_outcomes.append((position, True, ZERO, str(exc)))
+                    continue
+
+                if not isinstance(quote, dict) or not quote:
+                    leg_outcomes.append((position, True, ZERO, "empty quote row"))
+                    continue
+
+                price = Decimal(str(quote.get("ltp", 0) or 0))
+                # Fail-closed marking (2026-09-23 + R1/AC #3): a FAILED quote
+                # (empty row / error key from a dead session or unknown token)
+                # must not overwrite the last known price. A GENUINE zero
+                # (ltp=0 with NO "error" key) passes through and updates the
+                # mark to 0 with mark_stale=False.
+                if bool(quote.get("error")):
+                    leg_outcomes.append(
+                        (position, True, price, str(quote.get("error")))
+                    )
+                else:
+                    leg_outcomes.append((position, False, price, None))
+
+            any_failed = any(is_fail for _, is_fail, _, _ in leg_outcomes)
+            if any_failed:
+                for position, is_fail, _, err_msg in leg_outcomes:
+                    if is_fail:
+                        total_unrealized += position.record_mtm_failure(err_msg)
+                    else:
+                        # Sibling leg failed — keep this leg's last consistent
+                        # price so the structure net mark does not desync,
+                        # while clearing any stale error on this healthy leg.
+                        position.last_quote_error = None
+                        if position.current_price > 0:
+                            total_unrealized += position.calculate_unrealized_pnl()
+                        elif position.entry_price > 0:
+                            position.current_price = position.entry_price
+                            total_unrealized += position.calculate_unrealized_pnl()
+            else:
+                for position, _, price, _ in leg_outcomes:
+                    total_unrealized += position.update_mtm(price)
+
+        if raised_exc is not None:
+            raise raised_exc
 
         return total_unrealized
 
