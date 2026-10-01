@@ -157,11 +157,19 @@ def _fetch_bars(
     return []
 
 
-#: NSE index tokens. Indexes are NOT in scriptmaster (which lists only
-#: tradable instruments — equities, ETFs, derivatives), so they resolve via
-#: this fixed map. Values are mStock instrument tokens, verified live against
-#: the TypeA historical endpoint on 2026-09-18 (NIFTY ~23.3K, BANKNIFTY ~56.5K
-#: closes — the NSE convention 26000/26009, NOT Zerodha's 99926000/99926009).
+#: Index security ids for the TypeA HISTORICAL endpoint. Indexes are NOT in
+#: scriptmaster (which lists only tradable instruments), so they resolve via
+#: this fixed map.
+#:
+#: Every id below was re-verified on 2026-10-02 by exact day-candle value
+#: match against the public index series (Yahoo ^CNX*/^NSEI/^BSESN, Sep-Oct
+#: 2026 closes) plus the mStock API annexure. The previous table was largely
+#: wrong: 26012 is Nifty 100 (not Auto), 26017 is India VIX (not Media),
+#: 26018/26019 were Realty/Infra swapped, 26021 is FMCG (not PSU Bank),
+#: 26015/26016 are rejected or empty, 26038 returns a flat stale 196.79, and
+#: SENSEX is 51 on BSE (1 raises InputException). NIFTY/BANKNIFTY were the
+#: only correct ones (verified live 2026-09-18). FINNIFTY (Next 50) and
+#: MIDCPNIFTY keep their historical ids — no external series to match.
 INDEX_SECURITY_TOKENS: dict[str, str] = {
     "NIFTY": "26000",
     "NIFTY50": "26000",
@@ -169,35 +177,35 @@ INDEX_SECURITY_TOKENS: dict[str, str] = {
     "BANKNIFTY": "26009",
     "NIFTY BANK": "26009",
     "NIFTYBANK": "26009",
-    # Sectoral indices (mStock security tokens)
+    # Sectoral/thematic indices (mStock security ids, value-verified)
     "FINNIFTY": "26037",
     "NIFTY NEXT 50": "26037",
     "MIDCPNIFTY": "26051",
     "NIFTY MIDCAP 150": "26051",
-    "NIFTYIT": "26013",
-    "NIFTY IT": "26013",
-    "NIFTYAUTO": "26012",
-    "NIFTY AUTO": "26012",
-    "NIFTYPHARMA": "26018",
-    "NIFTY PHARMA": "26018",
-    "NIFTYMETAL": "26016",
-    "NIFTY METAL": "26016",
-    "NIFTYREALTY": "26019",
-    "NIFTY REALTY": "26019",
-    "NIFTYFMCG": "26014",
-    "NIFTY FMCG": "26014",
-    "NIFTYENERGY": "26011",
-    "NIFTY ENERGY": "26011",
-    "NIFTYMEDIA": "26017",
-    "NIFTY MEDIA": "26017",
-    "NIFTYPSUBANK": "26021",
-    "NIFTY PSU BANK": "26021",
-    "NIFTYINFRA": "26015",
-    "NIFTY INFRA": "26015",
-    "SENSEX": "1",
-    "S&P BSE SENSEX": "1",
-    "INDIAVIX": "26038",
-    "INDIA VIX": "26038",
+    "NIFTYIT": "26008",
+    "NIFTY IT": "26008",
+    "NIFTYAUTO": "26029",
+    "NIFTY AUTO": "26029",
+    "NIFTYPHARMA": "26023",
+    "NIFTY PHARMA": "26023",
+    "NIFTYMETAL": "26030",
+    "NIFTY METAL": "26030",
+    "NIFTYREALTY": "26018",
+    "NIFTY REALTY": "26018",
+    "NIFTYFMCG": "26021",
+    "NIFTY FMCG": "26021",
+    "NIFTYENERGY": "26020",
+    "NIFTY ENERGY": "26020",
+    "NIFTYMEDIA": "26031",
+    "NIFTY MEDIA": "26031",
+    "NIFTYPSUBANK": "26025",
+    "NIFTY PSU BANK": "26025",
+    "NIFTYINFRA": "26019",
+    "NIFTY INFRA": "26019",
+    "SENSEX": "51",
+    "S&P BSE SENSEX": "51",
+    "INDIAVIX": "26017",
+    "INDIA VIX": "26017",
 }
 
 #: Index display names for the LIVE quote endpoint (``quote/ohlc``). That

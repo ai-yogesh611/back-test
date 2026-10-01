@@ -1510,6 +1510,26 @@ body.has-alert-widget .toast-stack { bottom: 76px; }
 .sym-no-data { color: var(--muted); opacity: .62; font-style: italic; }
 select.input option.sym-no-data:disabled { cursor: not-allowed; }
 
+/* Data-tab instrument picker: a tick-list of fetchable instruments
+ * (All/Equity/Index tabs), sharing the .sym-tab styling above. */
+.dm-picker-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 4px 0; }
+.dm-symbol-list {
+    max-height: 220px; overflow-y: auto; border: 1px solid var(--border);
+    border-radius: 8px; background: var(--surface-2);
+}
+.dm-symbol-list:empty { display: none; }
+.dm-symbol-row {
+    display: flex; align-items: center; gap: 8px; padding: 5px 10px;
+    font-size: .78rem; cursor: pointer; border-bottom: 1px solid rgba(148,163,184,.07);
+}
+.dm-symbol-row:hover { background: rgba(59,130,246,.08); }
+.dm-symbol-row input { accent-color: var(--primary); flex: 0 0 auto; }
+.dm-symbol-sym { font-weight: 600; white-space: nowrap; }
+.dm-symbol-name { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; }
+.dm-symbol-cov { margin-left: auto; color: var(--muted); font-size: .7rem; white-space: nowrap; }
+.dm-symbol-nodata { font-style: italic; opacity: .7; }
+.dm-symbol-empty { padding: 10px; font-size: .78rem; color: var(--muted); font-style: italic; }
+
 /* ------------------------------------------------------------------
  * Richer metric sections (PRD backTest-enhance §2.2).
  * Four labelled <details> blocks below the existing metrics grid. The
