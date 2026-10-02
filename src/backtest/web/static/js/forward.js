@@ -419,6 +419,34 @@ async function init() {
 
     // Load strategies
     let strategies = [];
+    function escapeHtml(text) {
+        return String(text ?? "").replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
+    }
+
+    function updateStrategySegmentInfo(stratName) {
+        const infoEl = $("strategy-segment-info");
+        if (!infoEl) return;
+        const strat = strategies.find((s) => s.name === stratName);
+        if (!strat) {
+            infoEl.innerHTML = "";
+            return;
+        }
+        const isOpt = !!(strat.signal_kind === "option" || String(strat.name).includes("option"));
+        const seg = strat.default_segment || (isOpt ? "options_index" : "equity_intraday");
+        let html = `<span>Linked segment:</span> <span class="badge badge-subtle" style="font-family:monospace;">${escapeHtml(seg)}</span> <span class="text-muted" style="font-size:11px;">(execution fees & margins follow Settings)</span>`;
+        if (strat.readable_criteria && (strat.readable_criteria.entry || strat.readable_criteria.entry_strike)) {
+            const rc = strat.readable_criteria;
+            html += `<div style="width:100%; font-size:11px; color:var(--muted); margin-top:2px;">`
+                + `<strong>Criteria:</strong> `
+                + (rc.entry ? `Entry: <em>${escapeHtml(rc.entry)}</em>` : "")
+                + (rc.entry_strike ? ` · Strike: <em>${escapeHtml(rc.entry_strike)}</em>` : "")
+                + (rc.take_profit ? ` · TP: <em>${escapeHtml(rc.take_profit)}</em>` : "")
+                + (rc.stop_loss ? ` · SL: <em>${escapeHtml(rc.stop_loss)}</em>` : "")
+                + `</div>`;
+        }
+        infoEl.innerHTML = html;
+    }
+
     try {
         strategies = await fetchJSON("/api/strategies");
         $("strategy").innerHTML = strategies.map((s) => `<option value="${s.name}">${s.name}</option>`).join("");
@@ -441,6 +469,7 @@ async function init() {
 
     $("strategy").addEventListener("change", async () => {
         updateStrategySymbolHint($("strategy").value);
+        updateStrategySegmentInfo($("strategy").value);
         try {
             renderParamsInto($("params-container"),
                 await fetchJSON(`/api/strategies/${encodeURIComponent($("strategy").value)}/params`));
@@ -473,11 +502,13 @@ async function init() {
         }
     }
     updateStrategySymbolHint($("strategy").value);
+    updateStrategySegmentInfo($("strategy").value);
 
     // Pre-fill from backtest
     const pre = SessionState.forwardPrefill;
     if (pre && pre.config && pre.config.strategy) {
         $("strategy").value = pre.config.strategy;
+        updateStrategySegmentInfo(pre.config.strategy);
         if (pre.config.symbol) $("symbol").value = pre.config.symbol;
         if (pre.config.timeframe) $("timeframe").value = pre.config.timeframe;
         if (pre.config.capital) $("capital").value = pre.config.capital;
@@ -490,6 +521,7 @@ async function init() {
         const banner = $("prefillBanner");
         if (banner) banner.hidden = false;
     } else if ($("strategy").value) {
+        updateStrategySegmentInfo($("strategy").value);
         try {
             renderParamsInto($("params-container"),
                 await fetchJSON(`/api/strategies/${encodeURIComponent($("strategy").value)}/params`));

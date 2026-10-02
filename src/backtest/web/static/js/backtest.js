@@ -374,6 +374,33 @@ async function init() {
 
     // load strategies
     let strategies = [];
+    function escapeHtml(text) {
+        return String(text ?? "").replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
+    }
+
+    function updateStrategySegmentInfo(stratName) {
+        const infoEl = $("strategy-segment-info");
+        if (!infoEl) return;
+        const strat = strategies.find((s) => s.name === stratName);
+        if (!strat) {
+            infoEl.innerHTML = "";
+            return;
+        }
+        const seg = strat.default_segment || "equity_intraday";
+        let html = `<span>Linked segment:</span> <span class="badge badge-subtle" style="font-family:monospace;">${escapeHtml(seg)}</span> <span class="text-muted" style="font-size:11px;">(execution fees & margins follow Settings)</span>`;
+        if (strat.readable_criteria && (strat.readable_criteria.entry || strat.readable_criteria.entry_strike)) {
+            const rc = strat.readable_criteria;
+            html += `<div style="width:100%; font-size:11px; color:var(--muted); margin-top:2px;">`
+                + `<strong>Criteria:</strong> `
+                + (rc.entry ? `Entry: <em>${escapeHtml(rc.entry)}</em>` : "")
+                + (rc.entry_strike ? ` · Strike: <em>${escapeHtml(rc.entry_strike)}</em>` : "")
+                + (rc.take_profit ? ` · TP: <em>${escapeHtml(rc.take_profit)}</em>` : "")
+                + (rc.stop_loss ? ` · SL: <em>${escapeHtml(rc.stop_loss)}</em>` : "")
+                + `</div>`;
+        }
+        infoEl.innerHTML = html;
+    }
+
     try {
         // venue=backtest: the server omits option strategies, because a
         // backtest runs on DB candles and the DB holds no historical chains.
@@ -395,8 +422,9 @@ async function init() {
         showToast("Could not load strategies", "error");
     }
 
-    // strategy change → dynamic params
+    // strategy change → dynamic params & segment info
     $("strategy").addEventListener("change", async () => {
+        updateStrategySegmentInfo($("strategy").value);
         try {
             renderParams(await fetchJSON(`/api/strategies/${encodeURIComponent($("strategy").value)}/params`));
         } catch (err) { showToast(err.message, "error"); }
@@ -407,6 +435,7 @@ async function init() {
     if (pre && pre.config && pre.config.strategy) {
         const cfg = pre.config;
         $("strategy").value = cfg.strategy;
+        updateStrategySegmentInfo(cfg.strategy);
         if (cfg.symbol) {
             symbolPicker.setValue(cfg.symbol);
             Timeframes.applyTo($("timeframe"), document.body.dataset.source === "synthetic" ? ["1day"] : symbolPicker.timeframesFor(cfg.symbol));
@@ -426,7 +455,8 @@ async function init() {
         SessionState.clear(SessionState.keys.backtestPrefill);
         showBanner("Pre-filled from a saved comparison slot");
     } else if ($("strategy").value) {
-        // default: render params for the first strategy
+        // default: render params and segment info for the first strategy
+        updateStrategySegmentInfo($("strategy").value);
         try {
             renderParams(await fetchJSON(`/api/strategies/${encodeURIComponent($("strategy").value)}/params`));
         } catch { /* ignore */ }

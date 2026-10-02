@@ -174,7 +174,17 @@ import numpy as np
 
     #: Field order kept identical to the builder checklist so plugin source,
     #: API payload and UI read the same way.
-    CRITERIA_KEYS = ("entry", "entry_strike", "expiry", "take_profit", "stop_loss", "exit")
+    CRITERIA_KEYS = (
+        "entry",
+        "entry_strike",
+        "expiry",
+        "take_profit",
+        "stop_loss",
+        "exit",
+        "opt_moneyness",
+        "opt_type",
+        "opt_expiry",
+    )
 
     @classmethod
     def _clean_criteria(cls, criteria: dict) -> dict:
@@ -429,25 +439,78 @@ import numpy as np
                                       or var.endswith("sl") or var.endswith("sl_price")):
                 stop_loss = f"{var} = {resolve(var)}"
 
-        # 4. Option strike / expiry: look for integer literals near the words
-        # strike/expiry in the source (Pine option strategies hardcode them).
-        # Each match is filed under the keyword it actually carries — an
-        # expiry literal is not a strike and vice versa.
-        for pat in re.finditer(
-            r"(?i)(\bstrike\b|expiry)[^;]{0,80}?(\d{1,3}(?:\.\d{1,2})?)", pine_code
-        ):
-            keyword = pat.group(1).lower()
-            if entry_strike is None and "strike" in keyword:
-                entry_strike = pat.group(2)
-            if expiry is None and "expiry" in keyword:
-                expiry = pat.group(2)
+        # 4. Option strike / expiry detection:
+        # Check for relative moneyness (ATM, ATM+1, ATM+2, ATM-1, ITM, OTM),
+        # option type (CE, PE, CE+PE), and expiry (current week, next week, current month).
+        moneyness_pat = re.search(
+            r"(?i)\b(ATM[+-]\d+|ITM[+-]\d+|OTM[+-]\d+)\b", pine_code
+        )
+        if not moneyness_pat:
+            moneyness_pat = re.search(
+                r"(?i)\b(ATM|ITM|OTM)\b", pine_code
+            )
+        opt_type_pat = re.search(
+            r"(?i)\b(CE\s*\+\s*PE|CE|PE|Call|Put)\b", pine_code
+        )
+        expiry_pat = re.search(
+            r"(?i)\b(current\s*week(?:\s*dt\.?)?|next\s*week(?:\s*dt\.?)?|"
+            r"current\s*month(?:\s*dt\.?)?|next\s*month(?:\s*dt\.?)?|monthly|weekly)\b",
+            pine_code,
+        )
 
-        # Heuristic option-ness: a script that talks about strikes/CE/PE/options
-        # must state its strike/expiry; equity scripts are not blocked by
-        # fields they do not have.
+        opt_moneyness = moneyness_pat.group(1).upper() if moneyness_pat else None
+        opt_type = None
+        if opt_type_pat:
+            t = opt_type_pat.group(1).upper()
+            if "CALL" in t:
+                opt_type = "CE"
+            elif "PUT" in t:
+                opt_type = "PE"
+            elif "+" in t:
+                opt_type = "Both (CE+PE)"
+            else:
+                opt_type = t
+
+        opt_expiry = None
+        if expiry_pat:
+            e = expiry_pat.group(1).lower()
+            if "next" in e and "month" in e:
+                opt_expiry = "next month dt."
+            elif "current" in e and "month" in e or "monthly" in e:
+                opt_expiry = "current month dt."
+            elif "next" in e and "week" in e:
+                opt_expiry = "next week dt."
+            elif "current" in e and "week" in e or "weekly" in e:
+                opt_expiry = "current week dt."
+
+        # If both moneyness and option type are detected:
+        if opt_moneyness and opt_type:
+            exp_suffix = f" expiry {opt_expiry}" if opt_expiry else ""
+            entry_strike = f"{opt_moneyness} {opt_type}{exp_suffix}".strip()
+            if opt_expiry:
+                expiry = opt_expiry
+        else:
+            # Fall back to numeric strike literals near words strike/expiry
+            for pat in re.finditer(
+                r"(?i)(\bstrike\b|expiry)[^;]{0,80}?(\d{1,3}(?:\.\d{1,2})?)", pine_code
+            ):
+                keyword = pat.group(1).lower()
+                if entry_strike is None and "strike" in keyword:
+                    entry_strike = pat.group(2)
+                if expiry is None and "expiry" in keyword:
+                    expiry = pat.group(2)
+
+        # Heuristic option-ness: a script that talks about strikes/CE/PE/options/straddles
+        # must state its strike/expiry; equity scripts are not blocked by fields they do not have.
         is_options = bool(
             entry_strike is not None
-            or re.search(r"(?i)\bstrike\b|\bCE\b|\bPE\b|\boptions?\b", pine_code)
+            or opt_moneyness is not None
+            or opt_type is not None
+            or opt_expiry is not None
+            or re.search(
+                r"(?i)\b(strike|expiry|CE|PE|call|put|options?|straddle|strangle)\b",
+                pine_code,
+            )
         )
 
         missing: list[str] = []
@@ -470,6 +533,9 @@ import numpy as np
             "stop_loss": stop_loss,
             "entry_strike": entry_strike,
             "expiry": expiry,
+            "opt_moneyness": opt_moneyness,
+            "opt_type": opt_type,
+            "opt_expiry": opt_expiry,
             "is_options": is_options,
             "missing": missing,
         }
