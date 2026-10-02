@@ -98,6 +98,16 @@ CHUNK_DAYS_MAP = {
     "1hour": 120,
 }
 
+# Between-chunk pacing for the historical fetch loop (2026-10-03). mStock's
+# gateway 502s a large share of requests fired at the old 0.15 s cadence, but
+# the retries behind ``_get_historical_with_retry`` only pay cost on failure —
+# so base the loop at 0.5 s and widen to 2.0 s when a symbol hits sustained
+# trouble, decaying back once three chunks land clean.
+CHUNK_SLEEP_BASE = 0.5
+CHUNK_SLEEP_WIDE = 2.0
+CHUNK_PACE_UP_AFTER = 3  # consecutive post-retry failures -> widen
+CHUNK_PACE_DOWN_AFTER = 3  # consecutive successes -> return to base
+
 
 # -----------------------------------------------------------------------
 # API Endpoints
@@ -843,6 +853,12 @@ def _fetch_bars_chunked(
     chunk_errors = 0
     chunk_done = 0
     chunk_start = start
+    # Adaptive pacing: mStock gateway 502 bursts (≥3 consecutive lost chunks)
+    # widen the spacing to CHUNK_SLEEP_WIDE for the rest of this symbol; three
+    # clean chunks in a row decay back to the base cadence.
+    pace = CHUNK_SLEEP_BASE
+    consec_fails = 0
+    consec_ok = 0
 
     while chunk_start < end:
         if should_cancel is not None and should_cancel():
@@ -856,8 +872,23 @@ def _fetch_bars_chunked(
             payload = resp.json()
             bars = _extract_bars(payload)
             all_bars.extend(bars)
+            consec_fails = 0
+            consec_ok += 1
+            if consec_ok >= 3 and pace > CHUNK_SLEEP_BASE:
+                pace = CHUNK_SLEEP_BASE
+                log.info("[data] mStock responding cleanly again — pacing back to %.1fs", pace)
         except Exception as exc:  # noqa: BLE001 — skip bad chunks, but say so
             chunk_errors += 1
+            consec_ok = 0
+            consec_fails += 1
+            if consec_fails >= 3 and pace < CHUNK_SLEEP_WIDE:
+                pace = CHUNK_SLEEP_WIDE
+                log.warning(
+                    "[data] %d consecutive chunk failures — widening pace to %.1fs "
+                    "for the rest of this symbol",
+                    consec_fails,
+                    pace,
+                )
             log.warning(
                 "[data] chunk %s..%s failed (%s: %s) — those bars are missing",
                 chunk_start,
@@ -869,7 +900,7 @@ def _fetch_bars_chunked(
         if on_progress is not None:
             on_progress(chunk_done, total_chunks)
         chunk_start = chunk_end + timedelta(days=1)
-        time.sleep(0.15)
+        time.sleep(pace)
 
     return all_bars, chunk_errors
 

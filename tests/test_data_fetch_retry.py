@@ -128,3 +128,51 @@ def test_chunk_loop_recovers_transient_502_with_zero_errors(monkeypatch):
     )
     assert errors == 0
     assert len(bars) == 6  # both chunks fully collected after the retry
+
+
+# ---------------------------------------------------------------------------
+# Adaptive pacing (2026-10-03): 0.5 s base, 2.0 s after 3 consecutive lost
+# chunks, decay back after 3 clean ones — mStock bad hours cost less than a
+# blanket pause, good hours stay fast.
+# ---------------------------------------------------------------------------
+
+
+def _pacing_get(fail_windows: set[str]):
+    """Fake requests.get: the listed chunk windows 502 on EVERY attempt."""
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        if params["from"] in fail_windows:
+            return _Resp(502)
+        return _Resp(200, _candles(1))
+
+    return fake_get
+
+
+def test_healthy_run_paces_at_base(monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr(dm.requests, "get", _pacing_get(set()))
+    monkeypatch.setattr(dm.time, "sleep", lambda s: sleeps.append(s))
+
+    dm._fetch_bars_chunked(
+        "key", "tok", "11703", "2026-06-01", "2026-06-10", "NSE", "minute", 2
+    )
+    assert sleeps == [dm.CHUNK_SLEEP_BASE] * 3  # no widening when all is well
+
+
+def test_pace_widens_after_three_consecutive_failures_then_decays(monkeypatch):
+    # 6 chunks (01,04,07,10,13,16-Jun); first three never recover.
+    fails = {"2026-06-01", "2026-06-04", "2026-06-07"}
+    sleeps: list[float] = []
+    monkeypatch.setattr(dm.requests, "get", _pacing_get(fails))
+    monkeypatch.setattr(dm.time, "sleep", lambda s: sleeps.append(s))
+
+    bars, errors = dm._fetch_bars_chunked(
+        "key", "tok", "11703", "2026-06-01", "2026-06-18", "NSE", "minute", 2
+    )
+    assert errors == 3
+    assert len(bars) == 3  # chunks 4-6 collected
+
+    pacing = [s for s in sleeps if s in (dm.CHUNK_SLEEP_BASE, dm.CHUNK_SLEEP_WIDE)]
+    # chunks 1-2 fail one-by-one (below threshold) -> base; 3rd consecutive
+    # failure widens; chunks 4,5 stay wide; 3rd clean success decays to base.
+    assert pacing == [0.5, 0.5, 2.0, 2.0, 2.0, 0.5]
