@@ -648,7 +648,15 @@ def _index_row(symbol: str) -> dict | None:
 
 def _catalogue_rows(engine, syms: list[str]) -> list[dict]:
     """Resolve trading symbols to fetchable rows in the scriptmaster
-    catalogue (NSE ``EQ`` / BSE ``Equity`` only — never contracts)."""
+    catalogue — at most ONE row per symbol, NSE preferred.
+
+    The catalogue carries both an NSE ``EQ`` and a BSE ``Equity`` row for
+    many names. Without the dedupe a fetch pulled both: the same symbol was
+    requested twice and the second pass rewrote its bars under the other
+    exchange — the exact shape of the NSE+BSE duplicate-row poison already
+    documented in ``market_data_cache`` (2026-10-02: an equity-scope fetch
+    showed 318 rows for the 200-symbol universe).
+    """
     if not syms:
         return []
     placeholders = ", ".join([f":s{i}" for i in range(len(syms))])
@@ -663,7 +671,15 @@ def _catalogue_rows(engine, syms: list[str]) -> list[dict]:
     params = {f"s{i}": s.upper() for i, s in enumerate(syms)}
     with engine.connect() as conn:
         rows = conn.execute(sql, params).mappings().all()
-    return [dict(r) for r in rows]
+
+    one_per_symbol: dict[str, dict] = {}
+    for r in rows:
+        row = dict(r)
+        sym = str(row["tradingsymbol"]).strip().upper()
+        kept = one_per_symbol.get(sym)
+        if kept is None or (kept["exchange"] != "NSE" and row["exchange"] == "NSE"):
+            one_per_symbol[sym] = row
+    return list(one_per_symbol.values())
 
 
 def _load_instruments(
@@ -717,6 +733,19 @@ def _load_instruments(
         matched = {str(r["tradingsymbol"]).strip().upper() for r in found}
         rows.extend(found)
         not_found.extend(s for s in universe_syms if s not in matched)
+        bse_only = [r["tradingsymbol"] for r in found if r["exchange"] != "NSE"]
+        if bse_only:
+            # Known catalogue gap: most NIFTY 200 names have no NSE row with
+            # instrument_type='EQ' (they carry segment codes instead), so
+            # they resolve to their BSE row. Bars land exchange=BSE — fine
+            # for reading, wrong if a symbol-level NSE series is expected.
+            log.info(
+                "[data] equity scope: %d of %d universe symbols resolved via BSE only "
+                "(no NSE 'EQ' catalogue row), e.g. %s",
+                len(bse_only),
+                len(universe_syms),
+                ", ".join(sorted(bse_only)[:5]),
+            )
     if "index" in parts:
         rows.extend(filter(None, (_index_row(sym) for sym, _ in INDEX_UNIVERSE)))
     return rows, not_found

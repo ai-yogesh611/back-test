@@ -69,6 +69,17 @@ def engine(tmp_path):
                 ),
                 {"t": i, "s": sym, "i": itype, "e": exch},
             )
+        # Dual-listing: the FIRST seeded universe symbol also exists as a
+        # BSE "Equity" row. Live production data (2026-10-02): 118 of the
+        # 200 universe names are like this, and an un-deduped resolve made
+        # the equity scope fetch each of them twice.
+        conn.execute(
+            text(
+                "INSERT INTO instruments (instrument_token, tradingsymbol, "
+                "instrument_type, exchange) VALUES (9500, :s, 'Equity', 'BSE')"
+            ),
+            {"s": seeded[0]},
+        )
         conn.commit()
     eng.seeded_universe = seeded  # type: ignore[attr-defined]
     yield eng
@@ -144,6 +155,37 @@ def test_no_symbols_and_default_scope_covers_everything_the_picker_shows(engine)
     got = _symbols(rows)
     assert {sym for sym, _ in INDEX_UNIVERSE} <= got
     assert len(got) < 600  # curated slices, never the raw catalogue
+
+
+# ---------------------------------------------------------------------------
+# Dual-listing: one row per symbol, NSE preferred
+# ---------------------------------------------------------------------------
+
+
+def test_dual_listed_symbol_is_fetched_once_via_nse(engine):
+    """A universe name with BOTH an NSE EQ and a BSE Equity row must resolve
+    to exactly one row — the NSE one. Two rows meant two fetches and bars
+    rewritten under the other exchange (market_data_cache dup poison)."""
+    rows, _ = _load_instruments(engine, None, "equity")
+    sym = engine.seeded_universe[0].upper()
+    mine = [r for r in rows if str(r["tradingsymbol"]).upper() == sym]
+    assert len(mine) == 1, "dual-listed symbol fetched twice"
+    assert mine[0]["exchange"] == "NSE"
+    # one row per symbol across the whole resolution
+    assert len(rows) == len(_symbols(rows))
+
+
+def test_ticked_list_also_dedupes_dual_listings(engine):
+    sym = engine.seeded_universe[0].upper()
+    rows, _ = _load_instruments(engine, [sym], "equity")
+    assert len(rows) == 1 and rows[0]["exchange"] == "NSE"
+
+
+def test_bse_only_symbol_still_resolves(engine):
+    """The catalogue gap: 82 universe names have no NSE 'EQ' row. They must
+    still fetch (via BSE), not vanish into not_found."""
+    rows, not_found = _load_instruments(engine, ["001HCCL29"], "equity")
+    assert [r["exchange"] for r in rows] == ["BSE"]
 
 
 # ---------------------------------------------------------------------------
