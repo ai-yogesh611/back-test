@@ -7,6 +7,7 @@ plugins with metadata extraction and validation.
 from __future__ import annotations
 
 import ast
+import json
 import re
 from datetime import datetime
 from pathlib import Path
@@ -89,6 +90,7 @@ class PineScriptConverter:
         strategy_name: str,
         metadata: dict,
         segment: str | None = None,
+        criteria: dict | None = None,
     ) -> Path:
         """Save generated strategy as plugin.
 
@@ -101,6 +103,12 @@ class PineScriptConverter:
                 backtest → paper → live all spawn into the same partition;
                 the class-level ``default_segment`` is what the spawn form
                 preselects.
+            criteria: Optional final readable criteria (issues.txt follow-up:
+                every required criterion is either detected in the Pine
+                script or typed by the user before Save is allowed). Stored
+                as a ``readable_criteria`` class attribute so the strategy's
+                plain-language entry/strike/TP/SL definition travels with the
+                plugin into backtest, paper and live.
 
         Returns:
             Path to the saved plugin file
@@ -137,44 +145,91 @@ import numpy as np
 
         full_code = header + python_code
 
+        injections = []
         if segment:
-            full_code = self._inject_default_segment(full_code, segment)
-            syntax_error = None
+            seg = re.sub(r"[^a-z0-9_]", "", str(segment).strip().lower())
+            if not seg:
+                raise PineConversionError(f"invalid segment name: {segment!r}")
+            injections.append(f'    default_segment = "{seg}"\n')
+        if criteria:
+            injections.append(
+                "    readable_criteria = "
+                + json.dumps(self._clean_criteria(criteria), ensure_ascii=False)
+                + "\n"
+            )
+        if injections:
+            for line in injections:
+                full_code = self._insert_into_class_body(full_code, line)
             try:
                 ast.parse(full_code)
             except SyntaxError as exc:
-                syntax_error = exc
-            if syntax_error:
                 raise PineConversionError(
-                    f"Failed to link segment {segment!r} to the generated "
-                    f"strategy: {syntax_error}"
+                    f"Failed to link strategy metadata to the generated "
+                    f"strategy: {exc}"
                 )
 
         filepath.write_text(full_code, encoding="utf-8")
 
         return filepath
 
+    #: Field order kept identical to the builder checklist so plugin source,
+    #: API payload and UI read the same way.
+    CRITERIA_KEYS = ("entry", "entry_strike", "expiry", "take_profit", "stop_loss", "exit")
+
+    @classmethod
+    def _clean_criteria(cls, criteria: dict) -> dict:
+        """Sanitize the criteria dict for embedding as a Python literal.
+
+        Only the known keys survive, values are plain strings truncated to a
+        sane length, and ``sources`` is restricted to 'detected'/'user' so a
+        crafted payload can never smuggle code into the generated file
+        (json.dumps escapes everything else, the allow-list keeps it honest).
+        """
+        out: dict = {}
+        for key in cls.CRITERIA_KEYS:
+            value = str(criteria.get(key) or "").strip()
+            if value:
+                out[key] = value[:400]
+        sources = criteria.get("sources") or {}
+        clean_sources = {
+            k: ("user" if str(sources.get(k)) == "user" else "detected")
+            for k in out
+            if k != "sources"
+        }
+        if clean_sources:
+            out["sources"] = clean_sources
+        return out
+
     @staticmethod
-    def _inject_default_segment(python_code: str, segment: str) -> str:
-        """Add ``default_segment`` to the generated class body.
+    def _insert_into_class_body(python_code: str, line: str) -> str:
+        """Insert one class-body attribute line after the metadata block.
 
         Anchored on a class-body line the codegen always emits (version →
-        author → name, first match wins). The segment name is sanitized to
-        the identifier charset the spawn form produces, so a crafted string
-        can never break out of the quoted literal.
+        author → name, first match wins); values are pre-sanitized by the
+        caller, so the inserted line can never break out of its literal.
         """
-        seg = re.sub(r"[^a-z0-9_]", "", str(segment).strip().lower())
-        if not seg:
-            raise PineConversionError(f"invalid segment name: {segment!r}")
         for anchor in ('    version = "', '    author = "', '    name = "'):
             idx = python_code.find(anchor)
             if idx != -1:
                 end = python_code.find("\n", idx)
                 end = len(python_code) if end == -1 else end + 1
-                insert = f"    default_segment = \"{seg}\"\n"
-                return python_code[:end] + insert + python_code[end:]
+                return python_code[:end] + line + python_code[end:]
         raise PineConversionError(
             "generated strategy is missing its metadata block — cannot link a segment"
+        )
+
+    @staticmethod
+    def _inject_default_segment(python_code: str, segment: str) -> str:
+        """Add ``default_segment`` to the generated class body.
+
+        Kept for callers/tests that only need the segment; same anchor and
+        sanitization as :meth:`save_as_plugin`.
+        """
+        seg = re.sub(r"[^a-z0-9_]", "", str(segment).strip().lower())
+        if not seg:
+            raise PineConversionError(f"invalid segment name: {segment!r}")
+        return PineScriptConverter._insert_into_class_body(
+            python_code, f'    default_segment = "{seg}"\n'
         )
 
     def _validate_code(self, code: str) -> Tuple[bool, str]:

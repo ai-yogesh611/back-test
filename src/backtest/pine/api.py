@@ -121,6 +121,12 @@ def save_as_plugin():
             linked to a capital partition from config/segments.yaml so the
             spawn form preselects it and backtest → paper → live all land in
             the same broker/mode bucket.
+        criteria: dict — required (issues.txt S1 follow-up). Final readable
+            criteria: entry, take_profit, stop_loss (plus entry_strike and
+            expiry for option-related scripts), each either detected from the
+            Pine script or typed by the user in the builder. The server
+            re-checks completeness: a save with a gap is a 400, so the UI's
+            "Save hidden until complete" cannot be bypassed.
 
     Returns:
         {
@@ -153,6 +159,43 @@ def save_as_plugin():
             }
         ), 400
 
+    # issues.txt S1 follow-up: every required criterion must have a value —
+    # detected in the script or typed by the user (typed wins). Expiry only
+    # gates options scripts that the converter already flagged as such.
+    readable = (data.get("metadata") or {}).get("readable") or {}
+    criteria_in = data.get("criteria") or {}
+
+    def _criterion(key: str) -> str:
+        return str(criteria_in.get(key) or readable.get(key) or "").strip()
+
+    required = [
+        ("entry", "entry criteria"),
+        ("take_profit", "take profit criteria"),
+        ("stop_loss", "stop loss criteria"),
+    ]
+    if bool(readable.get("is_options")):
+        required.append(("entry_strike", "entry strike price"))
+        required.append(("expiry", "expiry"))
+    gaps = [label for key, label in required if not _criterion(key)]
+    if gaps:
+        return jsonify(
+            {
+                "success": False,
+                "error": "missing strategy criteria: "
+                + ", ".join(gaps)
+                + " — fill them in the readable-translation panel before saving.",
+            }
+        ), 400
+
+    criteria = {key: _criterion(key) for key, _label in required}
+    exit_text = _criterion("exit")
+    if exit_text:
+        criteria["exit"] = exit_text
+    criteria["sources"] = {
+        key: ("user" if str(criteria_in.get(key) or "").strip() else "detected")
+        for key, _label in required
+    }
+
     converter = PineScriptConverter()
 
     try:
@@ -161,6 +204,7 @@ def save_as_plugin():
             strategy_name=data["strategy_name"],
             metadata=data["metadata"],
             segment=segment,
+            criteria=criteria,
         )
 
         # Hot-load the new plugin into the registry so it appears in the

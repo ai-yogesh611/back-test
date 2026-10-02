@@ -276,3 +276,157 @@ def test_save_as_plugin_sanitizes_hostile_segment(tmp_path):
     with pytest.raises(PineConversionError):
         converter.save_as_plugin(python_code, "seg_bad2", metadata, segment='"; ("')
 
+
+# ----------------------------------------------------------------------
+# issues.txt S1 follow-up — missing criteria must be USER-PROVIDED before
+# save: injected into the plugin, re-checked server-side, Save-gated in UI
+# ----------------------------------------------------------------------
+
+def test_save_as_plugin_injects_readable_criteria(tmp_path):
+    """criteria= writes a readable_criteria class attribute into the plugin."""
+    import ast as py_ast
+    import json
+    import os
+
+    converter = PineScriptConverter()
+    python_code, metadata = converter.convert(SAMPLE_PINE)
+    criteria = {
+        "entry": "close crosses above EMA-12",
+        "take_profit": "limit = close * 1.03",
+        "stop_loss": "stop = close * 0.97",
+        "sources": {"entry": "detected", "take_profit": "user", "stop_loss": "user"},
+    }
+    original_cwd = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        filepath = converter.save_as_plugin(
+            python_code, "crit_test", metadata,
+            segment="equity_delivery", criteria=criteria,
+        ).resolve()
+    finally:
+        os.chdir(original_cwd)
+
+    content = filepath.read_text()
+    py_ast.parse(content)  # injection must not break syntax
+    lines = [ln for ln in content.splitlines() if "readable_criteria" in ln]
+    assert len(lines) == 1 and lines[0].startswith("    ")  # inside class body
+    parsed = json.loads(lines[0].strip().split("= ", 1)[1])
+    assert parsed["take_profit"] == "limit = close * 1.03"
+    assert parsed["sources"]["stop_loss"] == "user"
+    assert "entry_strike" not in parsed  # absent values are not fabricated
+
+
+def test_save_as_plugin_criteria_cannot_break_out(tmp_path):
+    """Hostile criteria strings stay quoted data; unknown keys are dropped."""
+    import ast as py_ast
+    import json
+    import os
+
+    converter = PineScriptConverter()
+    python_code, metadata = converter.convert(PINE_WITH_EXIT)
+    hostile = '"); \n    import os; os.system("evil")\n    x = ("'
+    criteria = {
+        "entry": "fine",
+        "take_profit": hostile,
+        "stop_loss": "ok",
+        "bogus_key": "junk",
+        "sources": {"take_profit": "admin"},
+    }
+    original_cwd = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        filepath = converter.save_as_plugin(
+            python_code, "crit_bad", metadata, criteria=criteria
+        ).resolve()
+    finally:
+        os.chdir(original_cwd)
+
+    content = filepath.read_text()
+    py_ast.parse(content)
+    assert "bogus_key" not in content
+    rc_line = next(ln for ln in content.splitlines() if "readable_criteria" in ln)
+    parsed = json.loads(rc_line.strip().split("= ", 1)[1])
+    assert parsed["sources"]["take_profit"] in ("user", "detected")
+    # The hostile text survived only as inert string data.
+    assert parsed["take_profit"] == hostile
+
+
+class _FakeSegments:
+    segments = {"equity_delivery": {}, "options_index": {}}
+
+
+@pytest.fixture()
+def pine_client(tmp_path, monkeypatch):
+    import backtest.brokers.segments as segs_module
+    from flask import Flask
+    from backtest.pine.api import pine_bp
+
+    monkeypatch.setattr(segs_module, "get_segments_config", lambda: _FakeSegments())
+    monkeypatch.chdir(tmp_path)
+    app = Flask(__name__)
+    app.register_blueprint(pine_bp)
+    return app.test_client()
+
+
+def _converted(pine_source=SAMPLE_PINE):
+    python_code, metadata = PineScriptConverter().convert(pine_source)
+    return python_code, metadata
+
+
+def test_save_endpoint_rejects_missing_criteria(pine_client):
+    """No criteria + equity script missing TP/SL → 400 naming the gaps."""
+    python_code, metadata = _converted()
+    resp = pine_client.post("/api/pine/save", json={
+        "python_code": python_code,
+        "strategy_name": "gate_gap",
+        "metadata": metadata,
+        "segment": "equity_delivery",
+    })
+    assert resp.status_code == 400
+    err = resp.get_json()["error"]
+    assert "take profit criteria" in err and "stop loss criteria" in err
+
+
+def test_save_endpoint_requires_strike_expiry_for_options(pine_client):
+    """is_options scripts must also carry entry strike + expiry."""
+    python_code, metadata = _converted()
+    metadata["readable"]["is_options"] = True
+    resp = pine_client.post("/api/pine/save", json={
+        "python_code": python_code,
+        "strategy_name": "gate_opt",
+        "metadata": metadata,
+        "segment": "options_index",
+        "criteria": {
+            "entry": "ema cross",
+            "take_profit": "limit = 20",
+            "stop_loss": "stop = 10",
+        },
+    })
+    assert resp.status_code == 400
+    err = resp.get_json()["error"]
+    assert "entry strike price" in err and "expiry" in err
+
+
+def test_save_endpoint_accepts_user_typed_criteria(pine_client):
+    """User-typed gaps are enough — the save passes and persists them."""
+    import pathlib
+
+    python_code, metadata = _converted()
+    resp = pine_client.post("/api/pine/save", json={
+        "python_code": python_code,
+        "strategy_name": "gate_fill",
+        "metadata": metadata,
+        "segment": "equity_delivery",
+        "criteria": {
+            "take_profit": "limit = close * 1.05",
+            "stop_loss": "stop = close * 0.95",
+            "sources": {"take_profit": "user", "stop_loss": "user"},
+        },
+    })
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["success"] is True
+    content = pathlib.Path(body["plugin_path"]).read_text(encoding="utf-8")
+    assert "readable_criteria = " in content
+    assert "limit = close * 1.05" in content
+

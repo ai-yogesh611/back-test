@@ -125,6 +125,10 @@ def get_all() -> list[dict[str, Any]]:
                 # issues.txt S2: the spawn form preselects the segment a
                 # strategy is designed for; None → derived from signal_kind.
                 "default_segment": getattr(cls, "default_segment", None),
+                # issues.txt S1 follow-up: plain-language entry/strike/TP/SL
+                # captured by the Strategy Builder (detected or user-typed);
+                # None for hand-written plugins that never went through it.
+                "readable_criteria": getattr(cls, "readable_criteria", None),
             }
         )
     logger.info(
