@@ -220,32 +220,13 @@ class PineScriptParser:
                 continue
 
             # Parse strategy call (standalone, not in if body)
-            strategy_match = re.match(r'strategy\.(entry|close)\((.*)\)', stripped)
+            strategy_match = re.match(r'strategy\.(entry|close|exit)\((.*)\)', stripped)
             if strategy_match:
-                func = strategy_match.group(1)
-                args_str = strategy_match.group(2)
-
-                if func == 'entry':
-                    # strategy.entry("buy", strategy.long)
-                    parts = [p.strip() for p in args_str.split(',')]
-                    name = parts[0].strip('"\'')
-                    direction = parts[1] if len(parts) > 1 else "strategy.long"
-
-                    statements.append({
-                        "type": "strategy_call",
-                        "function": "strategy.entry",
-                        "name": name,
-                        "direction": direction,
-                    })
-                elif func == 'close':
-                    # strategy.close("buy")
-                    name = args_str.strip('"\'')
-
-                    statements.append({
-                        "type": "strategy_call",
-                        "function": "strategy.close",
-                        "name": name,
-                    })
+                stmt = self._parse_strategy_call(
+                    strategy_match.group(1), strategy_match.group(2)
+                )
+                if stmt:
+                    statements.append(stmt)
 
                 i += 1
                 continue
@@ -253,6 +234,54 @@ class PineScriptParser:
             i += 1
 
         return {"type": "script", "statements": statements}
+
+    def _parse_strategy_call(self, func: str, args_str: str) -> Dict[str, Any] | None:
+        """Parse one strategy.<entry|close|exit>(...) call into a statement.
+
+        ``strategy.exit`` carries the take-profit / stop-loss criteria
+        (``limit=``/``profit=`` and ``stop=``/``loss=`` named args), which the
+        converter surfaces in the readable summary — without it a script's
+        risk exits are invisible and the builder wrongly reports them missing.
+        """
+        if func == 'entry':
+            # strategy.entry("buy", strategy.long)
+            parts = [p.strip() for p in args_str.split(',')]
+            name = parts[0].strip('"\'')
+            direction = parts[1] if len(parts) > 1 else "strategy.long"
+            return {
+                "type": "strategy_call",
+                "function": "strategy.entry",
+                "name": name,
+                "direction": direction,
+            }
+        if func == 'close':
+            # strategy.close("buy")
+            return {
+                "type": "strategy_call",
+                "function": "strategy.close",
+                "name": args_str.strip('"\''),
+            }
+        if func == 'exit':
+            # strategy.exit("x", "buy", stop=sl_price, limit=tp_price)
+            positional: List[str] = []
+            named: Dict[str, str] = {}
+            for part in args_str.split(','):
+                part = part.strip()
+                if not part:
+                    continue
+                kv = re.match(r'(\w+)\s*=\s*(.+)$', part)
+                if kv:
+                    named[kv.group(1).lower()] = kv.group(2).strip()
+                else:
+                    positional.append(part.strip('"\''))
+            return {
+                "type": "strategy_call",
+                "function": "strategy.exit",
+                "name": positional[0] if positional else "",
+                "from_order": positional[1] if len(positional) > 1 else "",
+                "exit_params": named,
+            }
+        return None
 
     def _parse_args(self, args_str: str) -> List[Any]:
         """Parse function arguments."""
@@ -339,29 +368,11 @@ class PineScriptParser:
             return None
 
         # Strategy call
-        strategy_match = re.match(r'strategy\.(entry|close)\((.*)\)', line)
+        strategy_match = re.match(r'strategy\.(entry|close|exit)\((.*)\)', line)
         if strategy_match:
-            func = strategy_match.group(1)
-            args_str = strategy_match.group(2)
-
-            if func == 'entry':
-                parts = [p.strip() for p in args_str.split(',')]
-                name = parts[0].strip('"\'')
-                direction = parts[1] if len(parts) > 1 else "strategy.long"
-
-                return {
-                    "type": "strategy_call",
-                    "function": "strategy.entry",
-                    "name": name,
-                    "direction": direction,
-                }
-            elif func == 'close':
-                name = args_str.strip('"\'')
-                return {
-                    "type": "strategy_call",
-                    "function": "strategy.close",
-                    "name": name,
-                }
+            return self._parse_strategy_call(
+                strategy_match.group(1), strategy_match.group(2)
+            )
 
         # Assignment with function call
         decl_match = re.match(r'(\w+)\s*=\s*(ta|math)\.(\w+)\((.*)\)', line)

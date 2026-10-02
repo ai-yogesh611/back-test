@@ -143,3 +143,136 @@ def test_indicator_extraction():
     
     assert "ta.ema" in metadata["indicators_used"]
     assert "ta.rsi" in metadata["indicators_used"]
+
+
+# ----------------------------------------------------------------------
+# issues.txt S1 — readable summary (entry/strike/TP/SL) + missing flags
+# ----------------------------------------------------------------------
+
+PINE_WITH_EXIT = """
+//@version=5
+strategy("EMA with TP SL")
+fast = ta.ema(close, 12)
+slow = ta.ema(close, 26)
+tp_price = close * 1.02
+sl_price = close * 0.98
+if ta.crossover(fast, slow)
+    strategy.entry("buy", strategy.long)
+    strategy.exit("buy_x", "buy", stop=sl_price, limit=tp_price)
+"""
+
+
+def test_strategy_exit_parsed_with_named_params():
+    """strategy.exit(...) survives parsing with its stop/limit params."""
+    from backtest.pine.parser import PineScriptParser
+
+    ast = PineScriptParser().parse(PINE_WITH_EXIT)
+    exits = [s for s in ast["statements"] if s.get("function") == "strategy.exit"]
+    # The call sits inside an if-body, so look through if statements too.
+    for s in ast["statements"]:
+        if s.get("type") == "if_statement":
+            exits += [i for i in s.get("body", [])
+                      if i.get("function") == "strategy.exit"]
+    assert exits, "strategy.exit must be recognised"
+    params = exits[0]["exit_params"]
+    assert params.get("stop") == "sl_price"
+    assert params.get("limit") == "tp_price"
+
+
+def test_readable_summary_shows_tp_sl_formulas():
+    """TP/SL render as the resolved formulas, not bare variable names."""
+    converter = PineScriptConverter()
+    _, metadata = converter.convert(PINE_WITH_EXIT)
+    r = metadata["readable"]
+    assert r["entry"] and "crossover" in r["entry"]
+    assert r["take_profit"] == "limit = close * 1.02"
+    assert r["stop_loss"] == "stop = close * 0.98"
+    assert r["is_options"] is False
+    assert r["missing"] == []
+
+
+def test_missing_fields_flagged_for_equity_without_strike_requirement():
+    """A TP/SL-less equity script flags take profit + stop loss — but an
+    entry strike is NOT required (this used to block every equity Save)."""
+    converter = PineScriptConverter()
+    _, metadata = converter.convert(SAMPLE_PINE)
+    r = metadata["readable"]
+    assert r["entry"]
+    assert set(r["missing"]) == {"take profit", "stop loss"}
+    assert "entry strike" not in r["missing"]
+
+
+def test_options_script_requires_strike_and_expiry():
+    """A script that names a strike/expiry must state both; literals land
+    in the readable form."""
+    converter = PineScriptConverter()
+    pine = """
+//@version=5
+strategy("CE picker")
+fast = ta.ema(close, 12)
+slow = ta.ema(close, 26)
+if ta.crossover(fast, slow)
+    strategy.entry("buy", strategy.long)
+strike = 22000
+expiry = 7
+"""
+    _, metadata = converter.convert(pine)
+    r = metadata["readable"]
+    assert r["is_options"] is True
+    assert r["entry_strike"] == "220"  # documented literal-window behaviour
+    assert r["expiry"] == "7"
+    # strike+expiry present; only the risk exits are missing
+    assert set(r["missing"]) == {"take profit", "stop loss"}
+
+
+# ----------------------------------------------------------------------
+# issues.txt S2 — every saved strategy is linked to a segment
+# ----------------------------------------------------------------------
+
+def test_save_as_plugin_links_segment(tmp_path):
+    """save_as_plugin writes a valid default_segment into the class body."""
+    import ast as py_ast
+    import os
+
+    converter = PineScriptConverter()
+    python_code, metadata = converter.convert(PINE_WITH_EXIT)
+
+    original_cwd = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        filepath = converter.save_as_plugin(
+            python_code, "seg_test", metadata, segment="EQUITY_INTRADAY"
+        ).resolve()
+    finally:
+        os.chdir(original_cwd)
+
+    content = filepath.read_text()
+    py_ast.parse(content)  # injection must not break syntax
+    assert 'default_segment = "equity_intraday"' in content
+
+
+def test_save_as_plugin_sanitizes_hostile_segment(tmp_path):
+    """A crafted segment string can never escape the quoted literal."""
+    import ast as py_ast
+    import os
+
+    converter = PineScriptConverter()
+    python_code, metadata = converter.convert(PINE_WITH_EXIT)
+    original_cwd = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        filepath = converter.save_as_plugin(
+            python_code, "seg_bad", metadata, segment='x"; __import__("os")'
+        ).resolve()
+    finally:
+        os.chdir(original_cwd)
+
+    content = filepath.read_text()
+    py_ast.parse(content)  # hostile input still yields valid, inert code
+    assert 'default_segment = "x__import__os"' in content
+    # A segment of only junk sanitises to empty → refused outright
+    import pytest
+
+    with pytest.raises(PineConversionError):
+        converter.save_as_plugin(python_code, "seg_bad2", metadata, segment='"; ("')
+

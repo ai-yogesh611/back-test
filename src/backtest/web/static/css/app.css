@@ -2019,3 +2019,37 @@ select.input option.sym-no-data:disabled { cursor: not-allowed; }
 .opt-attestation-strip .k { color: var(--muted); margin-right: 5px; }
 .opt-attestation-strip .v { font-variant-numeric: tabular-nums; }
 .opt-attestation-unrecorded { color: var(--muted); font-style: italic; }
+
+/* ---- Strategy Builder readable summary (issues.txt S1) ------------------ */
+.strategy-summary {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface-2);
+    padding: 10px 12px;
+    font-size: .8rem;
+    line-height: 1.5;
+}
+.strategy-summary-head {
+    font-weight: 600;
+    margin-bottom: 6px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+}
+.summary-row { margin: 3px 0; word-break: break-word; }
+.summary-row strong { color: var(--muted); font-weight: 600; margin-right: 4px; }
+.summary-ok { color: var(--text); }
+.summary-missing {
+    color: var(--danger-text);
+    background: var(--danger-tint, rgba(224, 147, 143, .12));
+    border-left: 3px solid var(--danger-shade, #e0938f);
+    padding: 3px 8px;
+    border-radius: 3px;
+}
+.summary-optional-missing { color: var(--muted); }
+.summary-na { color: var(--muted); font-style: normal; }
+.strategy-field-flag { color: var(--danger-text); font-weight: 700; }
+.summary-ack {
+    display: flex; align-items: flex-start; gap: 8px;
+    margin-top: 8px; font-size: .8rem; line-height: 1.5; cursor: pointer;
+    color: var(--warning-text, #e5c07b);
+}

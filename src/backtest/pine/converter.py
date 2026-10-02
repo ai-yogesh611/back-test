@@ -88,6 +88,7 @@ class PineScriptConverter:
         python_code: str,
         strategy_name: str,
         metadata: dict,
+        segment: str | None = None,
     ) -> Path:
         """Save generated strategy as plugin.
 
@@ -95,6 +96,11 @@ class PineScriptConverter:
             python_code: Generated Python strategy code
             strategy_name: Name for the strategy
             metadata: Conversion metadata dict
+            segment: Optional capital-partition name (config/segments.yaml).
+                issues.txt S2: every saved strategy is linked to a segment so
+                backtest → paper → live all spawn into the same partition;
+                the class-level ``default_segment`` is what the spawn form
+                preselects.
 
         Returns:
             Path to the saved plugin file
@@ -131,9 +137,45 @@ import numpy as np
 
         full_code = header + python_code
 
+        if segment:
+            full_code = self._inject_default_segment(full_code, segment)
+            syntax_error = None
+            try:
+                ast.parse(full_code)
+            except SyntaxError as exc:
+                syntax_error = exc
+            if syntax_error:
+                raise PineConversionError(
+                    f"Failed to link segment {segment!r} to the generated "
+                    f"strategy: {syntax_error}"
+                )
+
         filepath.write_text(full_code, encoding="utf-8")
 
         return filepath
+
+    @staticmethod
+    def _inject_default_segment(python_code: str, segment: str) -> str:
+        """Add ``default_segment`` to the generated class body.
+
+        Anchored on a class-body line the codegen always emits (version →
+        author → name, first match wins). The segment name is sanitized to
+        the identifier charset the spawn form produces, so a crafted string
+        can never break out of the quoted literal.
+        """
+        seg = re.sub(r"[^a-z0-9_]", "", str(segment).strip().lower())
+        if not seg:
+            raise PineConversionError(f"invalid segment name: {segment!r}")
+        for anchor in ('    version = "', '    author = "', '    name = "'):
+            idx = python_code.find(anchor)
+            if idx != -1:
+                end = python_code.find("\n", idx)
+                end = len(python_code) if end == -1 else end + 1
+                insert = f"    default_segment = \"{seg}\"\n"
+                return python_code[:end] + insert + python_code[end:]
+        raise PineConversionError(
+            "generated strategy is missing its metadata block — cannot link a segment"
+        )
 
     def _validate_code(self, code: str) -> Tuple[bool, str]:
         """Validate generated Python code."""
@@ -263,41 +305,74 @@ import numpy as np
     def _extract_readable_summary(self, ast: Dict, pine_code: str) -> dict:
         """Extract a human-readable summary of a strategy from its Pine AST.
 
-        Covers the issue.txt S1 requirements: entry criteria, entry strike
-        (options), take profit and stop loss. Any of these that is missing is
-        flagged so the UI can highlight it before Save.
+        Covers the issues.txt S1 requirements: entry criteria, entry strike
+        (options), take profit and stop loss. Any field the user left out is
+        flagged in ``missing`` (computed server-side) so the UI and the API
+        agree on what is absent. Strike/expiry are only required when the
+        script looks option-related — an equity strategy has no strike, and
+        requiring one used to block every equity Save.
         """
-        entry = exit = take_profit = stop_loss = entry_strike = expiry = None
+        entry = exit_ = take_profit = stop_loss = entry_strike = expiry = None
 
-        def body_calls(kind: str):
+        # Variable → expression text, so `stop=sl_price` can be shown as the
+        # actual formula ("close * 0.98") instead of a bare variable name.
+        var_text: Dict[str, str] = {}
+        for stmt in ast.get("statements", []):
+            stype = stmt.get("type")
+            if stype == "assignment":
+                var_text[stmt.get("name", "")] = str(stmt.get("value", ""))
+            elif stype == "indicator_call":
+                var_text[stmt.get("var_name", "")] = (
+                    f"{stmt.get('namespace', 'ta')}.{stmt.get('function', '')}("
+                    + ", ".join(str(a) for a in stmt.get("args", []))
+                    + ")"
+                )
+
+        def resolve(token: str, depth: int = 0) -> str:
+            tok = str(token).strip()
+            if depth < 3 and tok in var_text:
+                return resolve(var_text[tok], depth + 1)
+            return tok
+
+        def all_calls(kind: str):
+            """Yield (enclosing if-condition text | None, call statement)."""
             for stmt in ast.get("statements", []):
-                if stmt.get("type") != "if_statement":
-                    continue
-                for inner in stmt.get("body", []):
-                    if (inner.get("type") == "strategy_call"
-                            and inner.get("function") == kind):
-                        yield stmt
+                if stmt.get("type") == "strategy_call" and stmt.get("function") == kind:
+                    yield None, stmt
+                elif stmt.get("type") == "if_statement":
+                    for inner in list(stmt.get("body", [])) + list(stmt.get("else_body", [])):
+                        if inner.get("type") == "strategy_call" and inner.get("function") == kind:
+                            yield self._condition_text(stmt.get("condition")), inner
 
         # 1. Entry criteria: the condition(s) feeding strategy.entry.
-        for stmt in body_calls("strategy.entry"):
-            cond = self._condition_text(stmt.get("condition"))
-            entry = entry or cond
+        for cond, call in all_calls("strategy.entry"):
+            entry = entry or cond or call.get("direction", "")
 
         # 2. Exit: strategy.close triggers a reversal/exits.
-        for stmt in body_calls("strategy.close"):
-            cond = self._condition_text(stmt.get("condition"))
-            exit = exit or cond
+        for cond, call in all_calls("strategy.close"):
+            exit_ = exit_ or cond or call.get("name", "")
 
-        # 3. Take profit / stop loss: the codegen binds *_tp / *_sl variable
-        # names by convention; their presence means the script manages exits.
+        # 3. Take profit / stop loss — prefer strategy.exit named args
+        #    (limit/profit → TP, stop/loss → SL); fall back to the *_tp /
+        #    *_sl variable-name convention for older scripts.
+        for _cond, call in all_calls("strategy.exit"):
+            params = call.get("exit_params", {}) or {}
+            tp = params.get("limit") or params.get("profit")
+            sl = params.get("stop") or params.get("loss")
+            if tp and take_profit is None:
+                take_profit = f"limit = {resolve(tp)}"
+            if sl and stop_loss is None:
+                stop_loss = f"stop = {resolve(sl)}"
         for stmt in ast.get("statements", []):
-            if stmt.get("type") != "indicator_call":
+            if stmt.get("type") not in ("indicator_call", "assignment"):
                 continue
-            var = stmt.get("var_name", "")
-            if var.endswith("tp") or var.endswith("tp_price"):
-                take_profit = take_profit or var
-            if var.endswith("sl") or var.endswith("sl_price"):
-                stop_loss = stop_loss or var
+            var = stmt.get("var_name") or stmt.get("name") or ""
+            if take_profit is None and ("take_profit" in var or "takeprofit" in var
+                                        or var.endswith("tp") or var.endswith("tp_price")):
+                take_profit = f"{var} = {resolve(var)}"
+            if stop_loss is None and ("stop_loss" in var or "stoploss" in var
+                                      or var.endswith("sl") or var.endswith("sl_price")):
+                stop_loss = f"{var} = {resolve(var)}"
 
         # 4. Option strike / expiry: look for integer literals near the words
         # strike/expiry in the source (Pine option strategies hardcode them).
@@ -312,13 +387,36 @@ import numpy as np
             if expiry is None and "expiry" in keyword:
                 expiry = pat.group(2)
 
+        # Heuristic option-ness: a script that talks about strikes/CE/PE/options
+        # must state its strike/expiry; equity scripts are not blocked by
+        # fields they do not have.
+        is_options = bool(
+            entry_strike is not None
+            or re.search(r"(?i)\bstrike\b|\bCE\b|\bPE\b|\boptions?\b", pine_code)
+        )
+
+        missing: list[str] = []
+        if not entry:
+            missing.append("entry")
+        if not take_profit:
+            missing.append("take profit")
+        if not stop_loss:
+            missing.append("stop loss")
+        if is_options:
+            if not entry_strike:
+                missing.append("entry strike")
+            if not expiry:
+                missing.append("expiry")
+
         return {
             "entry": entry,
-            "exit": exit,
+            "exit": exit_,
             "take_profit": take_profit,
             "stop_loss": stop_loss,
             "entry_strike": entry_strike,
             "expiry": expiry,
+            "is_options": is_options,
+            "missing": missing,
         }
 
 

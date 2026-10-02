@@ -117,15 +117,41 @@ def save_as_plugin():
         python_code: str
         strategy_name: str
         metadata: dict
+        segment: str — required (issues.txt S2). Every saved strategy is
+            linked to a capital partition from config/segments.yaml so the
+            spawn form preselects it and backtest → paper → live all land in
+            the same broker/mode bucket.
 
     Returns:
         {
             "success": bool,
             "plugin_path": str,
-            "strategy_name": str
+            "strategy_name": str,
+            "segment": str
         }
     """
     data = request.json
+
+    from backtest.brokers.segments import get_segments_config
+
+    segment = str(data.get("segment") or "").strip().lower()
+    known = set(get_segments_config().segments)
+    if not segment:
+        return jsonify(
+            {
+                "success": False,
+                "error": "segment is required — pick which capital partition this "
+                f"strategy runs in ({', '.join(sorted(known)) or 'configure segments first'})",
+            }
+        ), 400
+    if segment not in known:
+        return jsonify(
+            {
+                "success": False,
+                "error": f"unknown segment '{segment}' — configured segments: "
+                f"{', '.join(sorted(known)) or 'none'}",
+            }
+        ), 400
 
     converter = PineScriptConverter()
 
@@ -134,6 +160,7 @@ def save_as_plugin():
             python_code=data["python_code"],
             strategy_name=data["strategy_name"],
             metadata=data["metadata"],
+            segment=segment,
         )
 
         # Hot-load the new plugin into the registry so it appears in the
@@ -167,10 +194,16 @@ def save_as_plugin():
                 "success": True,
                 "plugin_path": str(filepath),
                 "strategy_name": data["strategy_name"],
+                "segment": segment,
                 "loaded": load_error is None,
                 "load_error": load_error,
             }
         )
+
+    except PineConversionError as e:
+        # Segment injection / generated-code problem — the user can fix this
+        # from the builder, so it is a 400 with the reason, not a 500.
+        return jsonify({"success": False, "error": str(e)}), 400
 
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500

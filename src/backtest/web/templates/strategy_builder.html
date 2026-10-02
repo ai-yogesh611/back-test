@@ -12,6 +12,11 @@
       <label for="pine-name" class="muted" style="display:block; margin-bottom:4px;">Strategy name (optional — defaults to the Pine script's title)</label>
       <input id="pine-name" class="input" type="text" placeholder="e.g. my_ema_cross" style="width:100%; margin-bottom:10px;">
 
+      <label for="pine-segment" class="muted" style="display:block; margin-bottom:4px;">Segment (required — every strategy runs in one capital partition, so backtest → paper → live share it)</label>
+      <select id="pine-segment" class="input" style="width:100%; margin-bottom:10px;">
+        <option value="">Loading segments…</option>
+      </select>
+
       <label for="pine-code" class="muted" style="display:block; margin-bottom:4px;">Pine Script v5 source</label>
       <textarea id="pine-code" class="input" rows="20" spellcheck="false"
         placeholder='//@version=5&#10;strategy("EMA Cross")&#10;...'
@@ -35,7 +40,15 @@
       <textarea id="pine-output" class="input" rows="24" readonly
         style="width:100%; font-family:monospace; font-size:12px; background:var(--surface-2,#212a36);"></textarea>
       <div id="pine-status" class="muted" style="margin-top:10px; font-size:12px;"></div>
-      <div id="pine-summary" class="muted" style="margin-top:10px; font-size:12px; display:none"></div>
+
+      <!-- Readable translation (issues.txt S1): rendered on every conversion —
+           entry criteria, entry strike (options), take profit, stop loss.
+           Anything the script left out is highlighted, not hidden. -->
+      <div id="pine-summary" class="strategy-summary" style="margin-top:10px;" hidden></div>
+      <label id="pine-ack-row" class="summary-ack" hidden>
+        <input type="checkbox" id="pine-ack">
+        <span id="pine-ack-text"></span>
+      </label>
     </div>
   </div>
 </div>
@@ -44,11 +57,16 @@
 (function () {
   'use strict';
   var nameEl = document.getElementById('pine-name');
+  var segEl = document.getElementById('pine-segment');
   var codeEl = document.getElementById('pine-code');
   var outEl = document.getElementById('pine-output');
   var metaEl = document.getElementById('pine-meta');
   var errEl = document.getElementById('pine-error');
   var statusEl = document.getElementById('pine-status');
+  var summaryEl = document.getElementById('pine-summary');
+  var ackRow = document.getElementById('pine-ack-row');
+  var ackEl = document.getElementById('pine-ack');
+  var ackText = document.getElementById('pine-ack-text');
   var convertBtn = document.getElementById('pine-convert');
   var validateBtn = document.getElementById('pine-validate');
   var saveBtn = document.getElementById('pine-save');
@@ -63,23 +81,74 @@
   function setStatus(msg) {
     statusEl.textContent = msg || '';
   }
-  function setSummary(summary) {
-    // Render the readable form in a bordered box under the converted code.
-    var box = document.getElementById('pine-summary');
-    if (!summary || typeof summary !== 'object') { box.innerHTML = ''; return; }
-    var lines = [];
-    if (summary.entry) lines.push('<div class="summary-row"><strong>Entry criteria:</strong> ' + escapeHtml(summary.entry) + '</div>');
-    if (summary.exit) lines.push('<div class="summary-row"><strong>Exit:</strong> ' + escapeHtml(summary.exit) + '</div>');
-    if (summary.take_profit) lines.push('<div class="summary-row"><strong>Take profit:</strong> ' + escapeHtml(summary.take_profit) + '</div>');
-    if (summary.stop_loss) lines.push('<div class="summary-row"><strong>Stop loss:</strong> ' + escapeHtml(summary.stop_loss) + '</div>');
-    if (summary.entry_strike) lines.push('<div class="summary-row"><strong>Entry strike:</strong> ' + escapeHtml(summary.entry_strike) + '</div>');
-    if (summary.expiry) lines.push('<div class="summary-row"><strong>Expiry:</strong> ' + escapeHtml(summary.expiry) + '</div>');
-    if (!lines.length) {
-      box.innerHTML = '<p class="muted">No entry/exit thresholds recognised in this script.</p>';
-      return;
+  function setSummary(readable) {
+    // Render the readable form: ALL required criteria are listed even when
+    // absent (highlighted), and n/a fields are called out for equity scripts.
+    // Returns the list of missing required fields.
+    if (!readable || typeof readable !== 'object') {
+      summaryEl.innerHTML = '';
+      summaryEl.hidden = true;
+      return [];
     }
-    box.innerHTML = '<div class="strategy-summary">' + lines.join('') + '</div>';
-    box.hidden = false;
+    var isOpt = !!readable.is_options;
+    var fields = [
+      { label: 'Entry criteria',          value: readable.entry,        req: true,  na: false },
+      { label: 'Entry strike price',      value: readable.entry_strike, req: isOpt, na: !isOpt },
+      { label: 'Expiry',                  value: readable.expiry,       req: false, na: !isOpt },
+      { label: 'Take profit criteria',    value: readable.take_profit,  req: true,  na: false },
+      { label: 'Take stop loss criteria', value: readable.stop_loss,    req: true,  na: false },
+      { label: 'Signal exit',             value: readable.exit,         req: false, na: false }
+    ];
+    var html = fields
+      .filter(function (f) { return f.req || f.na || f.value; })
+      .map(function (f) {
+        var cls = 'summary-row';
+        var text;
+        if (!f.value && f.na) {
+          cls += ' summary-na';
+          text = '<em>n/a — equity strategy (no strike/expiry)</em>';
+        } else if (!f.value) {
+          cls += f.req ? ' summary-missing' : ' summary-optional-missing';
+          text = f.req
+            ? '<strong class="strategy-field-flag">⚠ MISSING</strong> — declare it in the Pine script'
+            : '<em>not declared</em>';
+        } else {
+          cls += ' summary-ok';
+          text = escapeHtml(f.value);
+        }
+        return '<div class="' + cls + '"><strong>' + escapeHtml(f.label) + ':</strong> ' + text + '</div>';
+      }).join('');
+    var missing = (readable.missing || []).filter(Boolean);
+    html = missing.length
+      ? '<div class="strategy-summary-head strategy-field-flag">⚠ Missing: ' + escapeHtml(missing.join(', ')) + '</div>' + html
+      : '<div class="strategy-summary-head">All required criteria declared ✓</div>' + html;
+    if (isOpt) {
+      html += '<div class="summary-row summary-na"><strong>Note:</strong> script looks options-related '
+        + '(strike/expiry) — options cannot be backtested here; validate via Forward Testing.</div>';
+    }
+    summaryEl.innerHTML = html;
+    summaryEl.hidden = false;
+    return missing;
+  }
+
+  function loadSegments() {
+    fetch('/api/segments')
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var segs = (d && d.segments) || [];
+        if (!segs.length) {
+          segEl.innerHTML = '<option value="">No segments configured</option>';
+          setError('No segments are configured in config/segments.yaml — add one before saving strategies.');
+          return;
+        }
+        segEl.innerHTML = '<option value="">Choose a segment…</option>' + segs.map(function (s) {
+          var label = s.display_name ? s.name + ' — ' + s.display_name : s.name;
+          return '<option value="' + escapeHtml(s.name) + '">' + escapeHtml(label) + '</option>';
+        }).join('');
+      })
+      .catch(function () {
+        segEl.innerHTML = '<option value="">Segments unavailable</option>';
+      });
   }
   function escapeHtml(v) {
     return String(v === null || v === undefined ? '' : v).replace(/[&<>"']/g, function (c) {
@@ -93,6 +162,8 @@
     converted = null;
     validateBtn.disabled = true;
     saveBtn.disabled = true;
+    ackEl.checked = false;
+    ackRow.hidden = true;
     fetch('/api/pine/convert', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -113,15 +184,32 @@
           ? 'indicators: ' + m.indicators_used.join(', ')
           : '';
         validateBtn.disabled = false;
-        saveBtn.disabled = false;
+
+        // The readable translation is the gate: shown on every conversion with
+        // highlights; Save opens when nothing required is missing, or after an
+        // explicit acknowledgement of the gaps (no more permanently-disabled
+        // Save button requiring a full re-convert).
+        var missing = setSummary(m.readable);
+        if (missing.length) {
+          ackText.textContent = '⚠ I understand this strategy is missing: ' + missing.join(', ')
+            + ' — save anyway (not recommended: exits would be unprotected)';
+          ackRow.hidden = false;
+          saveBtn.disabled = true;
+          setStatus('Converted, but ' + missing.join(', ') + ' missing — fix the Pine script or acknowledge above.');
+        } else {
+          ackRow.hidden = true;
+          saveBtn.disabled = false;
+          setStatus('Converted ✓ — check the criteria above, validate with a quick backtest, then save.');
+        }
         if (outEl.value.indexOf('No entry conditions recognised') !== -1) {
           setError('Warning: no entry conditions were recognised in this Pine script — the converted strategy will stay flat. Try simplifying the script or use the LLM prompt for manual conversion.');
-        } else {
-          setStatus('Converted ✓ — validate it with a quick backtest, then save as a plugin.');
         }
-        setSummary(m.readable);
       })
       .catch(function (e) { setError('Network error: ' + e); setStatus(''); });
+  });
+
+  ackEl.addEventListener('change', function () {
+    saveBtn.disabled = !ackEl.checked;
   });
 
   validateBtn.addEventListener('click', function () {
@@ -149,32 +237,15 @@
   });
 
   saveBtn.addEventListener('click', function () {
-    // issues.txt S1: before Save, show the readable form (entry/strike/TP/SL)
-    // and highlight anything the user left out. The converter already flags
-    // the missing ones in metadata.readable; the UI now makes them visible
-    // (and the Save button gently refuses when a required one is blank).
-    var summary = document.getElementById('pine-summary');
-    if (converted && converted.metadata && converted.metadata.readable) {
-      var r = converted.metadata.readable;
-      var missing = [];
-      if (!r.entry) missing.push('entry');
-      if (!r.entry_strike) missing.push('entry strike');
-      if (!r.take_profit) missing.push('take profit');
-      if (!r.stop_loss) missing.push('stop loss');
-      if (missing.length) {
-        var msg = '⚠ ' + missing.join(', ') + ' missing — add them to the Pine script before saving.';
-        setError(msg);
-        summary.innerHTML = summary.innerHTML.replace(
-          /<div class="strategy-field-flag"[^>]*>/g, '')
-          + '<div class="strategy-field-flag">⚠ Missing: ' + missing.join(', ') + '</div>';
-        saveBtn.disabled = true;
-        return;
-      }
-      // Nothing missing: un-float the highlights (they were suppressed when
-      // everything was present, so the user sees a clean summary).
-      saveBtn.disabled = false;
-    }
+    // issues.txt S1+S2: the readable criteria were shown (and gaps either
+    // fixed or acknowledged) at convert time; here we only enforce the
+    // segment link, which the server validates against segments.yaml too.
     if (!converted) return;
+    var segment = segEl.value;
+    if (!segment) {
+      setError('Choose a segment before saving — it links the strategy to its capital partition for backtest, paper and live.');
+      return;
+    }
     setError('');
     setStatus('Saving…');
     fetch('/api/pine/save', {
@@ -183,20 +254,22 @@
       body: JSON.stringify({
         python_code: converted.python_code,
         strategy_name: converted.strategy_name,
-        metadata: converted.metadata || {}
+        metadata: converted.metadata || {},
+        segment: segment
       })
-    }).then(function (r) { return r.json(); })
-      .then(function (d) {
-        if (d.success) {
-          if (d.loaded === false) {
-            setError(d.load_error || 'Saved but failed to load into the registry — see app log.');
-            setStatus('Saved to ' + d.plugin_path + ' but NOT loaded.');
-          } else {
-            setStatus('Saved ✓ ' + d.plugin_path + ' — loaded into the registry, ready to use (no restart needed).');
-          }
-        } else {
+    }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        var d = res.d;
+        if (!res.ok || !d.success) {
           setError(d.error || 'Save failed.');
           setStatus('');
+          return;
+        }
+        if (d.loaded === false) {
+          setError(d.load_error || 'Saved but failed to load into the registry — see app log.');
+          setStatus('Saved to ' + d.plugin_path + ' but NOT loaded.');
+        } else {
+          setStatus('Saved ✓ ' + d.plugin_path + ' — linked to segment "' + d.segment + '", loaded into the registry (no restart needed).');
         }
       })
       .catch(function (e) { setError('Network error: ' + e); setStatus(''); });
@@ -215,6 +288,8 @@
         }
       });
   });
+
+  loadSegments();
 })();
 </script>
 {% endblock %}
