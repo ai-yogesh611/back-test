@@ -260,7 +260,13 @@ async function pollStatus() {
             const wasRunning = pollTimer !== null;
             stopPolling();
             if (wasRunning && j.status === 'done') {
-                showToast(`Fetch complete: ${j.fetched} symbols, ${j.bars_total.toLocaleString()} bars`, 'success');
+                if (j.chunk_errors > 0) {
+                    // mStock ate chunks even after retries — a "done" with
+                    // holes must never render as a clean success.
+                    showToast(`Finished, but ${j.chunk_errors} chunk request(s) failed even after retries — data may be partial; re-run the affected symbols`, 'error');
+                } else {
+                    showToast(`Fetch complete: ${j.fetched} symbols, ${j.bars_total.toLocaleString()} bars`, 'success');
+                }
                 loadInventory();  // refresh inventory
             }
             if (wasRunning && j.status === 'error') {

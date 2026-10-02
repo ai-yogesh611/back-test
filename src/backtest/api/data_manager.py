@@ -75,6 +75,10 @@ _job: dict[str, Any] = {
     # 1-minute granularity — it looked hung, 2026-10-02).
     "chunk_done": 0,
     "chunk_total": 0,
+    # Chunks lost across the whole job AFTER retries. Before this field the
+    # UI reported "done, 0 failed" while mStock 502s silently ate ~half the
+    # chunk requests (ALKEM 2026-10-03: 19 of ~41 chunks stored).
+    "chunk_errors": 0,
 }
 
 # Single DB-URL authority (ticket P4.3): FORWARD_TEST_DB_URL env >
@@ -214,6 +218,7 @@ def fetch_start() -> tuple:
             cancel=False,
             chunk_done=0,
             chunk_total=0,
+            chunk_errors=0,
         )
 
     # Launch background thread
@@ -545,6 +550,21 @@ def _run_fetch_job(
                 should_cancel=lambda: bool(_job.get("cancel")),
                 on_progress=_on_chunk,
             )
+            if chunk_errors:
+                # Partial coverage: some chunks died even after retries. The
+                # symbol still counts as fetched, but the UI must not claim a
+                # clean run — surface the lost-chunk total in job status.
+                with _lock:
+                    _job["chunk_errors"] += chunk_errors
+                log.warning(
+                    "[data] %s: %d chunk(s) failed even after retries — partial "
+                    "coverage for %s..%s (%s)",
+                    symbol,
+                    chunk_errors,
+                    from_date,
+                    to_date,
+                    mstock_tf,
+                )
             if not bars:
                 log.warning(
                     "[data] %s: API returned no bars for %s..%s (%s) — nothing stored",
@@ -751,6 +771,32 @@ def _load_instruments(
     return rows, not_found
 
 
+def _get_historical_with_retry(url, headers, params, attempts=4, base_sleep=1.5):
+    """GET the TypeA historical endpoint, retrying mStock's intermittent 502s.
+
+    The gateway answers 502 for a large share of requests fired at the chunk
+    loop's ~6 req/s cadence (observed 2026-10-03: ALKEM fetch lost ~22 of 41
+    chunks; manual re-probes seconds later returned the bars fine). A short
+    backoff almost always succeeds on the next attempt. Raises the last error
+    if every attempt fails so the caller counts the chunk as an error.
+    """
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            resp = requests.get(url, headers=headers, params=params, timeout=60)
+        except requests.RequestException as exc:
+            last_error = exc  # transport error — worth retrying
+        else:
+            if resp.status_code in (502, 503, 504):
+                last_error = requests.HTTPError(f"HTTP {resp.status_code}", response=resp)
+            else:
+                resp.raise_for_status()  # 4xx (auth etc.) will not fix itself
+                return resp
+        if attempt < attempts:
+            time.sleep(base_sleep * attempt)
+    raise last_error
+
+
 def _fetch_bars_chunked(
     api_key: str,
     token: str,
@@ -806,8 +852,7 @@ def _fetch_bars_chunked(
         chunk_end = min(chunk_start + timedelta(days=chunk_days), end)
         params = {"from": chunk_start.strftime("%Y-%m-%d"), "to": chunk_end.strftime("%Y-%m-%d")}
         try:
-            resp = requests.get(url, headers=headers, params=params, timeout=60)
-            resp.raise_for_status()
+            resp = _get_historical_with_retry(url, headers, params)
             payload = resp.json()
             bars = _extract_bars(payload)
             all_bars.extend(bars)
