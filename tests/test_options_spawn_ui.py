@@ -71,6 +71,21 @@ def test_option_components_are_loaded_on_every_page(client, url):
     assert "js/components/option_view.js" in html, f"{url} does not load the renderer"
 
 
+@pytest.mark.parametrize(
+    "url", ["/portfolio", "/portfolio/paper", "/portfolio/live"]
+)
+def test_symbol_picker_is_loaded_on_portfolio_pages(client, url):
+    """Regression (2026-10-02): portfolio.js mounts SymbolPicker for open
+    equity strategies in the spawn form. On the paper/live pages the script
+    tag was missing, so loadSpawnForm threw "SymbolPicker is not defined"
+    and the segment + broker selectors never loaded (the Broker dropdown
+    showed only "— default routing —")."""
+    html = client.get(url).get_data(as_text=True)
+    assert "js/components/symbol_picker.js" in html, (
+        f"{url} does not load the shared SymbolPicker that portfolio.js mounts"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 2. The spawn form
 # ---------------------------------------------------------------------------

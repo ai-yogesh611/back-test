@@ -887,10 +887,16 @@
         playbookList.map((p) =>
           '<option value="' + p.playbook_id + '">' + p.name + " v" + (p.version ?? 1) + "</option>").join("");
 
+      // Routing selectors first and in their own guard (2026-10-02): a render
+      // error below (e.g. a missing component) must never hide the segment/
+      // broker choice again — that left the Broker dropdown with only the
+      // static "— default routing —" placeholder.
+      try {
+        loadSegmentSelector();
+        loadBrokerSelector();
+      } catch (e) { toast("Broker/segment picker failed: " + e.message, "error"); }
       renderSpawnParams();
       syncSpawnForm();
-      loadSegmentSelector();
-      loadBrokerSelector();
     } catch (e) { toast("Failed to load spawn form: " + e.message, "error"); }
   }
 
