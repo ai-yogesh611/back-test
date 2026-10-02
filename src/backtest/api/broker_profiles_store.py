@@ -40,6 +40,24 @@ __all__ = ["BrokerProfileStore", "get_broker_profile_store"]
 
 logger = logging.getLogger("backtest.api.settings")
 
+CANONICAL_BROKER_NAMES: dict[str, str] = {
+    "zerodha": "Zerodha Kite",
+    "mstock": "Mirae Asset mStock",
+    "dhan": "Dhan HQ",
+    "upstox": "Upstox",
+    "groww": "Groww",
+    "angelone": "Angel One",
+    "india_full_service": "India Full Service (0.5%)",
+    "india_zero": "India Zero Commission",
+    "generic_discount": "Generic Discount",
+    "zero": "Zero Commission",
+    "ibkr": "Interactive Brokers (IBKR)",
+    "td_ameritrade": "TD Ameritrade",
+    "robinhood": "Robinhood",
+}
+
+TEST_FIXTURE_PROFILES: frozenset[str] = frozenset({"panel_broker", "test_broker", "expensive"})
+
 
 def _yaml_broker_names() -> list[str]:
     """Broker ids defined in ``config/brokers.yaml`` (may exceed the presets)."""
@@ -88,7 +106,7 @@ def _row_from_profile(name: str, profile: Any, *, origin: str) -> dict[str, Any]
     )
     return {
         "profile_id": name,
-        "profile_name": name.replace("_", " ").title(),
+        "profile_name": CANONICAL_BROKER_NAMES.get(name.lower(), name.replace("_", " ").title()),
         "is_preset": origin == "preset",
         "origin": origin,
         "currency": profile.currency,
@@ -201,7 +219,10 @@ class BrokerProfileStore:
             row = session.get(BrokerProfileRow, "__active__")
             if row is None or row.commission_model.get("active") is None:
                 return None
-            return str(row.commission_model["active"])
+            val = str(row.commission_model["active"]).strip()
+            if not val or val in TEST_FIXTURE_PROFILES:
+                return None
+            return val
 
     def set_active_broker(self, profile_id: str, changed_by: str = "admin") -> None:
         """Record the panel's active-broker choice (audit-trailed).
@@ -343,8 +364,12 @@ class BrokerProfileStore:
             # ``__active__`` / ``__live_kill_switch__`` are internal marker rows
             # that share this table; they are state, not brokers to trade.
             if not str(row["profile_id"]).startswith("__")
+            and str(row["profile_id"]) not in TEST_FIXTURE_PROFILES
         }
-        file_rows = {row["profile_id"]: row for row in _yaml_rows()}
+        file_rows = {
+            row["profile_id"]: row for row in _yaml_rows()
+            if row["profile_id"] not in TEST_FIXTURE_PROFILES
+        }
         for profile_id, row in stored.items():
             # A stored row is not automatically an override: the seed copies
             # the file, so say whether the numbers in force are still the

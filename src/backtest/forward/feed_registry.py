@@ -412,6 +412,7 @@ class _BrokerBarFeedBase:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._last_ts: Dict[str, str] = {}  # symbol → last pushed bar ts
+        self._last_rest_logged_day: Optional[str] = None
 
     def add_symbols(self, symbols: List[str]) -> None:
         with self._lock:
@@ -473,8 +474,22 @@ class _BrokerBarFeedBase:
             symbols = list(self._symbols)
         if not symbols:
             return 0
-        delivered = 0
+
         market_open = self._market_open()
+
+        # Market-status awareness (§5): skip polling fully on holidays and weekends
+        if not market_open:
+            day_state, reason = self._market_day_state()
+            if day_state in ("HOLIDAY", "WEEKEND"):
+                from backtest.live.market_status import IST
+
+                today_str = datetime.now(IST).strftime("%Y-%m-%d")
+                if self._last_rest_logged_day != today_str:
+                    self._last_rest_logged_day = today_str
+                    logger.info("%s feed resting — %s", self.broker_name, reason)
+                return 0
+
+        delivered = 0
         for symbol in symbols:
             if self._stop.is_set():
                 break
@@ -493,6 +508,22 @@ class _BrokerBarFeedBase:
         if delivered and self.on_tick_end is not None:
             self.on_tick_end(datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"))
         return delivered
+
+    @classmethod
+    def _market_day_state(cls) -> tuple[str, str]:
+        """Resolve current market day state and reason (fail-open to TRADING_DAY)."""
+        try:
+            from backtest.live.market_status import get_market_day_state
+
+            info = get_market_day_state()
+            ds = str(info.get("day_state", "TRADING_DAY"))
+            if ds == "HOLIDAY":
+                return "HOLIDAY", str(info.get("holiday_name") or "Holiday")
+            if ds == "WEEKEND":
+                return "WEEKEND", "Weekend"
+            return "TRADING_DAY", "Trading day"
+        except Exception:  # noqa: BLE001 — fail-open rule: calendar error assumes trading day
+            return "TRADING_DAY", "Calendar unreadable (fail-open)"
 
     def _fetch_bar(self, symbol: str) -> Optional[Dict[str, Any]]:
         monitor = get_quality_monitor(self.broker_name, symbol)

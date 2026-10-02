@@ -2624,6 +2624,23 @@ class PortfolioManager:
                 # traffic would nudge the operator about an order they cannot
                 # see (or cancel) from that page.
                 "orders_summary": self._orders_summary_for(mode),
+                # Market-status awareness (finding #11): holiday/weekend/session truth
+                "market": self._market_summary(),
+            }
+
+    def _market_summary(self) -> Dict[str, Any]:
+        try:
+            from backtest.live.market_status import get_market_day_state
+
+            return get_market_day_state()
+        except Exception:  # noqa: BLE001
+            return {
+                "day_state": "TRADING_DAY",
+                "session_state": "OPEN",
+                "holiday_name": None,
+                "next_open_ts": None,
+                "gap_warning": "market status lookup failed",
+                "is_open": True,
             }
 
     def get_runner_detail(self, instance_id: str) -> Dict[str, Any]:

@@ -245,9 +245,8 @@ class OptionsBridge:
 
         # -- MTM Staleness Observability (R1, R4, R6) -----------------------
         try:
-            self.stale_after_bars: int = max(
-                1, int(self.expression.get("stale_after_bars", STALE_AFTER_BARS) or STALE_AFTER_BARS)
-            )
+            raw_stale = self.expression.get("stale_after_bars", STALE_AFTER_BARS)
+            self.stale_after_bars: int = max(1, int(raw_stale or STALE_AFTER_BARS))
         except (TypeError, ValueError):
             self.stale_after_bars = STALE_AFTER_BARS
         #: True while the owning runner is RUNNING (default True for standalone
@@ -550,7 +549,7 @@ class OptionsBridge:
 
     @property
     def mark_stale(self) -> bool:
-        """True when the runner is RUNNING and any open structure has ≥ STALE_AFTER_BARS failed marks (R1)."""
+        """True when runner is RUNNING and structure has ≥ STALE_AFTER_BARS failed marks (R1)."""
         if not self.runner_running:
             return False
         return any(
@@ -1428,7 +1427,8 @@ class OptionsBridge:
             ):
                 self._log_mtm_failure_throttled(
                     f"{self.underlying}:risk_exit",
-                    f"price-driven {decision.reason} suppressed on {self.underlying} while mark is stale/failed",
+                    f"price-driven {decision.reason} suppressed on {self.underlying} "
+                    "while mark is stale/failed",
                 )
                 return None
             return decision

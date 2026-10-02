@@ -1886,3 +1886,88 @@ class StrategyMetadata(Base):
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<StrategyMetadata {self.strategy_name} v{self.version}>"
+
+
+# ---------------------------------------------------------------------------
+# 13. Market Holidays — NSE holiday calendar for market status awareness
+# ---------------------------------------------------------------------------
+
+
+class MarketHoliday(Base):
+    """Trading holiday for a market segment (non-weekend day when exchange is closed)."""
+
+    __tablename__ = "market_holidays"
+
+    @classmethod
+    def ensure_schema(cls, manager: Any, seed: bool = True) -> None:
+        """Create just this table and seed 2026 holidays if empty."""
+        if hasattr(manager, "engine"):
+            bind = manager.engine
+        elif hasattr(manager, "get_bind"):
+            bind = manager.get_bind()
+        else:
+            bind = manager
+        Base.metadata.create_all(bind, tables=[cls.__table__])
+        if seed:
+            cls.seed_2026(manager)
+
+    @classmethod
+    def seed_2026(cls, manager: Any) -> int:
+        """Seed 2026 NSE equity trading holidays if not already present."""
+        from backtest.live.market_status import NSE_HOLIDAYS_2026
+
+        def _do_seed(session: Any) -> int:
+            cnt = 0
+            for h_date, segment, desc in NSE_HOLIDAYS_2026:
+                parsed_date = date.fromisoformat(h_date) if isinstance(h_date, str) else h_date
+                existing = session.get(cls, parsed_date)
+                if existing is None:
+                    session.add(
+                        cls(
+                            holiday_date=parsed_date,
+                            segment=segment,
+                            description=desc,
+                            is_trading_holiday=True,
+                            source="nse",
+                        )
+                    )
+                    cnt += 1
+            if cnt:
+                session.commit()
+            return cnt
+
+        try:
+            if hasattr(manager, "session"):
+                with manager.session() as session:
+                    return _do_seed(session)
+            elif hasattr(manager, "add") and hasattr(manager, "commit"):
+                return _do_seed(manager)
+            elif hasattr(manager, "connect"):
+                from sqlalchemy.orm import Session
+                with Session(manager) as session:
+                    return _do_seed(session)
+            return 0
+        except Exception:
+            return 0
+
+    holiday_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    segment: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="equity", server_default="equity"
+    )
+    description: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_trading_holiday: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    source: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="nse", server_default="nse"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_market_holidays_date", "holiday_date"),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<MarketHoliday {self.holiday_date} {self.description}>"

@@ -110,9 +110,23 @@
       feedEl.textContent = tick > 0 ? `Feed active · ${running} running · ${tick} ticks` : "Feed idle";
     }
 
+    const market = p.market || window.__lastMarketState || null;
+    if (market && window.updateMarketChip) {
+      window.updateMarketChip(market);
+    }
+    const isClosed = market ? (market.day_state !== "TRADING_DAY" || market.session_state !== "OPEN") : false;
+    const isHolidayOrWeekend = market ? (market.day_state !== "TRADING_DAY") : false;
+    const lossLabel = isHolidayOrWeekend ? "Daily Loss (prev session)" : "Daily Loss (today)";
+
+    if (isClosed) {
+      strip.classList.add("risk-strip-frozen");
+    } else {
+      strip.classList.remove("risk-strip-frozen");
+    }
+
     // Daily loss
     if (dlossEl) {
-      dlossEl.textContent = `Daily Loss: ${fmtMoney(p.daily_loss_used || 0)} / ${fmtMoney(p.daily_loss_limit || 0)} (${pct(p.daily_loss_pct)})`;
+      dlossEl.textContent = `${lossLabel}: ${fmtMoney(p.daily_loss_used || 0)} / ${fmtMoney(p.daily_loss_limit || 0)} (${pct(p.daily_loss_pct)})`;
     }
     if (dlossBar) {
       dlossBar.style.width = Math.min(100, (p.daily_loss_pct || 0) * 100) + "%";
@@ -177,17 +191,60 @@
     }
   }
 
+  function formatLastSessionDate(p) {
+    const ts = p.last_bar_ts || p.timestamp;
+    if (ts) {
+      try {
+        const dt = new Date(String(ts).replace(" ", "T"));
+        if (!isNaN(dt.getTime())) {
+          const y = dt.getFullYear();
+          const m = String(dt.getMonth() + 1).padStart(2, "0");
+          const d = String(dt.getDate()).padStart(2, "0");
+          return `${y}-${m}-${d}`;
+        }
+      } catch (e) {}
+    }
+    const now = new Date();
+    const utcMs = now.getTime() + (now.getTimezoneOffset() * 60000);
+    const ist = new Date(utcMs + (5.5 * 3600000));
+    let prev = new Date(ist);
+    prev.setDate(prev.getDate() - 1);
+    while (prev.getDay() === 0 || prev.getDay() === 6) {
+      prev.setDate(prev.getDate() - 1);
+    }
+    const y = prev.getFullYear();
+    const m = String(prev.getMonth() + 1).padStart(2, "0");
+    const d = String(prev.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }
+
   function renderExpanded(p) {
     const statsEl = $("risk-strip-detail-stats");
     const losersEl = $("risk-strip-top-losers");
     const canvas = $("risk-strip-chart");
+
+    const market = p.market || window.__lastMarketState || null;
+    const isClosed = market ? (market.day_state !== "TRADING_DAY" || market.session_state !== "OPEN") : false;
+    const isHolidayOrWeekend = market ? (market.day_state !== "TRADING_DAY") : false;
+    const lossLabel = isHolidayOrWeekend ? "Daily Loss (prev session)" : "Daily Loss (today)";
+
+    const titleEl = $("risk-strip-expanded-title");
+    if (titleEl) {
+      titleEl.textContent = `${lossLabel} breakdown · last 6 hours`;
+    }
+
+    let updateHtml = `<div class="muted">Last update: ${p.timestamp ? p.timestamp.slice(11,19) : new Date().toLocaleTimeString()}</div>`;
+    if (isClosed) {
+      const lastSessionDate = formatLastSessionDate(p);
+      updateHtml = `<div class="muted">Last session close: ${lastSessionDate} 15:30 IST (market closed) <span class="risk-strip-frozen-tag">(frozen)</span></div>`;
+    }
 
     if (statsEl) {
       statsEl.innerHTML = `
         <div>Current: ${fmtMoney(p.daily_pnl || 0)} | Used: ${fmtMoney(p.daily_loss_used || 0)} / ${fmtMoney(p.daily_loss_limit || 0)}</div>
         <div>Peak Equity: ${fmtMoney(p.peak_equity || 0)} | Drawdown: ${pct(p.drawdown_pct)} (limit ${pct(p.max_drawdown_limit_pct || 0.25)})</div>
         <div>Deployed: ${fmtMoney(p.deployed_capital || 0)} (${pct(p.deployed_pct)}) | Gross: ${p.open_positions || 0} positions</div>
-        <div class="muted">Last update: ${p.timestamp ? p.timestamp.slice(11,19) : new Date().toLocaleTimeString()}</div>
+        ${updateHtml}
       `;
     }
 
@@ -207,12 +264,13 @@
       if (chart) chart.destroy();
       const labels = riskHistory.map(h => h.ts);
       const dlData = riskHistory.map(h => (h.daily_loss_pct * 100).toFixed(2));
+      const chartLabel = isHolidayOrWeekend ? "Daily Loss % (prev session)" : "Daily Loss %";
       chart = new Chart(canvas.getContext("2d"), {
         type: "line",
         data: {
           labels,
           datasets: [
-            { label: "Daily Loss %", data: dlData, borderColor: "#e0938f", backgroundColor: "rgba(224,147,143,.1)", fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2 },
+            { label: chartLabel, data: dlData, borderColor: "#e0938f", backgroundColor: "rgba(224,147,143,.1)", fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2 },
           ]
         },
         options: {
@@ -370,20 +428,40 @@
     });
   }
 
+  let sseActive = false;
+  let lastSseTs = 0;
+  let riskPollTimer = null;
+
+  function scheduleRiskPoll() {
+    if (riskPollTimer) clearTimeout(riskPollTimer);
+    const isResearchPage = /backtest|compare|optimize|strategy-builder|data|settings/i.test(window.location.pathname);
+    const baseInterval = sseActive
+      ? 15000
+      : (isResearchPage ? 15000 : 5000);
+    const delay = document.hidden ? 30000 : baseInterval;
+    riskPollTimer = setTimeout(async () => {
+      if (!sseActive || (Date.now() - lastSseTs > 12000)) {
+        await fetchRisk();
+      }
+      scheduleRiskPoll();
+    }, delay);
+  }
+
   // SSE integration — portfolio.js already opens SSE, we hook into it
   function hookSSE() {
-    // If portfolio stream exists, use its data
-    // Fallback to polling every 2s for Tier 1
-    setInterval(fetchRisk, 2000);
+    // Initial fetch once for fast paint
     fetchRisk();
+    scheduleRiskPoll();
 
-    // Try to listen to portfolio events if EventSource is used
+    // Listen to portfolio events if EventSource is used
     const originalAddEventListener = EventSource.prototype.addEventListener;
     EventSource.prototype.addEventListener = function (type, handler) {
       if (type === "portfolio") {
         const wrapped = function (ev) {
           try {
             const p = JSON.parse(ev.data);
+            sseActive = true;
+            lastSseTs = Date.now();
             lastPortfolio = p;
             updateStrip(p);
             updateHaltPill(p);

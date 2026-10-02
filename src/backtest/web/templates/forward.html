@@ -50,9 +50,13 @@
     <h2 class="card-title">Configuration</h2>
     <div class="forward-grid">
         <div class="form-row"><label for="strategy">Strategy</label><select id="strategy" class="input"><option value="">Loading…</option></select></div>
-        <div class="form-row"><label for="symbol">Symbol</label>
-            <input type="text" id="symbol" class="input" placeholder="e.g. MAZDOCK, INFY" list="symbolList">
-            <datalist id="symbolList"></datalist>
+        <div class="form-row" style="grid-column: 1 / -1;">
+            <label for="symbol-search">Instrument</label>
+            <div id="symbol-tabs" class="sym-tabs"></div>
+            <input id="symbol-search" class="input instrument-search" type="search" placeholder="Search instruments…" autocomplete="off" aria-label="Search instruments">
+            <label class="sr-only" for="symbol">Selected instrument</label>
+            <select id="symbol" class="input"><option>Loading…</option></select>
+            <small id="symbol-status" class="text-muted"></small>
         </div>
         <div class="form-row"><label for="timeframe">Timeframe</label><select id="timeframe" class="input">
             <option value="1min">1min</option>
@@ -134,6 +138,7 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="{{ url_for('static', filename='js/components/symbol_picker.js') }}"></script>
 <script src="{{ url_for('static', filename='js/components/params_form.js') }}"></script>
 <script src="{{ url_for('static', filename='js/components/metrics_cards.js') }}"></script>
 <script src="{{ url_for('static', filename='js/components/trade_table.js') }}"></script>

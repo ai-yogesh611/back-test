@@ -62,18 +62,27 @@ _INTERVAL_MAP = MSTOCK_INTERVAL_MAP
 
 def _market_open(now_utc: datetime | None = None) -> bool:
     """Whether the NSE market is currently open (IST business hours)."""
-    if now_utc is None:
-        now_utc = datetime.now(timezone.utc)
-    ist = now_utc + timedelta(hours=5, minutes=30)
-    if ist.weekday() >= 5:
-        return False
-    market_open = ist.replace(
-        hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0
-    )
-    market_close = ist.replace(
-        hour=MARKET_CLOSE_HOUR, minute=MARKET_CLOSE_MINUTE, second=0, microsecond=0
-    )
-    return market_open <= ist <= market_close
+    try:
+        from backtest.live.market_status import IST, get_market_day_state
+
+        if now_utc is None:
+            now_utc = datetime.now(timezone.utc)
+        ist = now_utc.astimezone(IST)
+        info = get_market_day_state(ist)
+        return bool(info.get("is_open", False))
+    except Exception:  # noqa: BLE001 — fail-open to standard hours check
+        if now_utc is None:
+            now_utc = datetime.now(timezone.utc)
+        ist = now_utc + timedelta(hours=5, minutes=30)
+        if ist.weekday() >= 5:
+            return False
+        market_open = ist.replace(
+            hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0
+        )
+        market_close = ist.replace(
+            hour=MARKET_CLOSE_HOUR, minute=MARKET_CLOSE_MINUTE, second=0, microsecond=0
+        )
+        return market_open <= ist <= market_close
 
 
 def _typea_headers(api_key: str, token: str) -> dict[str, str]:

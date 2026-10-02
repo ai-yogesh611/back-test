@@ -31,6 +31,7 @@ Severity legend:
 | 8 | 🟡 | `/data` | Inventory flashes "0 symbols · 0 bars" before the async fetch resolves. Show a loading state. |
 | 9 | 🟡 | `/forward` | Symbol is a free-text box while backtest/compare/optimize use the shared `SymbolPicker`. Consistency gap. |
 | 10 | 🟡 | footer | Source tag differs by page ("Historical data" vs "mStock data"); likely intentional per routing, but reads as inconsistency. |
+| 11 | 🟠 | command center, risk banner | Misleading timers on market-closed days (fake "next bar in 28s" countdown, browser-clock "Last update", sparkline mislabeled "last 6 hours"). **Signed-off spec split out to [`MARKET-STATUS-SPEC-2026-10-02.md`](MARKET-STATUS-SPEC-2026-10-02.md)** — implement copy verbatim. |
 
 Positive: **no console errors** on any page except the reporting 500; **all API calls 200** except reporting; broker board, risk board, spawn modal, and the research forms all render with sensible, non-redundant fields.
 
@@ -267,6 +268,10 @@ strategy (output pane).
 
 ## Notes for whoever picks these up
 
+- **Finding #11's enhancement spec** (holiday feed gate + market_holidays +
+  header chip + verbatim UI copy, signed off by the operator 2026-10-02) lives in
+  its own file: `MARKET-STATUS-SPEC-2026-10-02.md` — review and implement that
+  separately from the bug fixes here.
 - #1 and #2 are the two real functional bugs; both have exact file:line and a
   reproduction. Fix #1 first (reporting is fully broken with paper on).
 - #2's fix is one line in `portfolio.js` `render()`; add a test that a live-scoped

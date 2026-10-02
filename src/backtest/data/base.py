@@ -9,7 +9,9 @@ CANDLE_COLUMNS = ["open", "high", "low", "close", "volume"]
 #: The ONE canonical timeframe vocabulary (ticket P4.3). Every layer — API,
 #: config, DB (``market_data_cache.timeframe`` CHECK), UI, feeds — speaks
 #: these names. Resolved with the lead as the descriptive set.
-CANONICAL_TIMEFRAMES = ("1min", "5min", "10min", "15min", "30min", "1hour", "4hour", "1day", "1week")
+CANONICAL_TIMEFRAMES = (
+    "1min", "5min", "10min", "15min", "30min", "1hour", "4hour", "1day", "1week"
+)
 
 #: Canonical timeframe -> mStock TypeA wire interval. Broker-specific
 #: translation only; the rest of the codebase never speaks these names.

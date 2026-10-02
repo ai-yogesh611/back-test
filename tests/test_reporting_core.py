@@ -636,3 +636,36 @@ def test_a_missing_note_pnl_is_an_input_error_not_a_zero_note(reporting_config):
         BrokerReconciliation().reconcile(report, "mstock", contract_note_pnl=None)
     with pytest.raises(ValueError):
         BrokerReconciliation().reconcile_report(report, {"mstock": {"note_ref": "CN-1"}})
+
+
+def test_consolidator_mixed_tz_awareness_paper_and_live():
+    """Ensure mixed offset-naive and offset-aware exit_times sort without TypeError."""
+    from datetime import timezone
+    records = [
+        TradeRecord(
+            trade_id="aware_live",
+            symbol="RELIANCE",
+            mode="live",
+            gross_pnl=Decimal("1500"),
+            exit_time=datetime(2026, 6, 20, 15, 0, tzinfo=timezone.utc),
+        ),
+        TradeRecord(
+            trade_id="naive_paper",
+            symbol="INFY",
+            mode="paper",
+            gross_pnl=Decimal("800"),
+            exit_time=datetime(2026, 6, 18, 14, 30),
+        ),
+        TradeRecord(
+            trade_id="iso_str_exit",
+            symbol="TCS",
+            mode="paper",
+            gross_pnl=Decimal("500"),
+            exit_time=datetime(2026, 6, 10, 10, 0),
+        ),
+    ]
+    report = ConsolidatedPnL(sources=[StaticSource(records)]).generate_report(
+        "2026-06-01", "2026-06-30", include_paper=True
+    )
+    assert report.trade_count == 3
+    assert [t.symbol for t in report.trades] == ["TCS", "INFY", "RELIANCE"]

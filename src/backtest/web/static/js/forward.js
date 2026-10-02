@@ -426,28 +426,53 @@ async function init() {
         $("strategy").innerHTML = '<option value="">failed to load</option>';
     }
 
+    let forwardPicker = null;
+    function updateStrategySymbolHint(stratName) {
+        const name = String(stratName || "").toLowerCase();
+        const isOption = name.includes("option") || name.includes("instant_buy") || name.includes("condor") || name.includes("strangle") || name.includes("atm");
+        const searchInput = $("symbol-search");
+        if (searchInput) {
+            searchInput.placeholder = isOption ? "Search indices / options (e.g. NIFTY, BANKNIFTY)…" : "Search instruments (e.g. RELIANCE, INFY)…";
+        }
+        if (forwardPicker && isOption && typeof forwardPicker.setTab === "function") {
+            forwardPicker.setTab("index");
+        }
+    }
+
     $("strategy").addEventListener("change", async () => {
+        updateStrategySymbolHint($("strategy").value);
         try {
             renderParamsInto($("params-container"),
                 await fetchJSON(`/api/strategies/${encodeURIComponent($("strategy").value)}/params`));
         } catch (err) { showToast(err.message, "error"); }
     });
 
-    // Load symbol autocomplete + add input filtering
-    await loadSymbols();
-    const symbolInput = $("symbol");
-    symbolInput.addEventListener("input", () => {
-        const val = symbolInput.value.toUpperCase();
-        const list = $("symbolList");
-        if (!list) return;
-        const options = list.querySelectorAll("option");
-        let shown = 0;
-        options.forEach(opt => {
-            const match = opt.value.toUpperCase().includes(val);
-            opt.style.display = match ? "" : "none";
-            if (match && shown < 20) shown++;
+    if (typeof SymbolPicker !== "undefined" && $("symbol-search") && $("symbol-tabs")) {
+        forwardPicker = SymbolPicker.mount({
+            select: $("symbol"),
+            search: $("symbol-search"),
+            tabs: $("symbol-tabs"),
+            summary: $("symbol-status"),
         });
-    });
+    } else {
+        await loadSymbols();
+        const symbolInput = $("symbol");
+        if (symbolInput && typeof symbolInput.addEventListener === "function") {
+            symbolInput.addEventListener("input", () => {
+                const val = (symbolInput.value || "").toUpperCase();
+                const list = $("symbolList");
+                if (!list) return;
+                const options = list.querySelectorAll ? list.querySelectorAll("option") : [];
+                let shown = 0;
+                options.forEach(opt => {
+                    const match = opt.value.toUpperCase().includes(val);
+                    opt.style.display = match ? "" : "none";
+                    if (match && shown < 20) shown++;
+                });
+            });
+        }
+    }
+    updateStrategySymbolHint($("strategy").value);
 
     // Pre-fill from backtest
     const pre = SessionState.forwardPrefill;

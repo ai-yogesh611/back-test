@@ -92,6 +92,26 @@
             <div class="topbar-controls">
                 <button id="command-open" class="command-open" type="button" aria-label="Search workspace pages">{{ icon('search', 15) }}<span>Jump to…</span><kbd>Ctrl K</kbd></button>
                 <span class="environment-chip" title="Active price data source. This is not an execution-mode indicator."><span class="status-dot" aria-hidden="true"></span>{{ source_name }}</span>
+                <span id="market-status-chip"
+                      class="market-status-chip"
+                      data-state="{% if market_status.day_state == 'HOLIDAY' %}HOLIDAY{% elif market_status.day_state == 'WEEKEND' %}WEEKEND{% else %}{{ market_status.session_state }}{% endif %}"
+                      data-market='{{ market_status | tojson }}'
+                      title="NSE Trading Hours: 09:15 - 15:30 IST.{% if market_status.next_open_formatted %} Next open: {{ market_status.next_open_formatted }}.{% endif %}{% if market_status.holiday_name %} Holiday: {{ market_status.holiday_name }}.{% endif %}{% if market_status.gap_warning %} Calendar warning: {{ market_status.gap_warning }}{% endif %}">
+                    <span class="market-status-dot" aria-hidden="true"></span>
+                    <span id="market-status-text" class="market-status-text">
+                        {%- if market_status.day_state == 'HOLIDAY' -%}
+                            NSE CLOSED · {{ market_status.holiday_name | truncate(18, True, '…') if market_status.holiday_name else 'HOLIDAY' }}
+                        {%- elif market_status.day_state == 'WEEKEND' -%}
+                            NSE CLOSED · WEEKEND
+                        {%- elif market_status.session_state == 'OPEN' -%}
+                            NSE OPEN
+                        {%- elif market_status.session_state == 'PRE_OPEN' -%}
+                            PRE-OPEN
+                        {%- else -%}
+                            NSE CLOSED
+                        {%- endif -%}
+                    </span>
+                </span>
                 <button id="halt-pill" class="halt-pill halt-pill-unknown" type="button" title="Checking portfolio risk — click to view Risk Board">
                     <span id="halt-pill-dot" aria-hidden="true">⚪</span><span id="halt-pill-text">Checking</span>
                 </button>
@@ -113,7 +133,7 @@
                 <div class="risk-strip-left">
                     <span id="risk-strip-feed" class="risk-strip-feed">Checking feed</span>
                     <span class="risk-strip-sep">·</span>
-                    <span id="risk-strip-dloss" class="risk-strip-metric">Daily Loss: —</span>
+                    <span id="risk-strip-dloss" class="risk-strip-metric">{% if market_status.day_state != 'TRADING_DAY' %}Daily Loss (prev session){% else %}Daily Loss (today){% endif %}: —</span>
                     <div class="risk-strip-mini-bar"><div id="risk-strip-dloss-bar" class="risk-strip-bar-fill"></div></div>
                     <span id="risk-strip-dd" class="risk-strip-metric">DD: —</span>
                     <div class="risk-strip-mini-bar"><div id="risk-strip-dd-bar" class="risk-strip-bar-fill"></div></div>
@@ -128,7 +148,7 @@
             </div>
             <div class="risk-strip-expanded" id="risk-strip-expanded" hidden>
                 <div class="risk-strip-expanded-head">
-                    <strong>Daily loss breakdown · last 6 hours</strong>
+                    <strong id="risk-strip-expanded-title">{% if market_status.day_state != 'TRADING_DAY' %}Daily Loss (prev session){% else %}Daily Loss (today){% endif %} breakdown · last 6 hours</strong>
                     <button id="risk-strip-collapse" class="btn btn-ghost btn-small" type="button">Close</button>
                 </div>
                 <div class="risk-strip-expanded-body">
@@ -141,7 +161,7 @@
         <main class="container" id="main-content" tabindex="-1">
             {% block content %}{% endblock %}
         </main>
-        <footer class="workspace-footer"><span>Trading Bot<span class="footer-separator">/</span>Research &amp; execution</span><span>{{ currency_code }}<span class="footer-separator">·</span>{{ source_name }}</span></footer>
+        <footer class="workspace-footer"><span>Trading Bot<span class="footer-separator">/</span>Research &amp; execution</span><span title="Active market data archive used for historical simulation">{{ currency_code }}<span class="footer-separator">·</span>Data: {{ source_name }}</span></footer>
     </div>
 
     <!-- Navigation only: this dialog never runs or deploys a strategy. -->
@@ -192,6 +212,7 @@
     <script src="{{ url_for('static', filename='js/session_state.js') }}"></script>
     <script src="{{ url_for('static', filename='js/components/toast.js') }}"></script>
     <script src="{{ url_for('static', filename='js/components/loader.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/components/market_chip.js') }}"></script>
     <script src="{{ url_for('static', filename='js/components/risk_strip.js') }}"></script>
     <script src="{{ url_for('static', filename='js/broker_status.js') }}"></script>
     <script src="{{ url_for('static', filename='js/broker_auth_modal.js') }}"></script>

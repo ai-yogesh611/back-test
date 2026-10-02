@@ -481,10 +481,19 @@ class ForwardSession:
                 "bars_in_memory": n,
                 "total_trades": metrics["total_trades"],
                 "last_bar_ts": _fmt_ts(last_idx) if last_idx is not None else None,
-                "market_open": True,
+                "market_open": self._is_market_open(),
                 "unrealized_pnl": round(sum(p["unrealized_pnl"] for p in positions), 2),
                 "error": self.error,
             }
+
+    @staticmethod
+    def _is_market_open() -> bool:
+        try:
+            from backtest.live.market_status import get_market_day_state
+
+            return bool(get_market_day_state().get("is_open", True))
+        except Exception:  # noqa: BLE001
+            return True
 
     def summary(self) -> dict[str, Any]:
         """Row for the session list — no heavy computation."""

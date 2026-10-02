@@ -98,11 +98,23 @@ def _parse_target(data: dict) -> Tuple[str, list, str | None]:
 def summary() -> Tuple[Response, int]:
     mode = request.args.get("mode") or None
     try:
+        port_summary = _manager().get_portfolio_summary(mode)
+        market_info = port_summary.get("market")
         return jsonify(
-            {"success": True, "portfolio": _manager().get_portfolio_summary(mode)}
+            {"success": True, "market": market_info, "portfolio": port_summary}
         ), 200
     except ValueError as exc:
         return _error(str(exc))
+
+
+@portfolio_bp.get("/api/market/status")
+def market_status_route() -> Tuple[Response, int]:
+    try:
+        from backtest.live.market_status import get_market_day_state
+
+        return jsonify({"success": True, **get_market_day_state()}), 200
+    except Exception as exc:  # noqa: BLE001
+        return _error(str(exc), 500)
 
 
 @portfolio_bp.get("/api/portfolio/universes")

@@ -47,6 +47,84 @@ kbd { border: 1px solid var(--border); border-radius: 4px; padding: 1px 4px; fon
 .command-open kbd { margin-left: 18px; }
 .environment-chip { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 9px; white-space: nowrap; }
 .status-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--info); flex-shrink: 0; }
+
+/* Market Status Chip (MARKET-STATUS-SPEC-2026-10-02 §6) */
+.market-status-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 9999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 3px 8px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  user-select: none;
+  cursor: default;
+  transition: all 0.2s ease;
+}
+.market-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 4px;
+  flex-shrink: 0;
+}
+@keyframes market-dot-pulse {
+  0% { transform: scale(0.95); opacity: 0.8; }
+  50% { transform: scale(1.2); opacity: 1; }
+  100% { transform: scale(0.95); opacity: 0.8; }
+}
+.market-status-chip[data-state="OPEN"] {
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  color: #34D399;
+}
+.market-status-chip[data-state="OPEN"] .market-status-dot {
+  background: #10B981;
+  animation: market-dot-pulse 1.5s ease-in-out infinite;
+}
+.market-status-chip[data-state="PRE_OPEN"] {
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  color: #FBBF24;
+}
+.market-status-chip[data-state="PRE_OPEN"] .market-status-dot {
+  background: #F59E0B;
+}
+.market-status-chip[data-state="POST_CLOSE"] {
+  background: rgba(107, 114, 128, 0.15);
+  border: 1px solid rgba(107, 114, 128, 0.35);
+  color: #9CA3AF;
+}
+.market-status-chip[data-state="POST_CLOSE"] .market-status-dot {
+  background: #6B7280;
+}
+.market-status-chip[data-state="HOLIDAY"] {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #F87171;
+}
+.market-status-chip[data-state="HOLIDAY"] .market-status-dot {
+  background: #EF4444;
+}
+.market-status-chip[data-state="WEEKEND"] {
+  background: rgba(107, 114, 128, 0.15);
+  border: 1px solid rgba(107, 114, 128, 0.35);
+  color: #9CA3AF;
+}
+.market-status-chip[data-state="WEEKEND"] .market-status-dot {
+  background: #6B7280;
+}
+
+.risk-strip.risk-strip-frozen {
+  border-color: rgba(107, 114, 128, 0.4) !important;
+}
+.risk-strip-frozen-tag {
+  font-size: 0.72rem;
+  opacity: 0.75;
+  margin-left: 4px;
+  font-weight: normal;
+}
 .halt-pill { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px; min-height: 27px; border-radius: 5px; font-family: var(--font-sans); font-size: 9px; font-weight: 500; cursor: pointer; white-space: nowrap; border: 1px solid var(--border); background: var(--surface); }
 .halt-pill-unknown { color: var(--muted); }
 .halt-pill-safe { background: var(--success-tint); color: var(--success-text); border-color: var(--success-shade); }
