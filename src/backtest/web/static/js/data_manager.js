@@ -91,7 +91,12 @@ function dmRenderCount() {
         const names = [...dmState.selected].slice(0, 6).join(', ');
         parts.push(`${n} selected: ${names}${n > 6 ? '…' : ''}`);
     } else {
-        parts.push('none selected — fetches all NIFTY 200 stocks');
+        const unfetched = {
+            'equity,index': 'fetches all NIFTY 200 stocks + NSE indices',
+            equity: 'fetches all NIFTY 200 stocks',
+            index: 'fetches all NSE indices',
+        };
+        parts.push(`none selected — ${unfetched[dmState.tab] || unfetched['equity,index']}`);
     }
     $('dm-symbol-count').textContent = parts.join(' · ');
 }
@@ -185,6 +190,11 @@ $('dm-fetchBtn').addEventListener('click', async () => {
     if (dmState.selected.size) {
         body.symbols = [...dmState.selected].sort();
     }
+    // Nothing ticked: the active tab is the fetch scope (All = NIFTY 200
+    // equities + indices, Equity = 200 stocks, Index = indices). The server
+    // enforces this too — the old "no list = every NSE/BSE stock" fallback
+    // is gone (2026-10-02).
+    body.scope = dmState.tab;
 
     try {
         const resp = await fetch('/api/data/fetch', {

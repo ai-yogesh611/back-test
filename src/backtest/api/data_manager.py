@@ -26,7 +26,13 @@ from flask import Blueprint, jsonify, request
 from sqlalchemy import create_engine, text
 
 from backtest.data.base import MSTOCK_INTERVAL_MAP
-from backtest.data.coverage import INSTRUMENT_TYPES, NO_DATA_HINT, classify_instrument
+from backtest.data.coverage import (
+    INDEX_UNIVERSE,
+    INSTRUMENT_TYPES,
+    NO_DATA_HINT,
+    classify_instrument,
+    load_equity_universe,
+)
 from backtest.db.config import get_db_url
 from backtest.logging_config import get_logger
 
@@ -36,6 +42,16 @@ log = get_logger(__name__)
 # -----------------------------------------------------------------------
 # Fetch job state (single job at a time)
 # -----------------------------------------------------------------------
+
+#: Fetch scope when the picker has nothing ticked — mirrors the Data tab's
+#: All/Equity/Index tabs (``DM_TABS`` in data_manager.js). The scope picks
+#: the CURATED universe (NIFTY 200 + built-in indices), never the raw
+#: 15k-row scriptmaster catalogue: an unticked list used to mean "every
+#: NSE/BSE equity" (2026-10-02: a job walked into BSE bond ``001HCCL29``
+#: while the UI promised "all NIFTY 200 stocks").
+FETCH_SCOPES = ("equity,index", "equity", "index")
+DEFAULT_FETCH_SCOPE = "equity,index"
+
 _lock = threading.Lock()
 _job: dict[str, Any] = {
     "status": "idle",  # idle | running | done | error
@@ -49,6 +65,7 @@ _job: dict[str, Any] = {
     "from_date": "",
     "to_date": "",
     "timeframe": "1min",
+    "scope": DEFAULT_FETCH_SCOPE,  # what an unticked list resolves to
     "error": None,  # last error message
     "started_at": None,
     "elapsed": "",
@@ -105,7 +122,12 @@ def fetch_stop() -> tuple:
 def fetch_start() -> tuple:
     """Start a background fetch job.
 
-    Body: { symbols?: string[], timeframe?: string, from_date?: string, to_date?: string }
+    Body: { symbols?: string[], scope?: 'equity,index'|'equity'|'index',
+            timeframe?: string, from_date?: string, to_date?: string }
+
+    ``symbols`` wins when present. With nothing ticked, ``scope`` selects
+    the curated universe to fetch (:data:`FETCH_SCOPES`) — the Data tab
+    sends its active All/Equity/Index tab.
     """
     with _lock:
         if _job["status"] == "running":
@@ -115,7 +137,21 @@ def fetch_start() -> tuple:
     timeframe = data.get("timeframe", "1min")
     from_date = data.get("from_date", "2024-01-01")
     to_date = data.get("to_date", date.today().isoformat())
-    symbols = data.get("symbols")  # None = all from instruments table
+    symbols = data.get("symbols")  # None/empty = the curated universe for `scope`
+
+    scope = data.get("scope") or DEFAULT_FETCH_SCOPE
+    if scope not in FETCH_SCOPES:
+        return (
+            jsonify(
+                {
+                    "error": (
+                        f"Unsupported scope: {scope}. "
+                        f"Use one of: {list(FETCH_SCOPES)}"
+                    )
+                }
+            ),
+            400,
+        )
 
     if timeframe not in _MSTOCK_INTERVAL_MAP:
         return (
@@ -171,6 +207,7 @@ def fetch_start() -> tuple:
             from_date=from_date,
             to_date=to_date,
             timeframe=timeframe,
+            scope=scope,
             error=None,
             started_at=time.time(),
             elapsed="",
@@ -182,7 +219,7 @@ def fetch_start() -> tuple:
     # Launch background thread
     thread = threading.Thread(
         target=_run_fetch_job,
-        args=(token, timeframe, from_date, to_date, symbols),
+        args=(token, timeframe, from_date, to_date, symbols, scope),
         daemon=True,
     )
     thread.start()
@@ -192,6 +229,7 @@ def fetch_start() -> tuple:
             {
                 "status": "started",
                 "timeframe": timeframe,
+                "scope": scope,
                 "from_date": from_date,
                 "to_date": to_date,
             }
@@ -422,33 +460,42 @@ def coverage() -> tuple:
 
 
 def _run_fetch_job(
-    token: str, timeframe: str, from_date: str, to_date: str, symbols: list[str] | None
+    token: str,
+    timeframe: str,
+    from_date: str,
+    to_date: str,
+    symbols: list[str] | None,
+    scope: str = DEFAULT_FETCH_SCOPE,
 ):
-    """Background thread: fetch historical data for all/some symbols."""
+    """Background thread: fetch historical data for ticked symbols, or the
+    curated universe for ``scope`` when nothing is ticked."""
     engine = create_engine(DB_URL, echo=False)
     api_key = os.getenv("MSTOCK_API_KEY", "")
     mstock_tf = _MSTOCK_INTERVAL_MAP.get(timeframe, timeframe)
     chunk_days = CHUNK_DAYS_MAP.get(timeframe, 800)
     log.info(
         "[data] fetch job starting: timeframe=%s range=%s..%s mstock_tf=%s chunk_days=%d "
-        "symbols=%s api_key=%s",
+        "symbols=%s scope=%s api_key=%s",
         timeframe,
         from_date,
         to_date,
         mstock_tf,
         chunk_days,
-        "all" if not symbols else f"{len(symbols)} requested",
+        "none ticked" if not symbols else f"{len(symbols)} requested",
+        scope,
         "set" if api_key else "MISSING — every request will fail",
     )
 
-    # Load instruments (equities from the catalogue, indices from the token map)
-    instruments, not_found = _load_instruments(engine, symbols)
+    # Load instruments (explicit tick, or the curated scope: catalogue
+    # tokens for the NIFTY 200, fixed token map for the indices)
+    instruments, not_found = _load_instruments(engine, symbols, scope)
     total = len(instruments) + len(not_found)
     if not instruments:
         log.warning(
-            "[data] no instruments matched (symbols=%s) — is the `instruments` table "
-            "populated? Run scripts/fetch_nifty500_historical.py first",
-            ",".join(symbols) if symbols else "NSE/BSE equities",
+            "[data] no instruments matched (symbols=%s, scope=%s) — is the "
+            "`instruments` table populated? Run scripts/fetch_nifty500_historical.py first",
+            ",".join(symbols) if symbols else "none ticked",
+            scope,
         )
     else:
         log.info("[data] %d instruments to fetch (%d not found)", len(instruments), len(not_found))
@@ -599,66 +646,79 @@ def _index_row(symbol: str) -> dict | None:
     }
 
 
+def _catalogue_rows(engine, syms: list[str]) -> list[dict]:
+    """Resolve trading symbols to fetchable rows in the scriptmaster
+    catalogue (NSE ``EQ`` / BSE ``Equity`` only — never contracts)."""
+    if not syms:
+        return []
+    placeholders = ", ".join([f":s{i}" for i in range(len(syms))])
+    sql = text(
+        f"SELECT tradingsymbol, instrument_token, name, exchange "
+        f"FROM instruments "
+        f"WHERE ((exchange = 'NSE' AND instrument_type = 'EQ') OR "
+        f"       (exchange = 'BSE' AND instrument_type = 'Equity')) "
+        f"AND UPPER(tradingsymbol) IN ({placeholders}) "
+        f"ORDER BY tradingsymbol"
+    )
+    params = {f"s{i}": s.upper() for i, s in enumerate(syms)}
+    with engine.connect() as conn:
+        rows = conn.execute(sql, params).mappings().all()
+    return [dict(r) for r in rows]
+
+
 def _load_instruments(
-    engine, symbols: list[str] | None
+    engine, symbols: list[str] | None, scope: str = DEFAULT_FETCH_SCOPE
 ) -> tuple[list[dict], list[str]]:
-    """Resolve requested symbols to fetchable instrument rows.
+    """Resolve what a fetch job should pull into ``(rows, not_found)``.
 
-    Returns ``(rows, not_found)``. Each requested symbol is classified first:
-    index names go through the fixed index token map (they are absent from
-    the equity-only ``instruments`` table), everything else is looked up in
-    the catalogue as before. With no symbol list the job keeps its historic
-    meaning: fetch every NSE/BSE equity.
+    Explicitly ticked symbols always win: index names resolve through the
+    fixed token map (they are absent from the equity-only ``instruments``
+    table), everything else through the catalogue, and a symbol neither
+    knows is reported in ``not_found`` — counted, not silently dropped.
+
+    With nothing ticked, ``scope`` selects the CURATED universe the Data
+    tab's picker actually shows (``coverage?curated=1``): ``equity`` → the
+    shipped NIFTY 200 list, ``index`` → the built-in index universe,
+    ``equity,index`` → both. It is deliberately NOT the full scriptmaster
+    catalogue any more: "no selection" meaning all ~15k NSE+BSE rows sent a
+    job into BSE bond symbols while the UI promised the NIFTY 200
+    (2026-10-02 incident, ``001HCCL29``).
     """
-    if not symbols:
-        sql = text(
-            "SELECT tradingsymbol, instrument_token, name, exchange "
-            "FROM instruments "
-            "WHERE (exchange = 'NSE' AND instrument_type = 'EQ') OR "
-            "      (exchange = 'BSE' AND instrument_type = 'Equity') "
-            "ORDER BY tradingsymbol"
-        )
-        with engine.connect() as conn:
-            rows = conn.execute(sql, {}).mappings().all()
-        return [dict(r) for r in rows], []
+    if symbols:
+        index_rows: list[dict] = []
+        equity_syms: list[str] = []
+        not_found: list[str] = []
+        for s in symbols:
+            sym = str(s).strip().upper()
+            if not sym:
+                continue
+            row = _index_row(sym)
+            if row is not None:
+                # Token map wins: it also carries the alias spellings
+                # ("NIFTY BANK") that classify_instrument resolves as equity.
+                index_rows.append(row)
+            elif classify_instrument(sym) == "index":
+                not_found.append(sym)  # an index the map does not have a token for
+            else:
+                equity_syms.append(sym)
 
-    index_rows: list[dict] = []
-    equity_syms: list[str] = []
-    not_found: list[str] = []
-    for s in symbols:
-        sym = str(s).strip().upper()
-        if not sym:
-            continue
-        row = _index_row(sym)
-        if row is not None:
-            # Token map wins: it also carries the alias spellings
-            # ("NIFTY BANK") that classify_instrument resolves as equity.
-            index_rows.append(row)
-        elif classify_instrument(sym) == "index":
-            not_found.append(sym)  # an index the map does not have a token for
-        else:
-            equity_syms.append(sym)
-
-    rows: list[dict] = []
-
-    if equity_syms:
-        placeholders = ", ".join([f":s{i}" for i in range(len(equity_syms))])
-        sql = text(
-            f"SELECT tradingsymbol, instrument_token, name, exchange "
-            f"FROM instruments "
-            f"WHERE ((exchange = 'NSE' AND instrument_type = 'EQ') OR "
-            f"       (exchange = 'BSE' AND instrument_type = 'Equity')) "
-            f"AND UPPER(tradingsymbol) IN ({placeholders}) "
-            f"ORDER BY tradingsymbol"
-        )
-        params = {f"s{i}": s.upper() for i, s in enumerate(equity_syms)}
-        with engine.connect() as conn:
-            found = conn.execute(sql, params).mappings().all()
-        rows.extend(dict(r) for r in found)
-        matched = {str(r["tradingsymbol"]).strip().upper() for r in found}
+        rows = _catalogue_rows(engine, equity_syms)
+        matched = {str(r["tradingsymbol"]).strip().upper() for r in rows}
         not_found.extend(s for s in equity_syms if s not in matched)
+        rows.extend(index_rows)
+        return rows, not_found
 
-    rows.extend(index_rows)
+    parts = scope.split(",")
+    rows = []
+    not_found = []
+    if "equity" in parts:
+        universe_syms = [str(r["symbol"]).strip().upper() for r in load_equity_universe()]
+        found = _catalogue_rows(engine, universe_syms)
+        matched = {str(r["tradingsymbol"]).strip().upper() for r in found}
+        rows.extend(found)
+        not_found.extend(s for s in universe_syms if s not in matched)
+    if "index" in parts:
+        rows.extend(filter(None, (_index_row(sym) for sym, _ in INDEX_UNIVERSE)))
     return rows, not_found
 
 
