@@ -97,7 +97,10 @@ MarketView (bullish/bearish) → strike + expiry selection → TradeIntent
     → OptionPaperBroker (paper, atomic)  or  LiveOptionTrader (mStock, rollback)
 ```
 
-- **Paper:** `/options` dashboard — positions, structures, Greeks grid, expiry alerts
+- **Paper:** Portfolio command center — Positions tab (structures as one net row
+  with legs, Δ/Θ, manual SL/target), Playbooks tab (configs + Deploy), Greeks grid
+  and expiry alerts under Risk & intelligence. The old standalone `/options` page
+  was removed (owner decision, GAP-3); the manual trade UI now lives here
 - **Forward (automated):** the forward engine's options bridge trades
   structures on an isolated paper book, one open structure at a time;
   open structures persist across server restarts and are rehydrated on
@@ -108,7 +111,7 @@ MarketView (bullish/bearish) → strike + expiry selection → TradeIntent
 
 **Status:** the options PRD is complete (9/9 phases) — instrument model,
 expression layer, paper trading, live trading, Greeks & margin, the full
-statutory fee stack, expiry handling, the `/options` dashboard, persistence,
+statutory fee stack, expiry handling, the portfolio options views, persistence,
 forward-test wiring, and an end-to-end integration suite.
 
 ### Playbooks (Unified Trading — Plug-and-Play Option Configs)
@@ -120,8 +123,8 @@ forward-test wiring, and an end-to-end integration suite.
 - **Methods:** `to_expression()` → runner `instrument.expression`, `to_runner_config(strategy_name, allocated_capital, ...)` → spawn payload, `risk_envelope(spot, lot_size)` → `{"estimated": True, "max_loss_per_signal": ₹, ...}` — V1 2%/1%/4% moneyness model capped by `max_loss_per_trade`, lot_size resolved from instrument master never stored (NSE revises lot sizes)
 - **API (6 routes):** `GET /api/playbooks?tag=&underlying=`, `GET /api/playbooks/<id>`, `POST /api/playbooks`, `PUT /api/playbooks/<id>` (bumps version), `DELETE /api/playbooks/<id>` (blocks seeds), `POST /api/playbooks/<id>/spawn` (returns config, no side effects — one creation path `POST /api/portfolio/runner/create`)
 - **Execution Engine:** `src/backtest/forward/execution_engine.py` — C2 data-ownership rule (strategies NEVER call broker/quote APIs, all bars+chain snapshots flow engine→strategy, enforced via `_assert_data_ownership()`), C3 two-tier exits `EXIT_PRECEDENCE` (0 emergency Engine unconditional >1 stop >2 target >3 DTE >4 flip, re-entry next bar only default false, evidence -₹41,844 same-bar churn), C4 risk envelope `estimated:true` flag rendered in UI as "estimated" badge, C5 `create_app` exists `web/app.py:244` and `emergency_stop` endpoint `api/portfolio.py:310`
-- **Portfolio Integration:** `get_portfolio_summary()` totals = runners + manual book (dashboard_book merged, honest), `emergency_flatten_all(mode)` closes BOTH books, Manual Options Book tab makes legacy trades visible — fixes original UX wound
-- **UI:** Portfolio tabs `Equity | Positions | 📚 Playbooks | 📦 Manual Options Book | Log`, Playbooks tab card grid with name, underlying·structure·strike·qty, exit bits, risk cap + "estimated" badge + version badge, Deploy/Edit/Delete/New, Manual Book tab structures+legs Close/Flatten, banners unified (Strategy WHAT / Engine HOW) + dashboard-book count
+- **Portfolio Integration:** `get_portfolio_summary()` totals = runners + manual book (dashboard_book merged, honest), `emergency_flatten_all(mode)` closes BOTH books — legacy manual-book trades still count in the totals and are flattened with everything else
+- **UI:** Portfolio tabs `Positions | Equity | Orders | Risk & intelligence | Trade history | 📚 Playbooks | Activity log`, Playbooks tab card grid with name, underlying·structure·strike·qty, exit bits, risk cap + "estimated" badge + version badge, Deploy/Edit/Delete/New (structures and their legs close from the Positions tab), banners unified (Strategy WHAT / Engine HOW) + dashboard-book count
 - **Conditions C1-C5 cleared (U0.1):** C1 mutable defaults fixed via `field(default_factory=...)` + regression tests, C2 doc+assert, C3 precedence list, C4 estimated flag, C5 verified — see `tests/test_playbooks_conditions.py` (6 tests PASS)
 - **Docs:** [docs/ARCHITECTURE-UNIFIED-TRADING.md](docs/ARCHITECTURE-UNIFIED-TRADING.md) — signed off with conditions, Q6 hard-delete criteria: zero new manual structures in 14d AND ≥10 playbook runners. (Full implementation log: `docs/archive/UNIFIED-TRADING-TASKS.md` — P0–P6 all done.)
 
@@ -307,6 +310,7 @@ Open `http://localhost:5000` → Backtest tab → Pick a strategy → Hit **Run 
 
 | Doc | Covers |
 |-----|--------|
+| [docs/USER-GUIDE.md](docs/USER-GUIDE.md) | **How to use it** — every page, every tab, step by step (start here) |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System architecture |
 | [docs/WEB-UI.md](docs/WEB-UI.md) | Every page and tab |
 | [docs/PORTFOLIO-CENTER.md](docs/PORTFOLIO-CENTER.md) | Command Center: runners, buckets, breakers, order management endpoints & semantics |

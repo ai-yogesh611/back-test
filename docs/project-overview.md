@@ -799,6 +799,7 @@ Straight from the code and trackers, not aspirational:
 
 | Question | File |
 |---|---|
+| **How do I actually use the UI — every page and tab?** | `docs/USER-GUIDE.md` |
 | How does the whole thing fit together? | `docs/ARCHITECTURE.md` |
 | How does the backtest engine work? | `docs/BACKTEST-ENGINE.md` |
 | How do I add a strategy or data source? | `docs/STRATEGY-AUTHORING.md` (strategies), `docs/DATA-SOURCES.md` (sources) |
