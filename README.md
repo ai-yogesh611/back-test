@@ -310,7 +310,8 @@ Open `http://localhost:5000` → Backtest tab → Pick a strategy → Hit **Run 
 
 | Doc | Covers |
 |-----|--------|
-| [docs/USER-GUIDE.md](docs/USER-GUIDE.md) | **How to use it** — every page, every tab, step by step (start here) |
+| [docs/USER-GUIDE.md](docs/USER-GUIDE.md) | **How to use it** — index, workflows and troubleshooting (start here) |
+| [docs/how-to/](docs/how-to/README.md) | **Per-functionality how-to** — one file per page/tab, step by step |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System architecture |
 | [docs/WEB-UI.md](docs/WEB-UI.md) | Every page and tab |
 | [docs/PORTFOLIO-CENTER.md](docs/PORTFOLIO-CENTER.md) | Command Center: runners, buckets, breakers, order management endpoints & semantics |

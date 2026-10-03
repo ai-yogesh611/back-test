@@ -1,7 +1,8 @@
 # Web UI
 
-> **Looking for "how do I use this?"** — the operator manual, tab by tab, is
-> [USER-GUIDE.md](USER-GUIDE.md). This file is the developer reference:
+> **Looking for "how do I use this?"** — the operator manual lives in
+> [USER-GUIDE.md](USER-GUIDE.md) (index) and [how-to/](how-to/README.md) (one
+> step-by-step file per page and tab). This file is the developer reference:
 > templates, JS controllers and endpoints.
 
 ## Adding a new page (~45 minutes)
@@ -33,7 +34,7 @@ def my_page():
 ## Pages
 
 Index (all routes are registered in `src/backtest/web/app.py`; nav groups come from
-`templates/base.html`). How to *use* each one: [USER-GUIDE.md](USER-GUIDE.md).
+`templates/base.html`). How to *use* each one: [how-to/](how-to/README.md).
 
 | Page | URL | Template | Controller |
 |------|-----|----------|------------|
