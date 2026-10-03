@@ -178,10 +178,18 @@ class OptimizationStore:
         Production PostgreSQL is migrated by Alembic (009–013); this keeps
         SQLite dev databases and ``:memory:`` test databases usable without a
         migration step. ``checkfirst`` makes it a no-op on a migrated DB.
-        """
-        from backtest.db.models import Base
 
-        Base.metadata.create_all(self.db.engine, tables=list(OPTIMIZATION_TABLES), checkfirst=True)
+        The ledger tables ride along because ``parameter_presets`` carries a
+        ``backtest_run_id`` FK (PRD R3 lineage), and SQLite refuses the preset
+        seed insert outright when the referenced table does not exist.
+        """
+        from backtest.db.models import BACKTEST_LEDGER_TABLES, Base
+
+        Base.metadata.create_all(
+            self.db.engine,
+            tables=list(OPTIMIZATION_TABLES) + list(BACKTEST_LEDGER_TABLES),
+            checkfirst=True,
+        )
         if seed:
             with self.db.session() as s:
                 existing = s.scalar(

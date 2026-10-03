@@ -17,7 +17,7 @@ import json
 import logging
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from backtest.api.backtest_run_store import (
     PAYLOAD_VERSION,
@@ -28,7 +28,7 @@ from backtest.api.backtest_run_store import (
     config_hash,
 )
 from backtest.db import DatabaseManager
-from backtest.db.models import BacktestRun, BacktestRunSeries, Base
+from backtest.db.models import BacktestCompareRun, BacktestRun, BacktestRunSeries, Base
 from backtest.web.app import create_app
 
 logging.getLogger("backtest").setLevel(logging.WARNING)
@@ -406,3 +406,293 @@ def test_read_endpoints_503_without_ledger():
     assert client.get("/api/backtest/runs").status_code == 503
     assert client.get("/api/backtest/runs/stats").status_code == 503
     assert client.get("/api/backtest/runs/whatever").status_code == 503
+
+
+# --- compare ledger (Slice 2, PRD R1b/R3) -------------------------------------
+
+
+def _prov(**over):
+    prov = {
+        "data_source": "db_candles",
+        "date_range": {"from": "2021-01-01", "to": "2022-01-01"},
+        "data_from": "2021-01-01T09:15:00+05:30",
+        "data_to": "2024-01-01T15:30:00+05:30",
+        "symbols_used": ["DEMO"],
+        "engines_used": ["backtest_driver"],
+        "comparison_mode": "strategies",
+    }
+    prov.update(over)
+    return prov
+
+
+def _two_children():
+    a = _payload(symbol="AAA")
+    b = _payload(symbol="BBB", strategy_params={"fast": 5, "slow": 40})
+    return a, b
+
+
+def test_save_compare_writes_parent_and_children(ledger):
+    a, b = _two_children()
+    out = ledger.save_compare(
+        config_snapshot={"shared": {"capital": 100000}, "slots": [{"id": 1}, {"id": 2}]},
+        provenance=_prov(),
+        comparison_block={"correlation": [[1.0]]},
+        slot_errors={"3": {"error": "boom"}},
+        children=[("1", a), ("2", b)],
+    )
+    assert set(out["child_run_ids"]) == {"1", "2"}
+    with ledger.db.session() as s:
+        parent = s.get(BacktestCompareRun, out["compare_id"])
+        assert parent.slot_count == 3  # 2 children + 1 error slot
+        assert parent.date_from.isoformat() == "2021-01-01"  # from date_range
+        assert parent.symbols_used == ["DEMO"]
+        assert parent.comparison_version == 1
+        kids = (
+            s.execute(
+                select(BacktestRun).where(
+                    BacktestRun.parent_compare_id == out["compare_id"]
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert {k.kind for k in kids} == {"compare_slot"}
+        assert {k.run_id for k in kids} == set(out["child_run_ids"].values())
+
+
+def test_save_compare_is_atomic(ledger):
+    a, b = _two_children()
+    b["config"].pop("from_date")  # child would raise LedgerError
+    with pytest.raises(LedgerError):
+        ledger.save_compare(
+            config_snapshot={"shared": {}},
+            provenance=_prov(),
+            comparison_block=None,
+            slot_errors={},
+            children=[("1", a), ("2", b)],
+        )
+    with ledger.db.session() as s:
+        assert s.execute(select(BacktestCompareRun)).scalars().all() == []
+        assert s.execute(select(BacktestRun)).scalars().all() == []
+
+
+def test_get_compare_round_trip_and_children_order(ledger):
+    a, b = _two_children()
+    out = ledger.save_compare(
+        config_snapshot={"shared": {"capital": 1}, "slots": []},
+        provenance=_prov(),
+        comparison_block={"sharpe_spread": 0.4},
+        slot_errors={"9": {"error": "nope"}},
+        children=[("1", a), ("2", b)],
+    )
+    rec = ledger.get_compare(out["compare_id"])
+    assert rec["ledger"]["compare_id"] == out["compare_id"]
+    assert rec["payload"]["comparison"] == {"sharpe_spread": 0.4}
+    assert rec["payload"]["slot_errors"] == {"9": {"error": "nope"}}
+    assert rec["payload"]["config"]["shared"] == {"capital": 1}
+    # created_at ties at SQLite second granularity, so membership not order.
+    assert {c["run_id"] for c in rec["children"]} == set(out["child_run_ids"].values())
+    assert ledger.get_compare("00000000-0000-4000-8000-000000000000") is None
+
+
+def test_get_compare_refuses_foreign_comparison_version(ledger):
+    a, _b = _two_children()
+    out = ledger.save_compare(
+        config_snapshot={"shared": {}},
+        provenance=_prov(),
+        comparison_block={},
+        slot_errors={},
+        children=[("1", a)],
+    )
+    with ledger.db.session() as s:
+        row = s.get(BacktestCompareRun, out["compare_id"])
+        row.comparison_version = 99
+    with pytest.raises(PayloadVersionMismatch):
+        ledger.get_compare(out["compare_id"])
+
+
+def test_list_compares_pages_and_excludes_blobs(ledger):
+    a, b = _two_children()
+    for _ in range(3):
+        ledger.save_compare(
+            config_snapshot={"shared": {}, "slots": []},
+            provenance=_prov(),
+            comparison_block={"big": "blob"},
+            slot_errors={},
+            children=[("1", a)],
+        )
+    body = ledger.list_compares(limit=2)
+    assert body["total"] == 3 and len(body["compares"]) == 2
+    row = body["compares"][0]
+    assert "comparison_block" not in row and "config_snapshot" not in row
+    assert row["slot_count"] == 1
+
+
+def test_run_many_response_carries_persisted_fields(app_client):
+    _app, client = app_client
+    body = {
+        "shared": {
+            "symbol": "DEMO",
+            "from_date": "2021-01-01",
+            "to_date": "2022-01-01",
+            "capital": 100_000,
+        },
+        "slots": [
+            {"id": 1, "strategy": "sma_crossover", "timeframe": "1D",
+             "params": {"fast": 10, "slow": 30}},
+            {"id": 2, "strategy": "buy_and_hold", "timeframe": "1D", "params": {}},
+        ],
+    }
+    resp = client.post("/api/backtest/run-many", json=body)
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["persisted"] is True and data["persist_error"] is None
+    assert data["compare_id"]
+    assert set(data["results"]) == {"1", "2"}
+
+    lst = client.get("/api/backtest/compares").get_json()
+    assert lst["total"] == 1 and lst["compares"][0]["compare_id"] == data["compare_id"]
+    detail = client.get(f"/api/backtest/compares/{data['compare_id']}")
+    assert detail.status_code == 200
+    kids = detail.get_json()["children"]
+    assert {k["kind"] for k in kids} == {"compare_slot"}
+    assert {k["series_status"] for k in kids} == {"present"}
+    missing = client.get("/api/backtest/compares/00000000-0000-4000-8000-000000000000")
+    assert missing.status_code == 404
+    client.application.config["BACKTEST_LEDGER"] = None
+    assert client.get("/api/backtest/compares").status_code == 503
+
+
+def test_run_many_without_ledger_keeps_plain_shape():
+    client = create_app(source="synthetic").test_client()
+    resp = client.post(
+        "/api/backtest/run-many",
+        json={
+            "shared": {
+                "symbol": "DEMO",
+                "from_date": "2021-01-01",
+                "to_date": "2022-01-01",
+            },
+            "slots": [
+                {"id": 1, "strategy": "buy_and_hold", "timeframe": "1D", "params": {}}
+            ],
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert "persisted" not in body and "compare_id" not in body
+
+
+# --- optimizer baseline (Slice 2, PRD R6) --------------------------------------
+
+_OPT_METRICS = {
+    "sharpe": 1.2,
+    "sortino": 1.6,
+    "calmar": 0.49,
+    "total_return": 0.1234,  # optimizer namespace already stores fractions
+    "cagr": 0.039,
+    "max_drawdown": -0.08,
+    "profit_factor": 1.9,
+    "win_rate": 55.5,  # and win_rate already 0-100
+    "total_trades": 18,
+}
+
+
+def _opt_parent_run(ledger):
+    from backtest.db.models import OptimizationRun
+
+    with ledger.db.session() as s:
+        parent = OptimizationRun(
+            strategy_id="sma_crossover",
+            objective_function="sharpe",
+            method="grid",
+            param_space={},
+            backtest_config={},
+        )
+        s.add(parent)
+        s.flush()
+        return parent.run_id
+
+
+def test_save_optimizer_baseline_direct_scale(ledger):
+    opt_id = _opt_parent_run(ledger)
+    run_id = ledger.save_optimizer_baseline(
+        optimization_run_id=opt_id,
+        config=dict(_CFG),
+        metrics=dict(_OPT_METRICS),
+        provenance={"data_source": "db_candles", "bars_count": 750},
+    )
+    with ledger.db.session() as s:
+        row = s.get(BacktestRun, run_id)
+        assert row.kind == "optimizer_baseline"
+        assert row.optimization_run_id == opt_id
+        assert row.series_status == "write_failed"  # no series row by design
+        assert abs(float(row.total_return) - 0.1234) < 1e-9  # NOT divided by 100
+        assert abs(float(row.max_drawdown) - (-0.08)) < 1e-9
+        assert abs(float(row.win_rate) - 55.5) < 1e-9
+        assert row.total_trades == 18
+    rec = ledger.get_run(run_id)
+    assert rec["payload"]["config"]["strategy"] == "sma_crossover"
+    assert rec["payload"]["metrics"]["sharpe"] == 1.2
+
+
+def test_save_optimizer_baseline_requires_dates(ledger):
+    cfg = dict(_CFG)
+    cfg.pop("from_date")
+    with pytest.raises(LedgerError):
+        ledger.save_optimizer_baseline(
+            optimization_run_id="00000000-0000-4000-8000-000000000000",
+            config=cfg,
+            metrics={},
+        )
+
+
+def test_service_records_baseline_only_on_fresh_path():
+    from types import SimpleNamespace
+
+    from backtest.optimization.service import OptimizationService
+
+    calls = []
+
+    class FakeLedger:
+        def save_optimizer_baseline(self, **kw):
+            calls.append(kw)
+            return "f" * 32
+
+        def fail_persist(self, where, err):
+            calls.append({"fail": where, "err": str(err)})
+
+    service = OptimizationService.__new__(OptimizationService)
+    service._bt_ledger = FakeLedger()
+    cfg = SimpleNamespace(
+        strategy_id="sma_crossover",
+        baseline_params={"fast": 10, "slow": 30},
+        backtest=SimpleNamespace(
+            symbol="DEMO",
+            timeframe="1D",
+            start_date="2021-01-01",
+            end_date="2022-01-01",
+            engine="backtest_driver",
+            initial_capital=100_000,
+        ),
+    )
+    fresh = {"metrics": dict(_OPT_METRICS), "score": 1.2, "error": None}
+    service._record_baseline(cfg, "a" * 32, fresh, {})
+    assert len(calls) == 1
+    written = calls[0]
+    assert written["optimization_run_id"] == "a" * 32
+    assert written["config"]["strategy"] == "sma_crossover"
+    assert written["config"]["from_date"] == "2021-01-01"
+    assert written["config"]["strategy_params"] == {"fast": 10, "slow": 30}
+    assert written["metrics"] == _OPT_METRICS
+
+    class Exploding(FakeLedger):
+        def save_optimizer_baseline(self, **kw):
+            raise RuntimeError("db gone")
+
+        def fail_persist(self, where, err):
+            calls.append({"fail": where})
+
+    service._bt_ledger = Exploding()
+    service._record_baseline(cfg, "b" * 32, fresh, {})  # must not raise
+    assert calls[-1] == {"fail": "optimizer-baseline/bbbbbbbb"}

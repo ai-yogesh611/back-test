@@ -36,7 +36,7 @@ import os
 import threading
 import traceback
 from concurrent.futures import ProcessPoolExecutor
-from typing import Any
+from typing import Any, Optional
 
 import pandas as pd
 from flask import Blueprint, current_app, jsonify, request
@@ -117,6 +117,67 @@ def _persist_run(payload: dict, *, strategy_cls: Any, where: str) -> dict:
         return ledger.ok_persist(run_id)
     except Exception as exc:  # noqa: BLE001 — the run itself already succeeded
         return ledger.fail_persist(where, exc)
+
+
+def _persist_compare(
+    data: dict,
+    jobs: list,
+    results: dict,
+    shared_provenance: dict,
+    comparison: Optional[dict],
+) -> dict:
+    """Write a completed run-many to the ledger; same soft-but-loud contract.
+
+    Transaction 1 (atomic): R1b parent + one R1 child per successful slot.
+    Transaction 2+: each child's series separately, best-effort — a series
+    failure leaves the parent and flat metrics listable, so ``persisted``
+    stays true when transaction 1 landed. Failed slots ride in
+    ``slot_errors`` only; the ledger never holds a child without a payload.
+    """
+    ledger = _ledger()
+    if ledger is None:
+        return {}
+    where = "run-many"
+    try:
+        children: list = []
+        slot_errors: dict = {}
+        for job in jobs:
+            sid = str(job["id"])
+            payload = results.get(sid)
+            if isinstance(payload, dict) and "error" in payload:
+                slot_errors[sid] = {"error": payload["error"]}
+                continue
+            if isinstance(payload, dict):
+                children.append((sid, payload))
+
+        def cls_for(name: str):
+            try:
+                resolved = _resolve_strategy(name)
+            except Exception:  # noqa: BLE001 — fingerprint is best-effort
+                return None
+            return resolved if not isinstance(resolved, str) else None
+
+        out = ledger.save_compare(
+            config_snapshot={"shared": data.get("shared") or {}, "slots": data.get("slots") or []},
+            provenance=shared_provenance,
+            comparison_block=comparison,
+            slot_errors=slot_errors,
+            children=children,
+            comparison_mode=shared_provenance.get("comparison_mode") or "strategies",
+            strategy_cls_for=cls_for,
+        )
+        run_ids = out["child_run_ids"]
+        for sid, payload in children:
+            try:
+                ledger.save_series(run_ids[sid], payload)
+            except Exception as exc:  # noqa: BLE001 — series is best-effort
+                log.warning("[%s] series write failed slot=%s: %s", where, sid, exc)
+        return {"persisted": True, "compare_id": out["compare_id"], "persist_error": None}
+    except Exception as exc:  # noqa: BLE001 — the comparison itself succeeded
+        fields = ledger.fail_persist(where, exc)
+        fields.pop("run_id", None)
+        fields["compare_id"] = None
+        return fields
 
 
 def _source() -> Any:
@@ -793,10 +854,9 @@ def run_many() -> tuple:
     comparison = _comparison_block(
         results, jobs, current_app.config["BACKTEST_SOURCE"]
     )
-    return (
-        jsonify({"results": results, "provenance": shared_provenance, "comparison": comparison}),
-        200,
-    )
+    payload = {"results": results, "provenance": shared_provenance, "comparison": comparison}
+    payload.update(_persist_compare(data, jobs, results, shared_provenance, comparison))
+    return (jsonify(payload), 200)
 
 
 # ---------------------------------------------------------------------------
@@ -989,4 +1049,43 @@ def get_run_endpoint(run_id: str) -> tuple:
         return jsonify({"error": f"ledger read failed: {exc}"}), 500
     if record is None:
         return jsonify({"error": f"run {run_id} not found"}), 404
+    return jsonify(record), 200
+
+
+@backtest_bp.get("/api/backtest/compares")
+def list_compares_endpoint() -> tuple:
+    """Stored comparisons, newest first (R4 — compare page reads history)."""
+    err = _ledger_or_503()
+    if err:
+        return err
+    try:
+        limit = max(1, min(200, int(request.args.get("limit", 50))))
+        offset = max(0, int(request.args.get("offset", 0)))
+    except ValueError:
+        return jsonify({"error": "limit and offset must be integers"}), 400
+    try:
+        body = _ledger().list_compares(limit=limit, offset=offset)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("[compares] list failed: %s", exc)
+        return jsonify({"error": f"ledger read failed: {exc}"}), 500
+    return jsonify(body), 200
+
+
+@backtest_bp.get("/api/backtest/compares/<compare_id>")
+def get_compare_endpoint(compare_id: str) -> tuple:
+    """Reconstructed comparison — read-back only, never re-runs (R3)."""
+    err = _ledger_or_503()
+    if err:
+        return err
+    try:
+        record = _ledger().get_compare(compare_id)
+    except PayloadVersionMismatch as exc:
+        # comparison_version guards the stored block shape exactly like
+        # payload_version guards a single run's.
+        return jsonify({"error": str(exc), "code": "comparison_version_mismatch"}), 422
+    except Exception as exc:  # noqa: BLE001
+        log.exception("[compares] detail %s failed: %s", compare_id, exc)
+        return jsonify({"error": f"ledger read failed: {exc}"}), 500
+    if record is None:
+        return jsonify({"error": f"comparison {compare_id} not found"}), 404
     return jsonify(record), 200

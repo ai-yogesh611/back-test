@@ -34,6 +34,7 @@ from sqlalchemy import delete, func, select, update
 from backtest.adapters.backtest_adapter import BacktestAdapter
 from backtest.db.models import (
     BACKTEST_LEDGER_TABLES,
+    BacktestCompareRun,
     BacktestRun,
     BacktestRunSeries,
 )
@@ -42,6 +43,12 @@ from backtest.optimization.store import clamp, clean_json
 log = logging.getLogger("backtest.ledger")
 
 PAYLOAD_VERSION = BacktestAdapter.PAYLOAD_VERSION
+
+#: Shape version of the stored ``comparison_block`` (PRD R1b/R3). Bumped only
+#: when :func:`backtest.api.backtest._comparison_block` changes the keys it
+#: emits in a way that invalidates older stored blocks; read-back refuses a
+#: mismatch just like ``payload_version``.
+COMPARISON_VERSION = 1
 
 #: Retention cap for the heavy series rows (PRD R7: decided at 500/group).
 SERIES_CAP_PER_GROUP = 500
@@ -392,6 +399,204 @@ class BacktestRunLedger:
     def ok_persist(self, run_id: str) -> dict[str, Any]:
         return {"persisted": True, "run_id": run_id, "persist_error": None}
 
+    # -- compare (PRD R1b / R3) ------------------------------------------------
+
+    def save_compare(
+        self,
+        *,
+        config_snapshot: dict,
+        provenance: dict,
+        comparison_block: Optional[dict],
+        slot_errors: dict,
+        children: list,
+        comparison_mode: str = "strategies",
+        created_by: Optional[str] = None,
+        strategy_cls_for: Any = None,
+    ) -> dict:
+        """Transaction 1 of a run-many: R1b parent + every slot child in ONE
+        commit — the ledger never holds children without their parent.
+
+        ``children`` is ``[(slot_id, payload), ...]`` with full adapter
+        payloads; failed slots ride in ``slot_errors`` only. Returns
+        ``{"compare_id": ..., "child_run_ids": {slot_id: run_id}}`` — the
+        caller then writes each slot's series as separate transactions.
+        """
+        prov = provenance or {}
+        flat = _flat_attestation(prov)
+        # build_provenance stamps the requested range under "date_range" and the
+        # covered range under data_from/data_to — the parent row stores the
+        # operator's ask, falling back to what the candles covered.
+        rng = prov.get("date_range") or {}
+        parent = BacktestCompareRun(
+            comparison_mode=comparison_mode,
+            comparison_version=COMPARISON_VERSION,
+            config_snapshot=clean_json(config_snapshot),
+            data_source=flat["data_source"],
+            date_from=_parse_date(rng.get("from") or prov.get("data_from")),
+            date_to=_parse_date(rng.get("to") or prov.get("data_to")),
+            symbols_used=clean_json(prov.get("symbols_used")),
+            engines_used=clean_json(prov.get("engines_used")),
+            provenance=clean_json(prov),
+            comparison_block=clean_json(comparison_block),
+            slot_count=len(children) + len(slot_errors or {}),
+            slot_errors=clean_json(slot_errors or {}),
+            created_by=created_by,
+        )
+        child_ids: dict[str, str] = {}
+        with self.db.session() as s:
+            s.add(parent)
+            s.flush()
+            compare_id = parent.compare_id
+            for sid, payload in children:
+                cls = None
+                name = (payload.get("config") or {}).get("strategy")
+                if strategy_cls_for is not None and name:
+                    try:
+                        cls = strategy_cls_for(name)
+                    except Exception:  # noqa: BLE001 — fingerprint is best-effort
+                        cls = None
+                child_ids[str(sid)] = self.save_run(
+                    payload,
+                    kind="compare_slot",
+                    created_by=created_by,
+                    strategy_cls=cls,
+                    parent_compare_id=compare_id,
+                    session=s,
+                )
+        log.info(
+            "[run-ledger] compare_ok %s mode=%s children=%d errors=%d",
+            compare_id[:8],
+            comparison_mode,
+            len(child_ids),
+            len(slot_errors or {}),
+        )
+        return {"compare_id": compare_id, "child_run_ids": child_ids}
+
+    def list_compares(self, *, limit: int = 50, offset: int = 0) -> dict[str, Any]:
+        stmt = (
+            select(BacktestCompareRun)
+            .order_by(BacktestCompareRun.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        with self.db.session() as s:
+            rows = [_row_dict(o, _COMPARE_LIST_COLUMNS) for o in s.execute(stmt).scalars()]
+            total = s.execute(select(func.count()).select_from(BacktestCompareRun)).scalar() or 0
+        return {"compares": rows, "total": total, "limit": limit, "offset": offset}
+
+    def get_compare(self, compare_id: str) -> Optional[dict[str, Any]]:
+        """Reconstruct a stored comparison (read path never re-runs, R3).
+
+        ``comparison_version`` guards the stored comparison-block shape with
+        the same refusing rule as ``payload_version`` — a block built by
+        different math must not be re-rendered as today's.
+        """
+        with self.db.session() as s:
+            parent = s.get(BacktestCompareRun, compare_id)
+            if parent is None:
+                return None
+            meta = _row_dict(parent)
+            children = [
+                _row_dict(o, _LIST_COLUMNS)
+                for o in s.execute(
+                    select(BacktestRun)
+                    .where(BacktestRun.parent_compare_id == compare_id)
+                    .order_by(BacktestRun.created_at)
+                ).scalars()
+            ]
+        if meta["comparison_version"] != COMPARISON_VERSION:
+            raise PayloadVersionMismatch(
+                f"stored comparison_version={meta['comparison_version']}, "
+                f"this build reads {COMPARISON_VERSION}"
+            )
+        return {
+            "payload": {
+                "config": meta["config_snapshot"],
+                "comparison": meta["comparison_block"],
+                "provenance": meta["provenance"],
+                "slot_errors": meta["slot_errors"],
+            },
+            "ledger": {
+                "compare_id": meta["compare_id"],
+                "comparison_mode": meta["comparison_mode"],
+                "created_at": meta["created_at"],
+                "data_source": meta["data_source"],
+            },
+            "children": children,
+        }
+
+    # -- optimizer baseline (PRD R6) --------------------------------------------
+
+    def save_optimizer_baseline(
+        self,
+        *,
+        optimization_run_id: str,
+        config: dict,
+        metrics: dict,
+        provenance: Optional[dict] = None,
+        strategy_cls: Any = None,
+        created_by: Optional[str] = None,
+    ) -> str:
+        """One immutable R1 row per optimize job's baseline evaluation.
+
+        The optimizer's standardized metrics already carry the LEDGER scale
+        (returns as fractions, win_rate 0-100), so the flat projection is
+        direct — no /100 like the adapter namespace. The ``metrics`` blob
+        keeps the optimizer namespace; consumers key on ``kind`` rather than
+        pretending it is an adapter payload. No series row: the optimizer
+        evaluates curves, not trades/signals payloads — which is exactly why
+        the baseline (not the grid winners) is the honest audit fact here.
+        """
+        cfg = config or {}
+        prov = provenance or {}
+        date_from = _parse_date(cfg.get("from_date"))
+        date_to = _parse_date(cfg.get("to_date"))
+        if date_from is None or date_to is None:
+            raise LedgerError("baseline config is missing from_date/to_date")
+        h = config_hash(cfg)
+        row = BacktestRun(
+            config_hash=h,
+            kind="optimizer_baseline",
+            optimization_run_id=optimization_run_id,
+            strategy_id=str(cfg.get("strategy") or "")[:100],
+            symbol=str(cfg.get("symbol") or "")[:30],
+            timeframe=str(cfg.get("timeframe") or "")[:10],
+            date_from=date_from,
+            date_to=date_to,
+            capital=clamp(cfg.get("capital"), "money"),
+            engine=str(cfg.get("engine") or "")[:30],
+            payload_version=PAYLOAD_VERSION,
+            params=clean_json(cfg.get("strategy_params") or {}),
+            config=clean_json(cfg),
+            metrics=clean_json(metrics),
+            provenance=clean_json(prov),
+            code_fingerprint=clean_json(
+                code_fingerprint(strategy_cls) if strategy_cls is not None else {}
+            ),
+            created_by=created_by,
+            sharpe=clamp(metrics.get("sharpe"), "score"),
+            sortino=clamp(metrics.get("sortino"), "score"),
+            calmar=clamp(metrics.get("calmar"), "score"),
+            total_return=clamp(metrics.get("total_return"), "score"),
+            cagr=clamp(metrics.get("cagr"), "score"),
+            max_drawdown=clamp(metrics.get("max_drawdown"), "score"),
+            profit_factor=clamp(metrics.get("profit_factor"), "score"),
+            win_rate=clamp(metrics.get("win_rate"), "pct"),
+            total_trades=clamp(metrics.get("total_trades"), "int"),
+            **_flat_attestation(prov),
+        )
+        with self.db.session() as s:
+            s.add(row)
+            s.flush()
+            run_id = row.run_id
+        log.info(
+            "[run-ledger] persist_ok run=%s hash=%s kind=optimizer_baseline opt=%s",
+            run_id[:8],
+            h[:12],
+            str(optimization_run_id)[:8],
+        )
+        return run_id
+
     # -- retention (PRD R7) ---------------------------------------------------
 
     def _schedule_sweep(self) -> None:
@@ -568,6 +773,20 @@ class BacktestRunLedger:
             # durable history; see PRD R8): last failure seen by THIS store.
             "last_persist_error": self.last_persist_error,
         }
+
+
+_COMPARE_LIST_COLUMNS = [
+    "compare_id",
+    "comparison_mode",
+    "comparison_version",
+    "date_from",
+    "date_to",
+    "data_source",
+    "symbols_used",
+    "engines_used",
+    "slot_count",
+    "created_at",
+]
 
 
 _LIST_COLUMNS = [
