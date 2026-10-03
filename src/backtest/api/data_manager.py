@@ -683,6 +683,17 @@ def _run_fetch_job(
             to_date,
         )
 
+    # Holiday closures are symbol-independent, so read them once per job and
+    # let the skip treat them like weekends: days that can never hold bars.
+    holiday_dates: set = set()
+    if coverage_enabled:
+        holiday_dates = _load_market_holidays(engine, from_date, to_date)
+        log.info(
+            "[data] %d market holiday(s) in %s..%s — windows touching only "
+            "holidays will not be re-probed",
+            len(holiday_dates), from_date, to_date,
+        )
+
     # One breaker per job: it watches post-retry chunk outcomes across ALL
     # symbols, so a gateway that dies mid-run stops the run instead of the
     # run grinding through the remaining 190 symbols.
@@ -727,7 +738,8 @@ def _run_fetch_job(
         needed_windows = all_windows
         if coverage_enabled:
             covered = covered_by_symbol.get(str(symbol).strip().upper(), set())
-            needed_windows = _windows_needing_fetch(all_windows, covered)
+            needed_windows = _windows_needing_fetch(all_windows, covered,
+                                                    holiday_dates)
             if not needed_windows:
                 log.info(
                     "[data] %s: %s..%s already complete (%d window(s) fully "
@@ -1143,7 +1155,41 @@ def _probe_covered_days(
     return covered
 
 
-def _windows_needing_fetch(windows: list, covered_days: set) -> list:
+def _load_market_holidays(engine, from_date: str, to_date: str) -> set:
+    """Exchange-closure dates inside the requested range, from ``market_holidays``.
+
+    Seeded from the NSE holiday-master API (2022–2026 as of 2026-10-04, see
+    ``tools/seed_market_holidays.py``). A weekday here can never hold session
+    bars, so the coverage skip must not count it as "missing" — without this,
+    every window touching a holiday is re-probed on every resume forever
+    (~12–16 dates/symbol/run; the 2025-10-21 Diwali Muhurat special session is
+    listed too, and its ~61 stored bars are all that day will ever have).
+
+    Returns ``{}`` on ANY error (missing table, bad column) — the skip then
+    behaves like before and merely re-probes holiday windows.
+    """
+    sql = text(
+        "SELECT holiday_date FROM market_holidays "
+        "WHERE holiday_date >= :from_date AND holiday_date <= :to_date "
+        "AND is_trading_holiday IS NOT FALSE"
+    )
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                sql, {"from_date": from_date, "to_date": to_date}
+            ).all()
+    except Exception as exc:  # noqa: BLE001 — calendar read must never break a fetch
+        log.warning(
+            "[data] holiday calendar read failed (%s..%s): %s — "
+            "holiday windows will be re-probed (old behaviour)",
+            from_date, to_date, exc,
+        )
+        return set()
+    return {r[0].date() if hasattr(r[0], "date") else r[0] for r in rows}
+
+
+def _windows_needing_fetch(windows: list, covered_days: set,
+                           holidays=()) -> list:
     """Keep only the windows whose span includes a *missing trading day*.
 
     Only Mon–Fri days can hold session bars, so a weekday is the sole thing
@@ -1153,9 +1199,10 @@ def _windows_needing_fetch(windows: list, covered_days: set) -> list:
     symbol would never be skipped (verified live 2026-10-03: AB-CAPITAL kept
     all 578 windows because the weekend days never appear in the DB).
 
-    Consequence: a weekday market holiday has no stored bars, so its window is
-    re-probed on every resume — cheap (returns empty candles fast), and far
-    rarer than the weekend case (~12 holidays/yr vs ~104 weekend days).
+    ``holidays`` (from :func:`_load_market_holidays`) extends the "cannot hold
+    bars" set to weekday exchange closures, so a fully-fetched symbol's resume
+    drops its windows on the FIRST pass instead of re-probing ~14 holiday
+    windows per symbol per run.
 
     ``covered_days`` empty → every window (a genuine full fetch). All weekdays
     covered → empty list (caller skips the symbol with zero requests). A window
@@ -1171,7 +1218,8 @@ def _windows_needing_fetch(windows: list, covered_days: set) -> list:
         d = c_start
         missing = False
         while d <= c_end:
-            if d.weekday() < 5 and d.date() not in covered_days:
+            if (d.weekday() < 5 and d.date() not in covered_days
+                    and d.date() not in holidays):
                 missing = True
                 break
             d += timedelta(days=1)

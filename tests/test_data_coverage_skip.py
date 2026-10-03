@@ -9,7 +9,7 @@ blindly re-walked chunk-by-chunk.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 
@@ -248,3 +248,54 @@ def test_explicit_windows_fetch_only_those(monkeypatch):
     assert errors == 0
     assert len(bars) == 1
     assert requested == ["2026-06-04"]  # the skipped window was never requested
+
+
+# ---------------------------------------------------------------------------
+# Holiday-aware skip (2026-10-04): weekday closures must not re-probe windows
+# ---------------------------------------------------------------------------
+
+def test_holiday_weekday_does_not_mark_window_missing():
+    # Window B = Thu 04..Sat 06; Fri 05 is a market holiday, everything else
+    # covered -> the whole range is "complete" and B is dropped.
+    covered = {date(2026, 6, d) for d in (1, 2, 3, 4)}
+    holidays = {date(2026, 6, 5)}
+    assert dm._windows_needing_fetch(_WINS, covered, holidays) == []
+
+
+def test_holidays_never_rescue_a_real_missing_weekday():
+    # Mon 01 is a holiday and rescued (window A drops), but Fri 05 is a
+    # genuine hole (not covered, not a holiday) → window B stays.
+    covered = {date(2026, 6, d) for d in (2, 3, 4)}
+    holidays = {date(2026, 6, 1)}
+    kept = dm._windows_needing_fetch(_WINS, covered, holidays)
+    assert [(s.strftime("%m-%d"), e.strftime("%m-%d")) for s, e in kept] == [
+        ("06-04", "06-06")
+    ]
+
+
+def test_empty_coverage_fetches_every_window_even_with_holidays():
+    # The full-fetch guard stays: with nothing stored we still walk everything
+    # (holidays only shrink resume noise, never a genuine first fetch).
+    assert dm._windows_needing_fetch(_WINS, set(), {date(2026, 6, 5)}) == _WINS
+
+
+def test_legacy_two_arg_call_still_works():
+    # Signature is backwards compatible (holidays default to empty).
+    assert dm._windows_needing_fetch(_WINS, set()) == _WINS
+
+
+# ---------------------------------------------------------------------------
+# _load_market_holidays — the per-job calendar read
+# ---------------------------------------------------------------------------
+
+def test_load_market_holidays_normalises_rows_to_dates():
+    engine = _FakeEngine(
+        rows=[(datetime(2026, 1, 26),), (date(2026, 3, 4),)]
+    )
+    got = dm._load_market_holidays(engine, "2026-01-01", "2026-12-31")
+    assert got == {date(2026, 1, 26), date(2026, 3, 4)}
+
+
+def test_load_market_holidays_error_returns_empty_never_blocks_fetch():
+    engine = _FakeEngine(exc=RuntimeError("relation market_holidays does not exist"))
+    assert dm._load_market_holidays(engine, "2026-01-01", "2026-12-31") == set()
