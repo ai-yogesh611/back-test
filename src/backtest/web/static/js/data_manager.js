@@ -260,12 +260,17 @@ async function pollStatus() {
             const wasRunning = pollTimer !== null;
             stopPolling();
             if (wasRunning && j.status === 'done') {
+                // Coverage-aware skip: a resume over an already-fetched range
+                // legitimately stores ~0 bars — say so, or it reads as a hang.
+                const skipNote = j.skipped > 0
+                    ? ` (${j.skipped} already covered, skipped)`
+                    : '';
                 if (j.chunk_errors > 0) {
                     // mStock ate chunks even after retries — a "done" with
                     // holes must never render as a clean success.
-                    showToast(`Finished, but ${j.chunk_errors} chunk request(s) failed even after retries — data may be partial; re-run the affected symbols`, 'error');
+                    showToast(`Finished, but ${j.chunk_errors} chunk request(s) failed even after retries — data may be partial; re-run the same fetch, it only pulls the missing days`, 'error');
                 } else {
-                    showToast(`Fetch complete: ${j.fetched} symbols, ${j.bars_total.toLocaleString()} bars`, 'success');
+                    showToast(`Fetch complete: ${j.fetched} symbols${skipNote}, ${j.bars_total.toLocaleString()} bars`, 'success');
                 }
                 loadInventory();  // refresh inventory
             }

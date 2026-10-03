@@ -15,6 +15,7 @@ Runs fetch jobs as background threads with progress tracking.
 
 from __future__ import annotations
 
+import math
 import os
 import threading
 import time
@@ -80,6 +81,10 @@ _job: dict[str, Any] = {
     # UI reported "done, 0 failed" while mStock 502s silently ate ~half the
     # chunk requests (ALKEM 2026-10-03: 19 of ~41 chunks stored).
     "chunk_errors": 0,
+    # Symbols skipped because the requested range is already fully in the DB
+    # (coverage-aware gap fill, 2026-10-03). Counted separately so a resume
+    # over the same range reads as "N skipped, 0 fetched", not a hung job.
+    "skipped": 0,
 }
 
 # Single DB-URL authority (ticket P4.3): FORWARD_TEST_DB_URL env >
@@ -235,6 +240,7 @@ def fetch_start() -> tuple:
             chunk_done=0,
             chunk_total=0,
             chunk_errors=0,
+            skipped=0,
         )
 
     # Launch background thread
@@ -530,6 +536,16 @@ def _run_fetch_job(
                 (sym, "Symbol not found in the instruments catalogue or the index map")
             )
 
+    # Windows are identical for every symbol (same range + chunk_days), so
+    # build the full walk once; each symbol then subtracts its covered days.
+    all_windows = _build_windows(from_date, to_date, chunk_days)
+    coverage_enabled = _coverage_skip_enabled()
+    log.info(
+        "[data] coverage-aware skip %s over %d windows/symbol",
+        "ON" if coverage_enabled else "OFF (DATA_FETCH_SKIP_COVERED=0)",
+        len(all_windows),
+    )
+
     for i, inst in enumerate(instruments, 1):
         if _job.get("cancel"):
             log.info("[data] fetch job cancelled after %d/%d symbols", i - 1, total)
@@ -553,6 +569,31 @@ def _run_fetch_job(
                 _job["chunk_done"] = done
                 _job["chunk_total"] = tot
 
+        # Coverage-aware skip: within the user's requested [from, to], drop the
+        # windows whose days already sit in the DB. A fully-covered symbol costs
+        # zero API requests; scattered 502 holes get gap-filled, not re-walked.
+        needed_windows = all_windows
+        if coverage_enabled:
+            covered = _covered_days(
+                engine, symbol, inst_exchange, timeframe, from_date, to_date
+            )
+            needed_windows = _windows_needing_fetch(all_windows, covered)
+            if not needed_windows:
+                log.info(
+                    "[data] %s: %s..%s already complete (%d window(s) fully "
+                    "covered) — skipping, 0 requests",
+                    symbol, from_date, to_date, len(all_windows),
+                )
+                with _lock:
+                    _job["fetched"] += 1
+                    _job["skipped"] += 1
+                continue
+            if len(needed_windows) < len(all_windows):
+                log.info(
+                    "[data] %s: gap-fill %d of %d windows (%d days already stored)",
+                    symbol, len(needed_windows), len(all_windows), len(covered),
+                )
+
         try:
             bars, chunk_errors = _fetch_bars_chunked(
                 api_key,
@@ -565,6 +606,7 @@ def _run_fetch_job(
                 chunk_days,
                 should_cancel=lambda: bool(_job.get("cancel")),
                 on_progress=_on_chunk,
+                windows=needed_windows,
             )
             if chunk_errors:
                 # Partial coverage: some chunks died even after retries. The
@@ -640,11 +682,14 @@ def _run_fetch_job(
         _job["status"] = "done"
         _job["symbol"] = ""
         log.info(
-            "[data] fetch job finished: %d/%d symbols ok, %d failed, %d bars inserted",
+            "[data] fetch job finished: %d/%d symbols ok (%d skipped as already "
+            "covered), %d failed, %d bars inserted, %d chunk errors",
             _job["fetched"] - _job["failed"],
             total,
+            _job["skipped"],
             _job["failed"],
             _job["bars_total"],
+            _job["chunk_errors"],
         )
 
     # The bars just written are exactly what /api/data/coverage reports, so the
@@ -813,6 +858,142 @@ def _get_historical_with_retry(url, headers, params, attempts=4, base_sleep=1.5)
     raise last_error
 
 
+# ---------------------------------------------------------------------------
+# Coverage-aware gap filling (2026-10-03)
+# ---------------------------------------------------------------------------
+#
+# A re-run over the same range used to re-walk every chunk of every symbol,
+# so the 200-symbol 2022→2026 fetch took ~27h no matter how much was already
+# stored — and a symbol like ABCAPITAL (a few 502 holes in otherwise-complete
+# history) was re-fetched whole. These helpers let the fetch job cross-check
+# the user's requested [from, to] against ``market_data_cache`` day by day and
+# pull ONLY the windows that still contain a missing day — a fully-covered
+# symbol costs zero API requests. Disable with DATA_FETCH_SKIP_COVERED=0.
+
+#: Full-session bar count per canonical timeframe, used purely to decide when a
+#: stored day is "complete enough" to trust. A day holding fewer than
+#: ``COVERAGE_FRACTION`` of these is treated as missing so a resume gap-fills
+#: partial days (e.g. a window that half-succeeded) rather than trusting holes.
+_FULL_DAY_BARS = {
+    "1min": 375,  # 09:15–15:30 IST
+    "5min": 75,
+    "15min": 25,
+    "1hour": 6,  # 375 / 60, floored
+    "1day": 1,
+}
+COVERAGE_FRACTION = 0.7
+
+
+def _coverage_skip_enabled() -> bool:
+    """Coverage-aware skip is on by default; ``DATA_FETCH_SKIP_COVERED=0`` off."""
+    return os.getenv("DATA_FETCH_SKIP_COVERED", "1").strip() != "0"
+
+
+def _coverage_threshold(timeframe: str) -> int:
+    """Minimum bars a day needs to count as already-fetched for ``timeframe``."""
+    expected = _FULL_DAY_BARS.get(timeframe, 1)
+    return max(1, math.ceil(expected * COVERAGE_FRACTION))
+
+
+def _build_windows(from_date: str, to_date: str, chunk_days: int) -> list:
+    """Split ``[from_date, to_date]`` into ``chunk_days``-wide (start, end)
+    datetimes — the exact stepping the chunk loop always used, extracted so the
+    job can decide *which* windows still need fetching before the loop runs.
+    """
+    from datetime import datetime, timedelta
+
+    start = datetime.strptime(from_date, "%Y-%m-%d")
+    end = datetime.strptime(to_date, "%Y-%m-%d")
+    windows = []
+    chunk_start = start
+    while chunk_start < end:
+        chunk_end = min(chunk_start + timedelta(days=chunk_days), end)
+        windows.append((chunk_start, chunk_end))
+        chunk_start = chunk_end + timedelta(days=1)
+    return windows
+
+
+def _covered_days(engine, symbol: str, exchange: str, timeframe: str,
+                  from_date: str, to_date: str) -> set:
+    """Days within the requested range already holding enough bars to skip.
+
+    Queries ``market_data_cache`` grouped by calendar day and keeps days whose
+    bar count reaches :func:`_coverage_threshold`. The whole IST session
+    (09:15–15:30) maps into one stored UTC day even with the known ts-mislabel
+    bug, so day grouping is reliable. Returns an empty set on ANY error — the
+    symbol simply gets a full fetch rather than being wrongly skipped because a
+    probe failed.
+    """
+    threshold = _coverage_threshold(timeframe)
+    sql = text(
+        "SELECT date_trunc('day', ts)::date AS d, COUNT(*) AS n "
+        "FROM market_data_cache "
+        "WHERE symbol = :symbol AND exchange = :exchange AND timeframe = :timeframe "
+        "AND ts::date >= :from_date AND ts::date <= :to_date "
+        "GROUP BY d"
+    )
+    covered: set = set()
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                sql,
+                {
+                    "symbol": symbol,
+                    "exchange": exchange,
+                    "timeframe": timeframe,
+                    "from_date": from_date,
+                    "to_date": to_date,
+                },
+            ).all()
+    except Exception as exc:  # noqa: BLE001 — probing must never break a fetch
+        log.warning(
+            "[data] coverage probe failed for %s %s (%s..%s): %s — fetching full range",
+            symbol, timeframe, from_date, to_date, exc,
+        )
+        return covered
+    for d, n in rows:
+        if n >= threshold:
+            covered.add(d.date() if hasattr(d, "date") else d)
+    return covered
+
+
+def _windows_needing_fetch(windows: list, covered_days: set) -> list:
+    """Keep only the windows whose span includes a *missing trading day*.
+
+    Only Mon–Fri days can hold session bars, so a weekday is the sole thing
+    that counts as "should have data." Saturdays/Sundays have none by
+    definition and must not mark a window missing — without the weekday filter
+    every window touching a weekend would be re-fetched, and a fully-covered
+    symbol would never be skipped (verified live 2026-10-03: AB-CAPITAL kept
+    all 578 windows because the weekend days never appear in the DB).
+
+    Consequence: a weekday market holiday has no stored bars, so its window is
+    re-probed on every resume — cheap (returns empty candles fast), and far
+    rarer than the weekend case (~12 holidays/yr vs ~104 weekend days).
+
+    ``covered_days`` empty → every window (a genuine full fetch). All weekdays
+    covered → empty list (caller skips the symbol with zero requests). A window
+    touching even one missing weekday is re-fetched whole; the upsert in
+    :func:`_persist_bars` discards the days inside it that already exist.
+    """
+    from datetime import timedelta
+
+    if not covered_days:
+        return list(windows)
+    needed = []
+    for c_start, c_end in windows:
+        d = c_start
+        missing = False
+        while d <= c_end:
+            if d.weekday() < 5 and d.date() not in covered_days:
+                missing = True
+                break
+            d += timedelta(days=1)
+        if missing:
+            needed.append((c_start, c_end))
+    return needed
+
+
 def _fetch_bars_chunked(
     api_key: str,
     token: str,
@@ -825,6 +1006,7 @@ def _fetch_bars_chunked(
     should_cancel=None,
     on_progress=None,
     workers: int = CHUNK_FETCH_WORKERS,
+    windows: list | None = None,
 ) -> tuple[list[dict], int]:
     """Fetch OHLCV bars from mStock, chunked by date range.
 
@@ -849,23 +1031,19 @@ def _fetch_bars_chunked(
     ``CHUNK_PACE_DOWN_AFTER`` clean chunks decay one worker back to base
     cadence at a time. ``workers=1`` makes the loop fully sequential, which
     the pacing-rhythm tests rely on.
-    """
-    from datetime import datetime, timedelta
 
+    ``windows`` — when given, exactly these ``(start, end)`` windows are
+    fetched instead of the full ``[from_date, to_date]`` walk. The caller uses
+    it to drop windows whose days are already in the DB (coverage-aware gap
+    fill); omitted, the whole range is built so existing callers are unchanged.
+    """
     headers = {"X-Mirae-Version": "1", "Authorization": f"token {api_key}:{token}"}
     url = (
         f"{MSTOCK_BASE_URL}/openapi/typea/instruments/historical/{segment}/{sec_token}/{mstock_tf}"
     )
 
-    start = datetime.strptime(from_date, "%Y-%m-%d")
-    end = datetime.strptime(to_date, "%Y-%m-%d")
-    # Each window covers chunk_days, the next starts at chunk_end+1.
-    windows = []
-    chunk_start = start
-    while chunk_start < end:
-        chunk_end = min(chunk_start + timedelta(days=chunk_days), end)
-        windows.append((chunk_start, chunk_end))
-        chunk_start = chunk_end + timedelta(days=1)
+    if windows is None:
+        windows = _build_windows(from_date, to_date, chunk_days)
     total_chunks = max(1, len(windows))
     if on_progress is not None:
         on_progress(0, total_chunks)
