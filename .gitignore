@@ -75,4 +75,5 @@ Thumbs.db
 /pf*.json
 /server_5000.log
 /server_5000.out
+/server_5000.err.log
 src/data/feed_quality.log
