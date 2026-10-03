@@ -84,6 +84,20 @@ _TYPEA_HEADERS = {
 
 _TOTP_PATTERN = re.compile(r"\d{6}")
 
+# Transient-gateway retry for the two auth POSTs (login + verify-totp).
+# mStock's gateway intermittently answers 502/503/504 under load — the very
+# same flakiness already worked around for the historical fetcher
+# (`_get_historical_with_retry`, ae437e3). The auth path never got that
+# protection, so a single 502 surfaced as "mStock request failed (HTTP 502)"
+# and forced the user to re-submit the TOTP 2-3 times until a request landed
+# on a healthy gateway (observed live 2026-10-03 11:34). Only the 5xx statuses
+# are retried: a wrong credential or wrong code is a 401/403 and must fail
+# fast, never retried — resubmitting a rejected TOTP could waste its 30s
+# window or trip the broker's lockout.
+_AUTH_RETRY_STATUSES = (502, 503, 504)
+AUTH_RETRY_ATTEMPTS = 4
+AUTH_RETRY_BASE_SLEEP = 0.8  # linear backoff: 0.8, 1.6, 2.4 s between attempts
+
 # Fallback session lifetime when the API response carries no expiry hint.
 # Defaults to a trading-session length (6.5h); override via
 # MSTOCK_SESSION_TTL_MINUTES in .env.
@@ -479,15 +493,48 @@ class MStockBroker(BrokerAuthBase, BrokerOrderBase):
         self._temp_auth_context = None
         return {"success": False, "message": message, "requires_totp": False}
 
-    def _post(self, path: str, form: dict[str, str], rejected_default: str) -> dict[str, Any]:
-        """POST a urlencoded form to a TypeA endpoint and return the payload.
+    def _post(
+        self,
+        path: str,
+        form: dict[str, str],
+        rejected_default: str,
+        attempts: int = AUTH_RETRY_ATTEMPTS,
+        base_sleep: float = AUTH_RETRY_BASE_SLEEP,
+    ) -> dict[str, Any]:
+        """POST a urlencoded form to a TypeA auth endpoint, returning the payload.
 
         Raises :class:`_MStockAuthError` with a user-facing message when the
         request is rejected (HTTP 401/403, error payload, non-success
         status) — generic messages only, no stack traces or internals.
+
+        A transient gateway 5xx (502/503/504) is retried up to ``attempts``
+        times with linear backoff, absorbing mStock's intermittent 502s so a
+        single TOTP submit lands. Everything else is mStock's actual verdict:
+        a 4xx rejection (wrong credentials / wrong TOTP) or an error payload on
+        a 200 raises immediately on the first attempt — a rejected code is
+        never re-sent. A connection-level error (``requests.RequestException``)
+        propagates untouched for the caller's generic "could not reach" path.
         """
         url = f"{self._base_url()}{path}"
-        resp = requests.post(url, data=form, headers=_TYPEA_HEADERS, timeout=self._http_timeout)
+        last_status: int | None = None
+        for attempt in range(1, attempts + 1):
+            resp = requests.post(
+                url, data=form, headers=_TYPEA_HEADERS, timeout=self._http_timeout
+            )
+            if resp.status_code not in _AUTH_RETRY_STATUSES:
+                return self._parse_auth_response(resp, rejected_default)
+            last_status = resp.status_code
+            logger.warning(
+                "mStock POST %s got HTTP %s (attempt %d/%d)", path, last_status, attempt, attempts
+            )
+            if attempt < attempts:
+                time.sleep(base_sleep * attempt)
+
+        # Still 5xx after exhausting attempts — surface the gateway error.
+        raise _MStockAuthError(f"mStock request failed (HTTP {last_status})")
+
+    def _parse_auth_response(self, resp, rejected_default: str) -> dict[str, Any]:
+        """Turn a non-retryable auth response into a payload or a rejection."""
         try:
             payload: Any = resp.json()
         except ValueError:

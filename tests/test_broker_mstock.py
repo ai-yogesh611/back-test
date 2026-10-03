@@ -388,3 +388,109 @@ def test_restore_session_normalizes_aware_expiry(broker):
     # ISO strings (as persisted on disk) are accepted too.
     broker.restore_session(FAKE_TOKEN, aware_future.isoformat())
     assert broker.get_session_status()["status"] == STATUS_AUTHENTICATED
+
+
+# ---------------------------------------------------------------------------
+# Transient-gateway 502 retry on the auth POSTs (2026-10-03)
+#
+# mStock's gateway intermittently 502s under load — the same flakiness already
+# worked around for the historical fetcher (ae437e3). The auth path never got
+# it, so users had to re-submit the TOTP 2-3 times until a request hit a
+# healthy gateway (observed live 11:34). _post now retries 5xx with backoff,
+# but a 401 (wrong code/credentials) and a connection error must NOT be
+# retried — resending a rejected TOTP wastes its window / risks lockout.
+# ---------------------------------------------------------------------------
+
+
+def _seq_post(monkeypatch, outcomes: list, calls: list | None = None):
+    """Patch requests.post to return ``outcomes`` in order (last one repeats)."""
+    state = {"n": 0}
+
+    def fake_post(url, data=None, headers=None, timeout=None):
+        if calls is not None:
+            calls.append(url)
+        i = state["n"]
+        state["n"] += 1
+        outcome = outcomes[i] if i < len(outcomes) else outcomes[-1]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr("requests.post", fake_post)
+
+
+def _no_sleep(monkeypatch) -> list[float]:
+    slept: list[float] = []
+    monkeypatch.setattr("backtest.brokers.mstock.time.sleep", lambda s: slept.append(s))
+    return slept
+
+
+def test_verify_totp_retries_transient_502_then_succeeds(broker, monkeypatch):
+    _login_ok(monkeypatch)
+    broker.login("trader", "s3cret")
+    calls: list = []
+    slept = _no_sleep(monkeypatch)
+    _seq_post(
+        monkeypatch,
+        [
+            _FakeResponse(502, None),
+            _FakeResponse(502, None),
+            _FakeResponse(200, {"access_token": FAKE_TOKEN}),
+        ],
+        calls,
+    )
+    result = broker.verify_totp("123456")
+    assert result["success"] is True  # the same code lands after two blips
+    assert len(calls) == 3
+    assert slept == [0.8, 1.6]  # linear backoff between attempts, none after success
+
+
+def test_verify_totp_gives_up_after_bounded_502_attempts(broker, monkeypatch):
+    import backtest.brokers.mstock as mstock_mod
+
+    _login_ok(monkeypatch)
+    broker.login("trader", "s3cret")
+    calls: list = []
+    _no_sleep(monkeypatch)
+    _seq_post(monkeypatch, [_FakeResponse(502, None)], calls)  # repeats forever
+    result = broker.verify_totp("123456")
+    assert result["success"] is False
+    assert "502" in result["message"]
+    assert len(calls) == mstock_mod.AUTH_RETRY_ATTEMPTS  # bounded, not infinite
+
+
+def test_login_retries_transient_502_then_succeeds(broker, monkeypatch):
+    calls: list = []
+    _no_sleep(monkeypatch)
+    _seq_post(
+        monkeypatch,
+        [_FakeResponse(502, None), _FakeResponse(200, {"status": "success"})],
+        calls,
+    )
+    result = broker.login("trader", "s3cret")
+    assert result["success"] is True and result["requires_totp"] is True
+    assert len(calls) == 2
+
+
+def test_wrong_totp_401_is_not_retried(broker, monkeypatch):
+    _login_ok(monkeypatch)
+    broker.login("trader", "s3cret")
+    calls: list = []
+    _no_sleep(monkeypatch)
+    _seq_post(monkeypatch, [_FakeResponse(401, {"error": "Invalid TOTP"})], calls)
+    result = broker.verify_totp("000000")
+    assert result["success"] is False
+    assert result["message"] == "Invalid TOTP"
+    assert len(calls) == 1  # a rejected code is never re-sent
+
+
+def test_connection_error_propagates_without_retry_or_sleep(broker, monkeypatch):
+    calls: list = []
+    slept = _no_sleep(monkeypatch)
+    _seq_post(monkeypatch, [requests.ConnectionError("reset [dns trace]")], calls)
+    result = broker.login("trader", "pass")
+    assert result["success"] is False
+    assert "reach mStock" in result["message"]
+    assert "reset" not in result["message"]  # no internals leaked
+    assert len(calls) == 1  # transport error is login's generic path, not retried
+    assert slept == []
