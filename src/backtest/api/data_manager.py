@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from typing import Any
 
@@ -107,6 +108,11 @@ CHUNK_SLEEP_BASE = 0.5
 CHUNK_SLEEP_WIDE = 2.0
 CHUNK_PACE_UP_AFTER = 3  # consecutive post-retry failures -> widen
 CHUNK_PACE_DOWN_AFTER = 3  # consecutive successes -> return to base
+# Chunk requests in flight per symbol. The throttle ceiling is the broker
+# session, not the CPU: 4 workers × (0.7 s RTT + 0.5 s pacing) ≈ 2.5-3 req/s,
+# ~3× the single-threaded loop, while 6-8 workers would just convert idle
+# headroom into concurrent 502 storms.
+CHUNK_FETCH_WORKERS = 4
 
 
 # -----------------------------------------------------------------------
@@ -818,6 +824,7 @@ def _fetch_bars_chunked(
     chunk_days: int,
     should_cancel=None,
     on_progress=None,
+    workers: int = CHUNK_FETCH_WORKERS,
 ) -> tuple[list[dict], int]:
     """Fetch OHLCV bars from mStock, chunked by date range.
 
@@ -831,9 +838,17 @@ def _fetch_bars_chunked(
     (the per-symbol cancel check alone left the user watching a single
     symbol churn through hundreds of chunks).
 
-    ``on_progress(done, total)`` is called before the loop and after every
-    chunk, so the UI can draw a moving bar inside a multi-minute symbol
-    instead of jumping once per symbol.
+    ``on_progress(done, total)`` is called after every completed chunk so the
+    UI can draw a moving bar inside a multi-minute symbol.
+
+    Chunks run ``workers`` threads deep (default ``CHUNK_FETCH_WORKERS``) —
+    the loop is pure network waiting, so serialising it left 3/4 of the
+    session's usable throughput unused. Pacing is shared state under
+    ``pace_lock``: a burst of ``CHUNK_PACE_UP_AFTER`` consecutive failures
+    widens the sleep for ALL workers (bad mStock hours self-throttle), and
+    ``CHUNK_PACE_DOWN_AFTER`` clean chunks decay one worker back to base
+    cadence at a time. ``workers=1`` makes the loop fully sequential, which
+    the pacing-rhythm tests rely on.
     """
     from datetime import datetime, timedelta
 
@@ -844,64 +859,99 @@ def _fetch_bars_chunked(
 
     start = datetime.strptime(from_date, "%Y-%m-%d")
     end = datetime.strptime(to_date, "%Y-%m-%d")
-    # Each iteration covers chunk_days and then skips one day (chunk_end+1).
-    step = chunk_days + 1
-    total_chunks = max(1, -(-(end - start).days // step))
+    # Each window covers chunk_days, the next starts at chunk_end+1.
+    windows = []
+    chunk_start = start
+    while chunk_start < end:
+        chunk_end = min(chunk_start + timedelta(days=chunk_days), end)
+        windows.append((chunk_start, chunk_end))
+        chunk_start = chunk_end + timedelta(days=1)
+    total_chunks = max(1, len(windows))
     if on_progress is not None:
         on_progress(0, total_chunks)
-    all_bars = []
+
+    all_bars: list[dict] = []
     chunk_errors = 0
     chunk_done = 0
-    chunk_start = start
-    # Adaptive pacing: mStock gateway 502 bursts (≥3 consecutive lost chunks)
-    # widen the spacing to CHUNK_SLEEP_WIDE for the rest of this symbol; three
-    # clean chunks in a row decay back to the base cadence.
-    pace = CHUNK_SLEEP_BASE
-    consec_fails = 0
-    consec_ok = 0
+    pace_state = {"pace": CHUNK_SLEEP_BASE, "consec_fails": 0, "consec_ok": 0}
+    pace_lock = threading.Lock()
 
-    while chunk_start < end:
+    def _next_pace(ok: bool) -> float:
+        """Fold one chunk outcome into the shared pacing; return the sleep."""
+        with pace_lock:
+            if ok:
+                pace_state["consec_fails"] = 0
+                pace_state["consec_ok"] += 1
+                if (
+                    pace_state["consec_ok"] >= CHUNK_PACE_DOWN_AFTER
+                    and pace_state["pace"] > CHUNK_SLEEP_BASE
+                ):
+                    pace_state["pace"] = CHUNK_SLEEP_BASE
+                    pace_state["consec_ok"] = 0
+                    log.info(
+                        "[data] mStock responding cleanly again — pacing back to %.1fs",
+                        pace_state["pace"],
+                    )
+            else:
+                pace_state["consec_ok"] = 0
+                pace_state["consec_fails"] += 1
+                if (
+                    pace_state["consec_fails"] >= CHUNK_PACE_UP_AFTER
+                    and pace_state["pace"] < CHUNK_SLEEP_WIDE
+                ):
+                    pace_state["pace"] = CHUNK_SLEEP_WIDE
+                    log.warning(
+                        "[data] %d consecutive chunk failures — widening pace to "
+                        "%.1fs for the rest of this symbol",
+                        pace_state["consec_fails"],
+                        pace_state["pace"],
+                    )
+            return pace_state["pace"]
+
+    def _fetch_window(window):
+        c_start, c_end = window
         if should_cancel is not None and should_cancel():
-            log.info("[data] chunk loop cancelled at %s — returning %d bars so far",
-                     chunk_start, len(all_bars))
-            break
-        chunk_end = min(chunk_start + timedelta(days=chunk_days), end)
-        params = {"from": chunk_start.strftime("%Y-%m-%d"), "to": chunk_end.strftime("%Y-%m-%d")}
+            return ("cancelled", None, None)
+        params = {"from": c_start.strftime("%Y-%m-%d"), "to": c_end.strftime("%Y-%m-%d")}
         try:
             resp = _get_historical_with_retry(url, headers, params)
-            payload = resp.json()
-            bars = _extract_bars(payload)
-            all_bars.extend(bars)
-            consec_fails = 0
-            consec_ok += 1
-            if consec_ok >= 3 and pace > CHUNK_SLEEP_BASE:
-                pace = CHUNK_SLEEP_BASE
-                log.info("[data] mStock responding cleanly again — pacing back to %.1fs", pace)
+            bars = _extract_bars(resp.json())
+            pace = _next_pace(True)
+            result = ("ok", bars, None)
         except Exception as exc:  # noqa: BLE001 — skip bad chunks, but say so
-            chunk_errors += 1
-            consec_ok = 0
-            consec_fails += 1
-            if consec_fails >= 3 and pace < CHUNK_SLEEP_WIDE:
-                pace = CHUNK_SLEEP_WIDE
-                log.warning(
-                    "[data] %d consecutive chunk failures — widening pace to %.1fs "
-                    "for the rest of this symbol",
-                    consec_fails,
-                    pace,
-                )
             log.warning(
                 "[data] chunk %s..%s failed (%s: %s) — those bars are missing",
-                chunk_start,
-                chunk_end,
+                c_start,
+                c_end,
                 exc.__class__.__name__,
                 exc,
             )
-        chunk_done += 1
-        if on_progress is not None:
-            on_progress(chunk_done, total_chunks)
-        chunk_start = chunk_end + timedelta(days=1)
+            pace = _next_pace(False)
+            result = ("fail", None, exc)
         time.sleep(pace)
+        return result
 
+    cancelled = False
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        futures = [pool.submit(_fetch_window, w) for w in windows]
+        for fut in as_completed(futures):
+            kind, bars, _exc = fut.result()
+            if kind == "cancelled":
+                cancelled = True
+                continue
+            chunk_done += 1
+            if kind == "ok":
+                all_bars.extend(bars or [])
+            else:
+                chunk_errors += 1
+            if on_progress is not None:
+                on_progress(chunk_done, total_chunks)
+
+    if cancelled:
+        log.info(
+            "[data] chunk loop cancelled — returning %d bars collected so far",
+            len(all_bars),
+        )
     return all_bars, chunk_errors
 
 

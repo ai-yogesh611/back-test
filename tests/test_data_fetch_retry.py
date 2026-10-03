@@ -161,13 +161,15 @@ def test_healthy_run_paces_at_base(monkeypatch):
 
 def test_pace_widens_after_three_consecutive_failures_then_decays(monkeypatch):
     # 6 chunks (01,04,07,10,13,16-Jun); first three never recover.
+    # workers=1 pins the completion order so the rhythm is deterministic.
     fails = {"2026-06-01", "2026-06-04", "2026-06-07"}
     sleeps: list[float] = []
     monkeypatch.setattr(dm.requests, "get", _pacing_get(fails))
     monkeypatch.setattr(dm.time, "sleep", lambda s: sleeps.append(s))
 
     bars, errors = dm._fetch_bars_chunked(
-        "key", "tok", "11703", "2026-06-01", "2026-06-18", "NSE", "minute", 2
+        "key", "tok", "11703", "2026-06-01", "2026-06-18", "NSE", "minute", 2,
+        workers=1,
     )
     assert errors == 3
     assert len(bars) == 3  # chunks 4-6 collected
@@ -176,3 +178,33 @@ def test_pace_widens_after_three_consecutive_failures_then_decays(monkeypatch):
     # chunks 1-2 fail one-by-one (below threshold) -> base; 3rd consecutive
     # failure widens; chunks 4,5 stay wide; 3rd clean success decays to base.
     assert pacing == [0.5, 0.5, 2.0, 2.0, 2.0, 0.5]
+
+
+def test_chunks_are_fetched_in_parallel(monkeypatch):
+    # 8 windows (01,04,...,22-Jun) over 2026-06-01..25; with 4 workers
+    # several must be in flight at once — the old sequential loop can never
+    # exceed 1.
+    import threading
+
+    state = {"cur": 0, "max": 0}
+    lock = threading.Lock()
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        with lock:
+            state["cur"] += 1
+            state["max"] = max(state["max"], state["cur"])
+        threading.Event().wait(0.05)  # real hold: time.sleep is patched away
+        with lock:
+            state["cur"] -= 1
+        return _Resp(200, _candles(1))
+
+    monkeypatch.setattr(dm.requests, "get", fake_get)
+    monkeypatch.setattr(dm.time, "sleep", lambda s: None)
+
+    bars, errors = dm._fetch_bars_chunked(
+        "key", "tok", "11703", "2026-06-01", "2026-06-25", "NSE", "minute", 2,
+        workers=4,
+    )
+    assert errors == 0
+    assert len(bars) == 8
+    assert state["max"] >= 2  # genuinely concurrent
