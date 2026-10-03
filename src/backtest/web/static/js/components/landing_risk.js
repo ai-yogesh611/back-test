@@ -168,11 +168,12 @@
       if (data.success && data.portfolio) {
         lastPortfolio = data.portfolio;
         updateGlobalHeader(data.portfolio);
+        if (data.portfolio.buckets) {
+          if (data.portfolio.buckets.paper) updateBucketMiniRisk("paper", data.portfolio.buckets.paper);
+          if (data.portfolio.buckets.live) updateBucketMiniRisk("live", data.portfolio.buckets.live);
+        }
       }
     } catch (_) {}
-    // Per-bucket
-    fetchBucketRisk("paper");
-    fetchBucketRisk("live");
   }
 
   function bind() {
@@ -198,17 +199,25 @@
     if (!$("global-risk-header")) return;
     bind();
     fetchAll();
-    setInterval(fetchAll, 3000);
-
-    // Hook into RiskStrip if available
+    // Hook into RiskStrip if available — derives state directly from the SSE stream
     const orig = window.RiskStrip?.updateStrip;
     if (orig) {
       const prev = window.RiskStrip.updateStrip;
       window.RiskStrip.updateStrip = function (p) {
         prev(p);
         updateGlobalHeader(p);
+        if (p.buckets) {
+          if (p.buckets.paper) updateBucketMiniRisk("paper", p.buckets.paper);
+          if (p.buckets.live) updateBucketMiniRisk("live", p.buckets.live);
+        }
       };
     }
+
+    // Adaptive fallback polling (10s active, skips when tab is hidden or SSE is live)
+    setInterval(() => {
+      if (document.hidden) return;
+      fetchAll();
+    }, 10000);
   });
 
   window.LandingRisk = { updateGlobalHeader, updateBucketMiniRisk, fetchAll };

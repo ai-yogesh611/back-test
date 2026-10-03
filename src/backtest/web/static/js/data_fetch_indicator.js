@@ -12,19 +12,25 @@
     
     let pollInterval = null;
     
-    // Check fetch status every 3 seconds
+    let pollTimer = null;
+    
+    function scheduleCheck(delayMs) {
+        if (pollTimer) clearTimeout(pollTimer);
+        pollTimer = setTimeout(checkStatus, delayMs);
+    }
+
     function startPolling() {
-        if (pollInterval) clearInterval(pollInterval);
         checkStatus(); // immediate check
-        pollInterval = setInterval(checkStatus, 3000);
     }
     
     async function checkStatus() {
+        let isRunning = false;
         try {
             const resp = await fetch('/api/data/status');
             const data = await resp.json();
             
             if (data.status === 'running') {
+                isRunning = true;
                 // Show indicator
                 indicator.hidden = false;
                 countEl.textContent = `${data.fetched || 0}/${data.total || 0}`;
@@ -40,6 +46,10 @@
         } catch (err) {
             // Server might be restarting, ignore
         }
+        const delay = (typeof document.hidden === "boolean" && document.hidden)
+            ? (isRunning ? 6000 : 45000)
+            : (isRunning ? 3000 : 20000);
+        scheduleCheck(delay);
     }
     
     // Click to stop

@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Mapping
 
@@ -107,6 +107,28 @@ def instrument_from_symbol(symbol: str | None) -> str:
     return "equity"
 
 
+def _normalize_aware_dt(value: Any) -> datetime | None:
+    """Normalize any datetime/date/string to a timezone-aware UTC datetime.
+
+    Avoids offset-naive and offset-aware datetime comparison errors across
+    heterogeneous sources (persisted DB rows, in-memory runners, demo book).
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, date):
+        return datetime.combine(value, datetime.min.time(), tzinfo=timezone.utc)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
 @dataclass
 class TradeRecord:
     """One closed round trip, normalised across every source.
@@ -154,6 +176,8 @@ class TradeRecord:
         self.exit_price = _dec(self.exit_price)
         self.gross_pnl = money(_dec(self.gross_pnl))
         self.slippage = money(_dec(self.slippage))
+        self.entry_time = _normalize_aware_dt(self.entry_time)
+        self.exit_time = _normalize_aware_dt(self.exit_time)
         self.mode = str(self.mode or "paper").strip().lower()
         self.broker = str(self.broker or "").strip().lower()
         try:

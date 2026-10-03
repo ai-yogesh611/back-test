@@ -32,7 +32,7 @@ import logging
 import os
 import random
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Mapping, Protocol
 
@@ -692,7 +692,16 @@ class DemoTradeSource:
                     notes=["sample data — never a real trade", f"seed={rng.randint(0, 1)}"],
                 )
             )
-        records.sort(key=lambda r: r.exit_time or datetime.min)
+        utc_min = datetime.min.replace(tzinfo=timezone.utc)
+
+        def _demo_sort_key(r: Any) -> tuple:
+            et = r.exit_time
+            aware = (
+                et if et.tzinfo is not None else et.replace(tzinfo=timezone.utc)
+            ) if et is not None else utc_min
+            return (aware, getattr(r, "symbol", ""))
+
+        records.sort(key=_demo_sort_key)
         self._last_note = f"{len(records)} demo trade(s)"
         return [r for r in records if period.contains(r.exit_time)]
 
@@ -785,8 +794,10 @@ def _tag_for(mode: str, data_source: str) -> str:
 
 
 def _parse_dt(value: Any) -> datetime | None:
-    if value is None or isinstance(value, datetime):
-        return value
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
     text = str(value).strip()
     if not text:
         return None
@@ -794,7 +805,7 @@ def _parse_dt(value: Any) -> datetime | None:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
         return None
-    return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
 
 def _dec(value: Any) -> Decimal:

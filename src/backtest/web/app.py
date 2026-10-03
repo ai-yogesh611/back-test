@@ -439,6 +439,20 @@ def create_app(
         backend-owned constants, so templates render their mode/source
         choices from the canonical set instead of re-declaring it.
         """
+        try:
+            from backtest.live.market_status import get_market_day_state
+
+            m_state = get_market_day_state()
+        except Exception:  # noqa: BLE001
+            m_state = {
+                "day_state": "TRADING_DAY",
+                "session_state": "OPEN",
+                "holiday_name": None,
+                "next_open_ts": None,
+                "gap_warning": None,
+                "is_open": True,
+            }
+
         return {
             "currency_code": app.config["CURRENCY"],
             "currency_symbol": app.config["CURRENCY_SYMBOL"],
@@ -447,6 +461,7 @@ def create_app(
             "bucket_modes": sorted(BUCKET_RISK_LIMITS),
             "source_tags": sorted(SOURCE_TAG_VALUES),
             "default_source_tag": _default_source_tag(),
+            "market_status": m_state,
         }
 
     _register_request_logging(app)

@@ -173,7 +173,12 @@ def save_as_plugin():
         ("take_profit", "take profit criteria"),
         ("stop_loss", "stop loss criteria"),
     ]
-    if bool(readable.get("is_options")):
+    is_options = bool(readable.get("is_options")) or segment.startswith("options")
+    if is_options:
+        if not criteria_in.get("expiry") and criteria_in.get("entry_strike"):
+            m = re.search(r"expiry\s+([^,;]+)", criteria_in["entry_strike"], re.IGNORECASE)
+            if m:
+                criteria_in["expiry"] = m.group(1).strip()
         required.append(("entry_strike", "entry strike price"))
         required.append(("expiry", "expiry"))
     gaps = [label for key, label in required if not _criterion(key)]
@@ -188,12 +193,17 @@ def save_as_plugin():
         ), 400
 
     criteria = {key: _criterion(key) for key, _label in required}
+    for opt_key in ("opt_moneyness", "opt_type", "opt_expiry"):
+        val = _criterion(opt_key)
+        if val:
+            criteria[opt_key] = val
     exit_text = _criterion("exit")
     if exit_text:
         criteria["exit"] = exit_text
     criteria["sources"] = {
         key: ("user" if str(criteria_in.get(key) or "").strip() else "detected")
-        for key, _label in required
+        for key in criteria
+        if key != "sources"
     }
 
     converter = PineScriptConverter()

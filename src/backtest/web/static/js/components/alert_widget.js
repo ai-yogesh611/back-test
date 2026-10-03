@@ -16,8 +16,8 @@
 (function () {
   "use strict";
 
-  const POLL_MS = 3000;
-  const HIDDEN_POLL_MS = 15000;
+  const POLL_MS = 10000;
+  const HIDDEN_POLL_MS = 30000;
   const LS_EXPANDED = "pi.alertWidget.expanded";
   const ICON = { critical: "🔴", warning: "🟡", info: "🔵" };
   const RANK = { critical: 2, warning: 1, info: 0 };

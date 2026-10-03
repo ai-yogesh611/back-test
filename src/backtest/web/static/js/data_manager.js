@@ -332,6 +332,10 @@ function updateProgress(j) {
 // -----------------------------------------------------------------------
 
 async function loadInventory() {
+    const tbody = $('dm-inv-table') ? $('dm-inv-table').querySelector('tbody') : null;
+    if (tbody && !tbody.children.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="muted" style="text-align:center; padding:16px;">Loading price data inventory…</td></tr>';
+    }
     try {
         const resp = await fetch('/api/data/inventory');
         const j = await resp.json();
@@ -341,8 +345,7 @@ async function loadInventory() {
         const names = Object.keys(syms).sort();
         const timeframes = new Set();
 
-        const tbody = $('dm-inv-table').querySelector('tbody');
-        tbody.innerHTML = '';
+        if (tbody) tbody.innerHTML = '';
 
         if (names.length === 0) {
             $('dm-inv-empty').hidden = false;
@@ -373,6 +376,8 @@ async function loadInventory() {
         $('dm-inv-timeframes').textContent = [...timeframes].join(', ') || '-';
     } catch (err) {
         console.error('Inventory load failed:', err);
+        if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="muted" style="text-align:center; padding:16px;">Failed to load data inventory.</td></tr>';
+        $('dm-inv-symbols').textContent = 'Error loading inventory';
     }
 }
 

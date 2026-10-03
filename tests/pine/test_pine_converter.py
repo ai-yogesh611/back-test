@@ -430,3 +430,89 @@ def test_save_endpoint_accepts_user_typed_criteria(pine_client):
     assert "readable_criteria = " in content
     assert "limit = close * 1.05" in content
 
+
+def test_options_script_extracts_structured_moneyness_and_expiry():
+    """Pine converter recognizes relative moneyness (ATM+2), option type (CE), and expiry cycle."""
+    converter = PineScriptConverter()
+    pine = """
+//@version=5
+strategy("Nifty Weekly Bullish CE")
+fast = ta.ema(close, 9)
+slow = ta.ema(close, 21)
+if ta.crossover(fast, slow)
+    strategy.entry("buy", strategy.long)
+// Strike: ATM+2 CE expiry current week dt.
+tp = close * 1.10
+sl = close * 0.95
+"""
+    _, metadata = converter.convert(pine)
+    r = metadata["readable"]
+    assert r["is_options"] is True
+    assert r["opt_moneyness"] == "ATM+2"
+    assert r["opt_type"] == "CE"
+    assert r["opt_expiry"] == "current week dt."
+    assert "ATM+2 CE expiry current week dt." in r["entry_strike"]
+    assert r["expiry"] == "current week dt."
+    assert set(r["missing"]) == set()
+
+
+def test_save_endpoint_accepts_options_dropdown_criteria(pine_client):
+    """Options strategies save successfully with structured moneyness, type, expiry, and segment."""
+    import pathlib
+
+    python_code, metadata = _converted()
+    metadata["readable"]["is_options"] = True
+    resp = pine_client.post("/api/pine/save", json={
+        "python_code": python_code,
+        "strategy_name": "opt_weekly_ce",
+        "metadata": metadata,
+        "segment": "options_index",
+        "criteria": {
+            "entry": "ema crossover",
+            "entry_strike": "ATM+2 CE expiry current week dt.",
+            "expiry": "current week dt.",
+            "opt_moneyness": "ATM+2",
+            "opt_type": "CE",
+            "opt_expiry": "current week dt.",
+            "take_profit": "limit = 100",
+            "stop_loss": "stop = 50",
+            "sources": {
+                "entry": "detected",
+                "entry_strike": "user",
+                "expiry": "user",
+                "take_profit": "user",
+                "stop_loss": "user"
+            },
+        },
+    })
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["success"] is True
+    assert body["segment"] == "options_index"
+    content = pathlib.Path(body["plugin_path"]).read_text(encoding="utf-8")
+    assert 'default_segment = "options_index"' in content
+    assert '"entry_strike": "ATM+2 CE expiry current week dt."' in content
+    assert '"opt_moneyness": "ATM+2"' in content
+    assert '"opt_type": "CE"' in content
+    assert '"opt_expiry": "current week dt."' in content
+
+
+def test_save_endpoint_auto_extracts_expiry_from_entry_strike(pine_client):
+    """If entry_strike has 'ATM+2 CE expiry current week dt.', expiry is auto-derived."""
+    python_code, metadata = _converted()
+    metadata["readable"]["is_options"] = True
+    resp = pine_client.post("/api/pine/save", json={
+        "python_code": python_code,
+        "strategy_name": "opt_auto_exp",
+        "metadata": metadata,
+        "segment": "options_index",
+        "criteria": {
+            "entry": "ta.crossover",
+            "entry_strike": "ITM PE expiry current month dt.",
+            "take_profit": "target = 50",
+            "stop_loss": "stop = 25",
+        },
+    })
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["success"] is True

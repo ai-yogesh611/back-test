@@ -227,6 +227,16 @@ def test_mode_source_badges_on_bucket_pages(client):
 # ---------------------------------------------------------------------------
 
 
+def test_portfolio_positions_bucket_isolation(client):
+    """Paper positions never appear when querying the live positions endpoint."""
+    _spawn(client, "paper-runner", mode="paper")
+    res_paper = client.get("/api/portfolio/positions?mode=paper").get_json()
+    res_live = client.get("/api/portfolio/positions?mode=live").get_json()
+    assert res_paper["success"] is True
+    assert res_live["success"] is True
+    assert all(p.get("mode") == "live" for p in res_live["positions"])
+
+
 def test_landing_page_bucket_cards_driven_by_canonical_map(client):
     """The /portfolio bucket cards iterate the backend-owned bucket vocabulary.
 

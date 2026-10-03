@@ -34,7 +34,11 @@ const BrokerBoard = (() => {
         if (!iso) return "—";
         const d = new Date(iso);
         if (Number.isNaN(d.getTime())) return iso;
-        return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        const now = new Date();
+        const isToday = d.toDateString() === now.toDateString();
+        const datePart = isToday ? "Today" : d.toLocaleDateString("en-IN", { month: "short", day: "numeric" });
+        const timePart = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        return `${datePart} ${timePart} IST`;
     }
 
     function fmtCapital(v) {

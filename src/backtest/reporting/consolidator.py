@@ -314,7 +314,15 @@ class ConsolidatedPnL:
         for trade in selected:
             trade.classify(rules)
 
-        report.trades = sorted(selected, key=lambda t: (t.exit_time or datetime.min, t.symbol))
+        utc_min = datetime.min.replace(tzinfo=timezone.utc)
+
+        def _sort_key(t: Any) -> tuple:
+            et = t.exit_time
+            if et is None:
+                return (utc_min, t.symbol)
+            return (et if et.tzinfo is not None else et.replace(tzinfo=timezone.utc), t.symbol)
+
+        report.trades = sorted(selected, key=_sort_key)
         self._aggregate(report, rules)
         self._collect_caveats(report, records, selected)
         if not include_trades:

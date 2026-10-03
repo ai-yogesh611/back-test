@@ -720,7 +720,12 @@
   // ---------------------------------------------------------------- render
   function render(p) {
     // SSE broadcasts the combined snapshot — drop other buckets on a scoped page.
-    if (PAGE_MODE) p.runners = (p.runners || []).filter((r) => (r.mode || "paper") === PAGE_MODE);
+    if (PAGE_MODE) {
+      p.runners = (p.runners || []).filter((r) => (r.mode || "paper") === PAGE_MODE);
+      if (Array.isArray(p.positions)) {
+        p.positions = p.positions.filter((pos) => (pos.mode || "paper") === PAGE_MODE);
+      }
+    }
     state.portfolio = p;
     checkStaleTransitions(p);
     // T2.1: Metrics use bucket-scoped data when PAGE_MODE is set.
@@ -775,6 +780,10 @@
         const BAR_PERIOD_S = 60; // 1-minute bars
         window.__lastBarTs = p.last_bar_ts || window.__lastBarTs || null;
         window.__barPeriodS = BAR_PERIOD_S;
+        window.__lastMarketState = p.market || window.__lastMarketState || null;
+        if (p.market && window.updateMarketChip) {
+          window.updateMarketChip(p.market);
+        }
         render(p);
       } catch (e) { /* ignore malformed frame */ }
     });
@@ -784,17 +793,117 @@
       $("feed-label").textContent = "Feed disconnected — retrying…";
     });
     es.onerror = () => { /* browser auto-reconnects */ };
-    // 1-second countdown ticker: reads __lastBarTs set by the SSE handler.
+    function formatBarElapsed(elapsed) {
+      if (elapsed < 60) return elapsed + "s ago";
+      if (elapsed < 3600) return Math.floor(elapsed / 60) + "m ago";
+      if (elapsed < 86400) {
+        const h = Math.floor(elapsed / 3600);
+        const m = Math.floor((elapsed % 3600) / 60);
+        return m > 0 ? h + "h " + m + "m ago" : h + "h ago";
+      }
+      const d = Math.floor(elapsed / 86400);
+      const h = Math.floor((elapsed % 86400) / 3600);
+      return h > 0 ? d + "d " + h + "h ago" : d + "d ago";
+    }
+
+    function getIstTime() {
+      const now = new Date();
+      const utcMs = now.getTime() + (now.getTimezoneOffset() * 60000);
+      return new Date(utcMs + (5.5 * 3600000));
+    }
+
+    function formatDayDDMMM(isoStr) {
+      if (!isoStr) return "";
+      try {
+        const dt = new Date(isoStr);
+        const utcMs = dt.getTime() + (dt.getTimezoneOffset() * 60000);
+        const istDt = new Date(utcMs + (5.5 * 3600000));
+        const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+        const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        const day = days[istDt.getDay()];
+        const dd = String(istDt.getDate()).padStart(2, "0");
+        const mmm = months[istDt.getMonth()];
+        return `${day} ${dd} ${mmm}`;
+      } catch (e) {
+        return "";
+      }
+    }
+
+    // 1-second countdown ticker (MARKET-STATUS-SPEC-2026-10-02 Table 2):
+    // reads __lastBarTs and __lastMarketState set by the SSE handler.
     setInterval(() => {
       const el = document.getElementById("bar-countdown");
       if (!el) return;
+
+      const market = window.__lastMarketState || null;
       const lastTs = window.__lastBarTs;
-      if (!lastTs) { el.textContent = "waiting for first bar…"; return; }
-      const last = new Date(String(lastTs).replace(" ", "T") + "+05:30");
       const period = window.__barPeriodS || 60;
-      const elapsed = Math.max(0, Math.round((Date.now() - last.getTime()) / 1000));
-      const remain = Math.max(0, period - (elapsed % period));
-      el.textContent = "⏱ next bar in " + remain + "s (bars every " + period + "s, last " + elapsed + "s ago)";
+      let elapsed = null;
+      if (lastTs) {
+        const last = new Date(String(lastTs).replace(" ", "T") + "+05:30");
+        elapsed = Math.max(0, Math.round((Date.now() - last.getTime()) / 1000));
+      }
+
+      const ist = getIstTime();
+      const curMins = ist.getHours() * 60 + ist.getMinutes();
+      const curSecs = ist.getSeconds();
+      const totalSecs = curMins * 60 + curSecs;
+
+      let dayState = market ? market.day_state : (ist.getDay() === 0 || ist.getDay() === 6 ? "WEEKEND" : "TRADING_DAY");
+      let sessionState = "POST_CLOSE";
+      if (dayState === "TRADING_DAY") {
+        if (totalSecs < 9 * 3600) {
+          sessionState = "POST_CLOSE";
+        } else if (totalSecs < (9 * 3600 + 15 * 60)) {
+          sessionState = "PRE_OPEN";
+        } else if (totalSecs <= (15 * 3600 + 30 * 60)) {
+          sessionState = "OPEN";
+        } else {
+          sessionState = "POST_CLOSE";
+        }
+      }
+
+      if (dayState === "HOLIDAY") {
+        const name = (market && market.holiday_name) ? market.holiday_name : "Holiday";
+        const dateStr = (market && market.next_open_ts) ? formatDayDDMMM(market.next_open_ts) : "Mon 05 Oct";
+        el.textContent = `Market holiday · ${name} · Opens ${dateStr} 09:15 IST`;
+        return;
+      }
+
+      if (dayState === "WEEKEND") {
+        el.textContent = "Weekend · Market closed · Opens Monday 09:15 IST";
+        return;
+      }
+
+      // TRADING_DAY
+      if (sessionState === "PRE_OPEN") {
+        const openSecs = 9 * 3600 + 15 * 60;
+        const diffSecs = Math.max(0, openSecs - totalSecs);
+        const xM = Math.floor(diffSecs / 60);
+        const yS = diffSecs % 60;
+        el.textContent = `Pre-open: opens 09:15 IST (in ${xM}m ${yS}s)`;
+        return;
+      }
+
+      if (sessionState === "POST_CLOSE") {
+        el.textContent = "Session closed (15:30 IST) · Opens tomorrow 09:15 IST";
+        return;
+      }
+
+      // TRADING_DAY + OPEN
+      if (elapsed === null) {
+        el.textContent = "waiting for first bar…";
+        return;
+      }
+
+      if (elapsed > 300) {
+        el.textContent = "⏸ market session idle · last bar " + formatBarElapsed(elapsed);
+        return;
+      }
+
+      const barElapsed = elapsed % period;
+      const remain = Math.max(0, period - barElapsed);
+      el.textContent = `Bar clock ticking: ${barElapsed}s ago · Next bar in ${remain}s`;
     }, 1000);
     return es;
   }
