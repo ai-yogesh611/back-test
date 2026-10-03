@@ -234,3 +234,39 @@ def test_scope_is_plumbed_into_the_job(client, monkeypatch):
     assert captured["scope"] == "index"
     # the fake job never runs, so clear the running flag for the next test
     data_manager._job["status"] = "idle"
+
+
+# ---------------------------------------------------------------------------
+# 2026-10-04: a resolution failure must never wedge the job in "running"
+# with total=0 ("0 / 0 symbols", Start blocked) — it lands in "error" with
+# the real cause instead.
+# ---------------------------------------------------------------------------
+
+
+def test_resolution_failure_lands_job_in_error_not_wedged_running(monkeypatch):
+    def boom(engine, symbols, scope):
+        raise RuntimeError("simulated catalogue outage")
+
+    monkeypatch.setattr(data_manager, "_load_instruments", boom)
+    data_manager._job.update(status="idle", total=0, error=None, fetched=0)
+    data_manager._run_fetch_job(
+        "x" * 32, "1day", "2024-01-01", "2024-02-01", None, "equity"
+    )
+    assert data_manager._job["status"] == "error"
+    assert "could not be loaded" in (data_manager._job["error"] or "")
+    assert "RuntimeError" in data_manager._job["error"]
+    data_manager._job.update(status="idle", error=None)
+
+
+def test_unexpected_worker_crash_never_wedges_running(monkeypatch):
+    def crash(*args, **kwargs):
+        raise ValueError("mid-run disaster")
+
+    monkeypatch.setattr(data_manager, "_run_fetch_job_inner", crash)
+    data_manager._job.update(status="idle", total=0, error=None)
+    data_manager._run_fetch_job(
+        "x" * 32, "1day", "2024-01-01", "2024-02-01", None, "equity"
+    )
+    assert data_manager._job["status"] == "error"
+    assert "crashed" in (data_manager._job["error"] or "")
+    data_manager._job.update(status="idle", error=None)
