@@ -2106,7 +2106,13 @@ class BacktestRun(Base):
             "win_rate IS NULL OR (win_rate >= 0 AND win_rate <= 100)",
             name="ck_bt_runs_win_rate",
         ),
-        Index("ix_backtest_runs_list", "strategy_id", "symbol", "timeframe", text("created_at DESC")),
+        Index(
+            "ix_backtest_runs_list",
+            "strategy_id",
+            "symbol",
+            "timeframe",
+            text("created_at DESC"),
+        ),
         Index("ix_backtest_runs_config", "config_hash", text("created_at DESC")),
         Index("ix_backtest_runs_kind", "kind", text("created_at DESC")),
         Index(
@@ -2174,7 +2180,10 @@ class BacktestCompareRun(Base):
     )
 
     def __repr__(self) -> str:  # pragma: no cover
-        return f"<BacktestCompareRun {self.compare_id[:8]} {self.comparison_mode} x{self.slot_count}>"
+        return (
+            f"<BacktestCompareRun {self.compare_id[:8]} "
+            f"{self.comparison_mode} x{self.slot_count}>"
+        )
 
 
 class BacktestRunSeries(Base):

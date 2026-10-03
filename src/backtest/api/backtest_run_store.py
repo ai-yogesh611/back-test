@@ -22,7 +22,6 @@ import hashlib
 import inspect
 import json
 import logging
-import math
 import subprocess
 import threading
 from datetime import date, datetime, timezone
@@ -35,7 +34,6 @@ from sqlalchemy import delete, func, select, update
 from backtest.adapters.backtest_adapter import BacktestAdapter
 from backtest.db.models import (
     BACKTEST_LEDGER_TABLES,
-    BacktestCompareRun,
     BacktestRun,
     BacktestRunSeries,
 )
@@ -389,10 +387,10 @@ class BacktestRunLedger:
         self.last_persist_error = f"{where}: {message}"
         log.error("[run-ledger] persist_failed %s err=%s", where, message)
         _alert_persist_failed(where, message)
-        return {"persisted": False, "persist_error": message}
+        return {"persisted": False, "run_id": None, "persist_error": message}
 
     def ok_persist(self, run_id: str) -> dict[str, Any]:
-        return {"persisted": True, "run_id": run_id}
+        return {"persisted": True, "run_id": run_id, "persist_error": None}
 
     # -- retention (PRD R7) ---------------------------------------------------
 
@@ -544,9 +542,10 @@ class BacktestRunLedger:
                 .where(BacktestRun.created_at >= datetime.fromtimestamp(day_ago, timezone.utc))
             ).scalar() or 0
             series_rows, series_bytes = s.execute(
-                select(func.count(), func.coalesce(func.sum(BacktestRunSeries.bytes_written), 0)).select_from(
-                    BacktestRunSeries
-                )
+                select(
+                    func.count(),
+                    func.coalesce(func.sum(BacktestRunSeries.bytes_written), 0),
+                ).select_from(BacktestRunSeries)
             ).one()
             evicted = s.execute(
                 select(func.count())
