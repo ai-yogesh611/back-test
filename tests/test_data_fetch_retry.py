@@ -208,3 +208,104 @@ def test_chunks_are_fetched_in_parallel(monkeypatch):
     assert errors == 0
     assert len(bars) == 8
     assert state["max"] >= 2  # genuinely concurrent
+
+
+# ---------------------------------------------------------------------------
+# Stop during retry + job-level circuit breaker (operator report, 2026-10-03:
+# an mStock outage must stop the job after minutes of failure, not days, and
+# Stop must not mean "finish this symbol's remaining hundreds of chunks".)
+# ---------------------------------------------------------------------------
+
+
+def test_stop_lands_between_retry_attempts(monkeypatch):
+    calls = {"n": 0}
+    flags = {"cancel": False}
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            flags["cancel"] = True
+        return _Resp(502)
+
+    monkeypatch.setattr(dm.requests, "get", fake_get)
+    monkeypatch.setattr(dm.time, "sleep", lambda s: None)
+
+    with pytest.raises(dm.FetchCancelled):
+        dm._get_historical_with_retry(
+            "u", {}, {}, attempts=4, should_cancel=lambda: flags["cancel"]
+        )
+    assert calls["n"] == 2  # abandoned at the next attempt, not after all 4
+
+
+def test_cancelled_chunk_is_not_counted_as_error(monkeypatch):
+    calls = {"n": 0}
+    flags = {"cancel": False}
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls["n"] += 1
+        flags["cancel"] = True  # Stop pressed during the very first request
+        return _Resp(502)
+
+    monkeypatch.setattr(dm.requests, "get", fake_get)
+    monkeypatch.setattr(dm.time, "sleep", lambda s: None)
+
+    bars, errors = dm._fetch_bars_chunked(
+        "key", "tok", "11703", "2026-06-01", "2026-06-10", "NSE", "minute", 2,
+        should_cancel=lambda: flags["cancel"],
+        workers=1,
+    )
+    assert errors == 0  # user-chosen abandonment, not mStock failure
+    assert bars == []
+    # One request in flight, abandoned at the very next retry check; every
+    # remaining window short-circuits on the cancel flag without a request.
+    assert calls["n"] == 1
+
+
+def test_breaker_needs_both_failure_count_and_duration():
+    t = {"now": 0.0}
+    b = dm._CircuitBreaker(min_failures=8, stall_seconds=180.0, clock=lambda: t["now"])
+    for i in range(8):
+        t["now"] = i * 10.0  # 70 s of failures: many, but below the stall window
+        b.record(False)
+    assert not b.tripped
+    t["now"] = 200.0
+    b.record(False)
+    assert b.tripped  # >= 8 failures sustained >= 180 s with no clean chunk
+
+
+def test_breaker_clean_chunk_resets_the_streak():
+    t = {"now": 0.0}
+    b = dm._CircuitBreaker(min_failures=3, stall_seconds=10.0, clock=lambda: t["now"])
+    for i in range(3):
+        t["now"] = i * 100.0
+        b.record(False)
+        b.record(True)  # the storm keeps landing occasional clean chunks
+    assert not b.tripped  # a recovering gateway must never abort the job
+    assert b.consecutive_failures == 0
+
+
+def test_chunk_loop_stops_firing_requests_once_breaker_trips(monkeypatch):
+    t = {"now": 0.0}
+    breaker = dm._CircuitBreaker(min_failures=3, stall_seconds=0.0, clock=lambda: t["now"])
+    calls = {"n": 0}
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls["n"] += 1
+        t["now"] += 100.0
+        return _Resp(502)  # full outage: every attempt fails
+
+    monkeypatch.setattr(dm.requests, "get", fake_get)
+    monkeypatch.setattr(dm.time, "sleep", lambda s: None)
+
+    # 5 windows (01,04,07,10,13-Jun); the breaker trips inside window 3, so
+    # windows 4-5 must short-circuit WITHOUT touching the network.
+    bars, errors = dm._fetch_bars_chunked(
+        "key", "tok", "11703", "2026-06-01", "2026-06-14", "NSE", "minute", 2,
+        workers=1,
+        breaker=breaker,
+    )
+    assert breaker.tripped
+    assert calls["n"] == 12  # 3 fully-retried windows × 4 attempts, then silence
+    assert errors == 3
+    assert bars == []
+

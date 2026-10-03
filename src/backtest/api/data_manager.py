@@ -119,6 +119,88 @@ CHUNK_PACE_DOWN_AFTER = 3  # consecutive successes -> return to base
 # headroom into concurrent 502 storms.
 CHUNK_FETCH_WORKERS = 4
 
+#: Circuit-breaker thresholds (see :class:`_CircuitBreaker`): the job aborts
+#: only when this many post-retry chunk failures land back-to-back AND the
+#: whole streak spans at least ``BREAKER_STALL_SECONDS`` with no clean chunk.
+BREAKER_MIN_FAILURES = 8
+BREAKER_STALL_SECONDS = 180.0
+
+
+class FetchCancelled(RuntimeError):
+    """Raised inside a chunk worker when Stop was pressed (or the breaker
+    tripped) while it was mid-retry — distinguishes "we chose to stop" from
+    "mStock failed the chunk", so cancelled windows are not counted as errors."""
+
+
+class _CircuitBreaker:
+    """Job-level detector for "mStock is fully down" (operator report, 2026-10-03).
+
+    Adaptive pacing (``CHUNK_PACE_*``) is built for BAD PATCHES: the gateway
+    502s for a while and recovers, so the loop widens its sleep and presses
+    on. A full outage looks identical chunk-by-chunk — every request dies
+    after its retries — yet pressing on means crawling through all 200 symbols
+    collecting errors for days when the user asked it to "fetch for a while,
+    then stop". The breaker trips once ``min_failures`` consecutive post-retry
+    chunk failures have sustained for ``stall_seconds`` without a single clean
+    chunk; one recovered chunk resets the streak, so transient storms never
+    abort a run that was about to succeed.
+    """
+
+    def __init__(
+        self,
+        min_failures: int = BREAKER_MIN_FAILURES,
+        stall_seconds: float = BREAKER_STALL_SECONDS,
+        clock=time.monotonic,
+    ) -> None:
+        self._lock = threading.Lock()
+        self._min_failures = min_failures
+        self._stall_seconds = stall_seconds
+        self._clock = clock
+        self._consec_fails = 0
+        self._streak_started = 0.0
+        self._failed_at = 0.0
+        self._tripped = False
+
+    def record(self, ok: bool) -> None:
+        """Fold one post-retry chunk outcome into the streak."""
+        with self._lock:
+            if ok:
+                self._consec_fails = 0
+                return
+            now = self._clock()
+            if self._consec_fails == 0:
+                self._streak_started = now
+            self._consec_fails += 1
+            if (
+                not self._tripped
+                and self._consec_fails >= self._min_failures
+                and now - self._streak_started >= self._stall_seconds
+            ):
+                self._tripped = True
+                self._failed_at = now
+                log.error(
+                    "[data] mStock circuit breaker TRIPPED: %d consecutive chunk "
+                    "failures over %.1f min — the job will stop after this symbol",
+                    self._consec_fails,
+                    (now - self._streak_started) / 60.0,
+                )
+
+    @property
+    def tripped(self) -> bool:
+        with self._lock:
+            return self._tripped
+
+    @property
+    def consecutive_failures(self) -> int:
+        with self._lock:
+            return self._consec_fails
+
+    @property
+    def stall_minutes(self) -> float:
+        with self._lock:
+            end = self._failed_at or self._clock()
+            return (end - self._streak_started) / 60.0
+
 
 # -----------------------------------------------------------------------
 # API Endpoints
@@ -135,7 +217,10 @@ def fetch_status() -> tuple:
 
 @data_bp.post("/api/data/stop")
 def fetch_stop() -> tuple:
-    """Signal the running job to stop after the current symbol."""
+    """Signal the running job to stop. Lands between chunks — within seconds
+    in a healthy session; up to one in-flight request (60 s socket timeout)
+    when mStock is hanging. Bars collected for the current symbol are stored
+    before the job exits."""
     with _lock:
         if _job["status"] != "running":
             return jsonify({"error": "No job running"}), 400
@@ -546,7 +631,22 @@ def _run_fetch_job(
         len(all_windows),
     )
 
+    # One breaker per job: it watches post-retry chunk outcomes across ALL
+    # symbols, so a gateway that dies mid-run stops the run instead of the
+    # run grinding through the remaining 190 symbols.
+    breaker = _CircuitBreaker()
+    aborted: str | None = None
+
     for i, inst in enumerate(instruments, 1):
+        if breaker.tripped:
+            aborted = (
+                f"mStock unreachable — {breaker.consecutive_failures} consecutive chunk "
+                f"requests failed even after retries over {breaker.stall_minutes:.0f} min; "
+                "fetch stopped early. Re-run it when the gateway recovers — already-stored "
+                "days are skipped automatically."
+            )
+            log.error("[data] %s", aborted)
+            break
         if _job.get("cancel"):
             log.info("[data] fetch job cancelled after %d/%d symbols", i - 1, total)
             with _lock:
@@ -604,9 +704,10 @@ def _run_fetch_job(
                 inst_exchange,
                 mstock_tf,
                 chunk_days,
-                should_cancel=lambda: bool(_job.get("cancel")),
+                should_cancel=lambda: bool(_job.get("cancel")) or breaker.tripped,
                 on_progress=_on_chunk,
                 windows=needed_windows,
+                breaker=breaker,
             )
             if chunk_errors:
                 # Partial coverage: some chunks died even after retries. The
@@ -679,7 +780,9 @@ def _run_fetch_job(
         time.sleep(0.3)  # rate limit
 
     with _lock:
-        _job["status"] = "done"
+        _job["status"] = "error" if aborted else "done"
+        if aborted:
+            _job["error"] = aborted
         _job["symbol"] = ""
         log.info(
             "[data] fetch job finished: %d/%d symbols ok (%d skipped as already "
@@ -832,7 +935,9 @@ def _load_instruments(
     return rows, not_found
 
 
-def _get_historical_with_retry(url, headers, params, attempts=4, base_sleep=1.5):
+def _get_historical_with_retry(
+    url, headers, params, attempts=4, base_sleep=1.5, should_cancel=None
+):
     """GET the TypeA historical endpoint, retrying mStock's intermittent 502s.
 
     The gateway answers 502 for a large share of requests fired at the chunk
@@ -840,9 +945,17 @@ def _get_historical_with_retry(url, headers, params, attempts=4, base_sleep=1.5)
     chunks; manual re-probes seconds later returned the bars fine). A short
     backoff almost always succeeds on the next attempt. Raises the last error
     if every attempt fails so the caller counts the chunk as an error.
+
+    ``should_cancel`` is checked before every attempt so a Stop (or a tripped
+    circuit breaker) lands *between* backoffs instead of burning the rest of
+    the ladder: worst case a worker now holds on for the one request already
+    in flight (60 s socket timeout) rather than 4 × 60 s + backoffs. Raises
+    :class:`FetchCancelled` — which the chunk loop does NOT count as an error.
     """
     last_error = None
     for attempt in range(1, attempts + 1):
+        if should_cancel is not None and should_cancel():
+            raise FetchCancelled("historical fetch cancelled mid-retry")
         try:
             resp = requests.get(url, headers=headers, params=params, timeout=60)
         except requests.RequestException as exc:
@@ -1007,6 +1120,7 @@ def _fetch_bars_chunked(
     on_progress=None,
     workers: int = CHUNK_FETCH_WORKERS,
     windows: list | None = None,
+    breaker: "_CircuitBreaker | None" = None,
 ) -> tuple[list[dict], int]:
     """Fetch OHLCV bars from mStock, chunked by date range.
 
@@ -1036,6 +1150,11 @@ def _fetch_bars_chunked(
     fetched instead of the full ``[from_date, to_date]`` walk. The caller uses
     it to drop windows whose days are already in the DB (coverage-aware gap
     fill); omitted, the whole range is built so existing callers are unchanged.
+
+    ``breaker`` — the job's :class:`_CircuitBreaker`. Every post-retry chunk
+    outcome is recorded on it, and once it has tripped the remaining windows
+    short-circuit as *cancelled* (no request is fired), so a full mStock
+    outage ends the walk in seconds instead of days.
     """
     headers = {"X-Mirae-Version": "1", "Authorization": f"token {api_key}:{token}"}
     url = (
@@ -1090,12 +1209,21 @@ def _fetch_bars_chunked(
         c_start, c_end = window
         if should_cancel is not None and should_cancel():
             return ("cancelled", None, None)
+        if breaker is not None and breaker.tripped:
+            return ("cancelled", None, None)
         params = {"from": c_start.strftime("%Y-%m-%d"), "to": c_end.strftime("%Y-%m-%d")}
         try:
-            resp = _get_historical_with_retry(url, headers, params)
+            resp = _get_historical_with_retry(url, headers, params, should_cancel=should_cancel)
             bars = _extract_bars(resp.json())
             pace = _next_pace(True)
+            if breaker is not None:
+                breaker.record(True)
             result = ("ok", bars, None)
+        except FetchCancelled:
+            # Stop pressed (or breaker tripped) mid-retry-ladder — the window
+            # was abandoned by choice, not by mStock: count it as neither a
+            # success nor an error, and do not feed the breaker streak.
+            return ("cancelled", None, None)
         except Exception as exc:  # noqa: BLE001 — skip bad chunks, but say so
             log.warning(
                 "[data] chunk %s..%s failed (%s: %s) — those bars are missing",
@@ -1105,6 +1233,8 @@ def _fetch_bars_chunked(
                 exc,
             )
             pace = _next_pace(False)
+            if breaker is not None:
+                breaker.record(False)
             result = ("fail", None, exc)
         time.sleep(pace)
         return result

@@ -304,7 +304,7 @@ function updateProgress(j) {
     $('dm-status-text').textContent =
         j.status === 'running' ? (j.cancel ? 'Stopping…' : `Fetching ${j.timeframe} data...`) :
         j.status === 'done' ? (j.error === 'Cancelled by user' ? 'Cancelled' : 'Done') :
-        j.status === 'error' ? 'Error' : 'Idle';
+        j.status === 'error' ? (j.error ? 'Error: ' + j.error.split(';')[0] : 'Error') : 'Idle';
     $('dm-fetched-count').textContent = j.chunk_total > 0 && j.status === 'running'
         ? `${j.fetched || 0} / ${j.total || 0} symbols · chunk ${j.chunk_done || 0}/${j.chunk_total}`
         : `${j.fetched || 0} / ${j.total || 0} symbols`;
