@@ -234,3 +234,31 @@ def test_scope_is_plumbed_into_the_job(client, monkeypatch):
     assert captured["scope"] == "index"
     # the fake job never runs, so clear the running flag for the next test
     data_manager._job["status"] = "idle"
+
+
+# ---------------------------------------------------------------------------
+# /api/data/clear — a finished fetch's progress panel must be dismissible
+# (2026-10-04: it used to stay up forever, even across page reloads)
+# ---------------------------------------------------------------------------
+
+
+def test_clear_resets_a_finished_job_to_idle(client):
+    data_manager._job.update(
+        status="done", fetched=200, total=200, bars_total=1234, error=None
+    )
+    r = client.post("/api/data/clear")
+    assert r.status_code == 200
+    assert r.get_json()["status"] == "idle"
+    assert data_manager._job["status"] == "idle"
+    assert data_manager._job["total"] == 0
+    assert data_manager._job["fetched"] == 0
+    assert data_manager._job["bars_total"] == 0
+    assert data_manager._job["failed_list"] == []
+
+
+def test_clear_refuses_a_running_job(client):
+    data_manager._job.update(status="running")
+    r = client.post("/api/data/clear")
+    assert r.status_code == 409
+    assert "Stop it" in r.get_json()["error"]
+    data_manager._job.update(status="idle")

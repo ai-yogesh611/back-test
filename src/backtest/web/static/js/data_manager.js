@@ -170,6 +170,9 @@ function applyJobState(j) {
     $('dm-fetchBtn').hidden = running;
     $('dm-stopBtn').hidden = !running;
     $('dm-stopBtn').disabled = running && !!j.cancel;  // stop already requested
+    // Clear is only meaningful once the panel is showing a FINISHED job —
+    // while running, the stop flow owns the panel.
+    $('dm-clearProgress').hidden = running;
     if (running || j.status === 'done' || j.status === 'error') {
         $('dm-progress-section').hidden = false;
     }
@@ -225,6 +228,24 @@ $('dm-stopBtn').addEventListener('click', async () => {
         }
         showToast('Stopping after current chunk/symbol…', 'warning');
         pollStatus();  // reflect the cancel flag on the button right away
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+});
+
+$('dm-clearProgress').addEventListener('click', async () => {
+    try {
+        const resp = await fetch('/api/data/clear', { method: 'POST' });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+            showToast(data.error || 'Could not clear the progress panel', 'error');
+            return;
+        }
+        // The server is back to idle, so a page reload won't resurrect the
+        // finished panel either.
+        $('dm-progress-section').hidden = true;
+        applyJobState({ status: 'idle' });
+        showToast('Fetch progress cleared', 'success');
     } catch (err) {
         showToast(err.message, 'error');
     }

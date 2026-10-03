@@ -56,7 +56,10 @@
 
     <!-- ================= PROGRESS PANEL ================= -->
     <section id="dm-progress-section" class="card" hidden>
-        <h2 class="card-title">{{ icon('clock', 16) }} Fetch progress</h2>
+        <div class="card-head">
+            <h2 class="card-title">{{ icon('clock', 16) }} Fetch progress</h2>
+            <button id="dm-clearProgress" class="btn btn-sm" hidden>{{ icon('close', 13) }} Clear</button>
+        </div>
 
         <div class="progress-bar-wrap">
             <div class="progress-bar" id="dm-progress-bar" style="width: 0%"></div>

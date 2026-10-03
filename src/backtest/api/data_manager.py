@@ -228,6 +228,46 @@ def fetch_stop() -> tuple:
     return jsonify({"status": "stopping"}), 200
 
 
+@data_bp.post("/api/data/clear")
+def fetch_clear() -> tuple:
+    """Reset a finished job's state back to idle.
+
+    A completed/cancelled/failed fetch used to leave its progress panel up
+    forever — even across page reloads — because the job state itself still
+    said ``done``/``error`` and every page load re-showed it. Clearing
+    restores the idle defaults so the Data tab can dismiss the panel for
+    good. A RUNNING job is refused: stop it first (2026-10-04).
+    """
+    with _lock:
+        if _job["status"] == "running":
+            return (
+                jsonify({"error": "A fetch job is running. Stop it before clearing."}),
+                409,
+            )
+        _job.update(
+            status="idle",
+            symbol="",
+            fetched=0,
+            total=0,
+            bars_total=0,
+            bars_symbol=0,
+            failed=0,
+            failed_list=[],
+            from_date="",
+            to_date="",
+            timeframe="1min",
+            error=None,
+            started_at=None,
+            elapsed="",
+            cancel=False,
+            chunk_done=0,
+            chunk_total=0,
+            chunk_errors=0,
+            skipped=0,
+        )
+    return jsonify({"status": "idle"}), 200
+
+
 @data_bp.post("/api/data/fetch")
 def fetch_start() -> tuple:
     """Start a background fetch job.
@@ -631,6 +671,18 @@ def _run_fetch_job(
         len(all_windows),
     )
 
+    # One probe for the whole job (2026-10-04): a single grouped query returns
+    # every symbol's covered days, instead of one round-trip per symbol.
+    covered_by_symbol: dict[str, set] = {}
+    if coverage_enabled and instruments:
+        covered_by_symbol = _probe_covered_days(
+            engine,
+            [str(i["tradingsymbol"]) for i in instruments],
+            timeframe,
+            from_date,
+            to_date,
+        )
+
     # One breaker per job: it watches post-retry chunk outcomes across ALL
     # symbols, so a gateway that dies mid-run stops the run instead of the
     # run grinding through the remaining 190 symbols.
@@ -674,9 +726,7 @@ def _run_fetch_job(
         # zero API requests; scattered 502 holes get gap-filled, not re-walked.
         needed_windows = all_windows
         if coverage_enabled:
-            covered = _covered_days(
-                engine, symbol, inst_exchange, timeframe, from_date, to_date
-            )
+            covered = covered_by_symbol.get(str(symbol).strip().upper(), set())
             needed_windows = _windows_needing_fetch(all_windows, covered)
             if not needed_windows:
                 log.info(
@@ -994,7 +1044,13 @@ _FULL_DAY_BARS = {
     "1hour": 6,  # 375 / 60, floored
     "1day": 1,
 }
-COVERAGE_FRACTION = 0.7
+#: Completeness fraction for a stored day to count as "fetched". Raised from
+#: 0.7 (2026-10-03) to 0.9 (2026-10-04): at 0.7 a day could be missing up to
+#: ~110 of its 375 minutes and still be trusted — a multi-hour in-between hole
+#: that silently distorts every backtest on that day. At 0.9 any hole larger
+#: than ~37 minutes (1min bars) re-fetches the window. Override with
+#: DATA_FETCH_DAY_COMPLETENESS.
+COVERAGE_FRACTION = float(os.getenv("DATA_FETCH_DAY_COMPLETENESS", "0.9"))
 
 
 def _coverage_skip_enabled() -> bool:
@@ -1026,33 +1082,49 @@ def _build_windows(from_date: str, to_date: str, chunk_days: int) -> list:
     return windows
 
 
-def _covered_days(engine, symbol: str, exchange: str, timeframe: str,
-                  from_date: str, to_date: str) -> set:
-    """Days within the requested range already holding enough bars to skip.
+def _probe_covered_days(
+    engine, symbols: list[str], timeframe: str, from_date: str, to_date: str
+) -> dict[str, set]:
+    """One query for the WHOLE job: which days already hold enough bars.
 
-    Queries ``market_data_cache`` grouped by calendar day and keeps days whose
-    bar count reaches :func:`_coverage_threshold`. The whole IST session
-    (09:15–15:30) maps into one stored UTC day even with the known ts-mislabel
-    bug, so day grouping is reliable. Returns an empty set on ANY error — the
-    symbol simply gets a full fetch rather than being wrongly skipped because a
-    probe failed.
+    Replaces the per-symbol probe (a round-trip per symbol — 200 queries for
+    the curated universe). Two correctness upgrades over the old probe
+    (2026-10-04):
+
+    * ``COUNT(DISTINCT ts)`` — duplicate/re-written rows can no longer inflate
+      coverage into skipping a day that is actually thin.
+    * The raised :data:`COVERAGE_FRACTION` (0.9) means a stored day with an
+      in-between hole of missing hours no longer counts as fetched: it is
+      re-fetched instead of silently feeding gappy bars into backtests.
+
+    Exchange-agnostic: the cache's ``exchange`` column is unreliable (one
+    symbol's bars land under BSE or NSE depending on which catalogue row the
+    fetch resolved), and for backtest reads bars are bars. Filtering by
+    exchange used to blind the probe into re-fetching an already-complete
+    symbol wholesale.
+
+    Returns ``{}`` on ANY error — every symbol then gets a full fetch rather
+    than being wrongly skipped because a probe failed.
     """
+    if not symbols:
+        return {}
     threshold = _coverage_threshold(timeframe)
+    bind = {f"s{i}": s for i, s in enumerate(dict.fromkeys(symbols))}
+    in_clause = ", ".join(f":{k}" for k in bind)
     sql = text(
-        "SELECT date_trunc('day', ts)::date AS d, COUNT(*) AS n "
+        "SELECT symbol, date_trunc('day', ts)::date AS d, COUNT(DISTINCT ts) AS n "
         "FROM market_data_cache "
-        "WHERE symbol = :symbol AND exchange = :exchange AND timeframe = :timeframe "
+        f"WHERE timeframe = :timeframe AND symbol IN ({in_clause}) "
         "AND ts::date >= :from_date AND ts::date <= :to_date "
-        "GROUP BY d"
+        "GROUP BY symbol, d"
     )
-    covered: set = set()
+    covered: dict[str, set] = {}
     try:
         with engine.connect() as conn:
             rows = conn.execute(
                 sql,
                 {
-                    "symbol": symbol,
-                    "exchange": exchange,
+                    **bind,
                     "timeframe": timeframe,
                     "from_date": from_date,
                     "to_date": to_date,
@@ -1060,13 +1132,14 @@ def _covered_days(engine, symbol: str, exchange: str, timeframe: str,
             ).all()
     except Exception as exc:  # noqa: BLE001 — probing must never break a fetch
         log.warning(
-            "[data] coverage probe failed for %s %s (%s..%s): %s — fetching full range",
-            symbol, timeframe, from_date, to_date, exc,
+            "[data] coverage probe failed (%s symbols, %s, %s..%s): %s — fetching full ranges",
+            len(bind), timeframe, from_date, to_date, exc,
         )
         return covered
-    for d, n in rows:
+    for symbol, d, n in rows:
         if n >= threshold:
-            covered.add(d.date() if hasattr(d, "date") else d)
+            day = d.date() if hasattr(d, "date") else d
+            covered.setdefault(str(symbol).strip().upper(), set()).add(day)
     return covered
 
 
