@@ -41,6 +41,11 @@ def _f(value: Any, ndigits: int = 4) -> float:
 class BacktestAdapter:
     """Translate a single ``BacktestResult`` into UI-ready payloads."""
 
+    #: Schema version of ``to_all()``. The run ledger stores payloads keyed by
+    #: this: a stored row may only be reconstructed when its major matches,
+    #: so a breaking payload-shape change MUST bump it (PRD R1, gotcha §5.3).
+    PAYLOAD_VERSION = 1
+
     def __init__(self, result: BacktestResult) -> None:
         self.result = result
         self._equity: pd.Series = result.equity

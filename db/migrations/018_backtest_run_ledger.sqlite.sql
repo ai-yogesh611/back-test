@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     engine              TEXT NOT NULL,
     payload_version     INTEGER NOT NULL DEFAULT 1,
     params              TEXT NOT NULL,
+    config              TEXT NOT NULL,
     readiness           TEXT,
     cost_shock          TEXT,
     metrics             TEXT,
@@ -102,6 +103,7 @@ CREATE TABLE IF NOT EXISTS backtest_run_series (
     equity        TEXT,
     drawdown      TEXT,
     signals       TEXT,
+    extras        TEXT,
     bytes_written INTEGER NOT NULL DEFAULT 0,
     stored_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

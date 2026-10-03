@@ -102,6 +102,7 @@ def upgrade() -> None:
             "payload_version", sa.Integer(), nullable=False, server_default=sa.text("1")
         ),
         sa.Column("params", JSONB, nullable=False),
+        sa.Column("config", JSONB, nullable=False),
         sa.Column("readiness", JSONB, nullable=True),
         sa.Column("cost_shock", JSONB, nullable=True),
         sa.Column("metrics", JSONB, nullable=True),
@@ -197,6 +198,7 @@ def upgrade() -> None:
         sa.Column("equity", JSONB, nullable=True),
         sa.Column("drawdown", JSONB, nullable=True),
         sa.Column("signals", JSONB, nullable=True),
+        sa.Column("extras", JSONB, nullable=True),
         sa.Column(
             "bytes_written", BIGPK, nullable=False, server_default=sa.text("0")
         ),

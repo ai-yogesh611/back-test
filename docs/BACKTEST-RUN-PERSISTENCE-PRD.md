@@ -3,7 +3,7 @@
 - **Status:** APPROVED (v3) — final; incorporates architect polish (v2→v3) + wireframes
 - **Date:** 2026-10-03 (v1 2026-10-03; v2 2026-10-03; v3 2026-10-03)
 - **Severity:** Medium (no data-loss risk; audit-trail gap — completed backtests leave no server-side trace)
-- **Related:** `docs/MTM-STALENESS-OBSERVABILITY-PRD.md` (same "attest at the moment of truth" philosophy), `docs/OPTIMIZATION-ENGINE.md`, PRD §1.1/§1.2 (provenance), PRD §5 (readiness), `db/alembic/versions` (this work is **migration 016**, single revision, see §9)
+- **Related:** `docs/MTM-STALENESS-OBSERVABILITY-PRD.md` (same "attest at the moment of truth" philosophy), `docs/OPTIMIZATION-ENGINE.md`, PRD §1.1/§1.2 (provenance), PRD §5 (readiness), `db/alembic/versions` (this work is **migration 018**, single revision, see §9 — numbered 018 because the alembic head was 017 `market_holidays` after the strategy-builder merge)
 
 ## Revision log
 
@@ -34,7 +34,7 @@ Frontend留存 today: `localStorage["backtest_recent_runs"]`, deduped by `[strat
 
 Decision this PRD takes for granted: **persist at the single backtest run**, because compare and optimize are analyses *over runs*. Storing only post-optimization would bake survivorship bias into the history. The optimizer's existing storage is left untouched apart from R6.
 
-### R1 — `backtest_runs` table (migration 016)
+### R1 — `backtest_runs` table (migration 018)
 
 One immutable row per *completed, successful* run. Append-only: the same config re-run on re-fetched data is a new fact, not an update.
 
@@ -48,6 +48,7 @@ One immutable row per *completed, successful* run. Append-only: the same config 
 | strategy_id, symbol, timeframe, date_from, date_to, capital, engine | flat columns | list/filter without JSON unpacking |
 | `payload_version` | Integer, not null, default 1 | **schema of the stored payload**, bumped in `BacktestAdapter` (single canonical source); read endpoint refuses mismatched majors (§5.3) |
 | `params` / `readiness` / `cost_shock` | JSONVariant | `readiness` and `cost_shock` persisted *as computed at run time* — the traffic light must describe the run, never be recomputed against today's config |
+| `config` | JSONVariant, not null | the adapter's `config` dict **verbatim** (`params` is a sub-projection); required for byte-identical read-back — the endpoint enriches config with stop-loss/take-profit/bars etc. beyond the hashed determinants |
 | **Flat metric columns**: `sharpe`, `sortino`, `calmar`, `cagr`, `total_return`, `max_drawdown` (NUMERIC(10,4), nullable); `win_rate` NUMERIC(5,2); `profit_factor` Score; `total_trades` Integer | | Written from the same metrics dict through the *same* sanitizer as `RESULT_METRIC_COLUMNS`; ranges (`sharpe > 1.5`) become index-backed queries. `Float` is not used; money/Decimal-exact accounting is house style. |
 | `metrics` | JSONVariant | full metrics blob kept for completeness/re-render; flat columns are a *projection*, never a replacement |
 | `series_status` | String(12), not null, default `'write_failed'` | **Lifecycle of the R2 heavy payload**: `present` \| `evicted` \| `write_failed`. Set to `present` upon R2 commit. R7 retention sets to `evicted`. A non-`present` row still lists and shows flat metrics, but detail endpoint returns degraded payload. |
@@ -79,7 +80,7 @@ CREATE INDEX ix_backtest_runs_kind   ON backtest_runs (kind, created_at DESC);
 CREATE INDEX ix_backtest_runs_opt    ON backtest_runs (optimization_run_id) WHERE optimization_run_id IS NOT NULL;
 ```
 
-### R1b — `backtest_compare_runs` table (migration 016)
+### R1b — `backtest_compare_runs` table (migration 018)
 
 | Column | Type | Notes |
 |---|---|---|
@@ -96,7 +97,7 @@ Index: `(created_at DESC)`.
 
 ### R2 — heavy series in a second table
 
-`backtest_run_series(run_id PK/FK CASCADE, trades JSON, equity JSON, drawdown JSON, signals JSON, bytes_written Integer, stored_at)`. `bytes_written` feeds R8 sizing and R7 retention. Series is written *after* and *separately from* R1 (R3 transaction split). Upon successful commit of the R2 row, the parent R1 row's `series_status` is updated to `present`.
+`backtest_run_series(run_id PK/FK CASCADE, trades JSON, equity JSON, drawdown JSON, signals JSON, extras JSON, bytes_written Integer, stored_at)`. `extras` carries the remaining payload top-levels (`benchmark`, `monte_carlo`) so read-back is byte-identical to the live response — a detail page re-renders both without re-running. `bytes_written` feeds R8 sizing and R7 retention. Series is written *after* and *separately from* R1 (R3 transaction split). Upon successful commit of the R2 row, the parent R1 row's `series_status` is updated to `present`.
 
 ### R3 — write path fails *soft but loud*; read path never re-runs
 
@@ -106,7 +107,7 @@ Index: `(created_at DESC)`.
   - `GET /api/backtest/runs?strategy=&symbol=&timeframe=&min_sharpe=&kind=&limit=&offset=` — R1 rows newest-first, flat metrics only, metric-range filters served by the flat columns.
   - `GET /api/backtest/runs/<id>` — full payload reconstructed from R1+R2, shape identical to what `/run` returned. Refuses on `payload_version` major mismatch with 422 + the stored version.
 - `run_many`: transaction 1 writes the R1b parent + all successful slot children + `slot_errors`; transaction 2+ writes each slot's R2 series independently, updating R1 `series_status` to `present` upon success. Read-back of a compare run refuses on `comparison_version` major mismatch with 422 (symmetry with `payload_version`).
-- Lineage join: `parameter_presets` gains nullable `backtest_run_id` UUIDStr FK (`SET NULL`), written when a preset is saved from a plain backtest. **In migration 016**.
+- Lineage join: `parameter_presets` gains nullable `backtest_run_id` UUIDStr FK (`SET NULL`), written when a preset is saved from a plain backtest. **In migration 018**.
 
 ### R4 — UI: history, not redesign
 
@@ -187,7 +188,7 @@ All questions are closed:
 
 ## 7. Implementation slices
 
-1. **Slice 1 — ledger:** migration 016 = R1 + R1b + R2 + `parameter_presets.backtest_run_id`, `backtest/api/backtest_run_store.py` (reusing the optimizer sanitizer), fail-soft-but-loud write incl. `persisted` flag, `GET /runs` + `GET /runs/<id>` + `GET /runs/stats`, R7 retention sweep (two-step transaction), R8 log/alert wiring.
+1. **Slice 1 — ledger:** migration 018 = R1 + R1b + R2 + `parameter_presets.backtest_run_id`, `backtest/api/backtest_run_store.py` (reusing the optimizer sanitizer), fail-soft-but-loud write incl. `persisted` flag, `GET /runs` + `GET /runs/<id>` + `GET /runs/stats`, R7 retention sweep (two-step transaction), R8 log/alert wiring.
    Tests: round-trip payload equality; canonical-hash stability (two insertion orders, `allow_nan=False` rejection); sanitizer NaN/inf→NULL; write-failure → 200 + `persisted=false` + alert line; `payload_version` 422; fingerprint non-null assertion; `series_status` transitions (`write_failed` → `present` on R2 commit; `present` → `evicted` on R7 sweep); retention eviction deletes R2 but keeps R1.
 2. **Slice 2 — compare:** `run_many` parent/child transactions, `comparison_version`, stored comparison read-back (422 on major mismatch), compare page history list, R6 optimizer baseline row.
 3. **Slice 3 — UI + lineage:** server-backed history lists, `persisted=false` badge, `series_status` UI handling (chart render vs. expired/error badges), preset → run link, localStorage removal.
@@ -203,7 +204,7 @@ All questions are closed:
 
 ## 9. Migration scope
 
-**016** creates `backtest_runs`, `backtest_compare_runs`, `backtest_run_series`, adds `parameter_presets.backtest_run_id` (nullable, FK SET NULL), and creates the indexes in R1/R1b. One revision. Reversible downgrade drops the three tables and the one column.
+**018** creates `backtest_runs`, `backtest_compare_runs`, `backtest_run_series`, adds `parameter_presets.backtest_run_id` (nullable, FK SET NULL), and creates the indexes in R1/R1b. One revision. Reversible downgrade drops the three tables and the one column.
 
 ## 10. Points not adopted verbatim (author's counter-arguments)
 

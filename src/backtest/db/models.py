@@ -2050,6 +2050,11 @@ class BacktestRun(Base):
         Integer, nullable=False, server_default=text("1")
     )
     params: Mapped[Any] = mapped_column(JSONVariant, nullable=False)
+    #: payload["config"] verbatim (strategy/symbol/capital/stop_loss/
+    #: take_profit/bars/strategy_params + timeframe/from/to/engine). The flat
+    #: columns are its projection for filtering; read-back uses this so the
+    #: reconstructed payload is shape-identical to the live response.
+    config: Mapped[Any] = mapped_column(JSONVariant, nullable=False)
     readiness: Mapped[Optional[Any]] = mapped_column(JSONVariant)
     cost_shock: Mapped[Optional[Any]] = mapped_column(JSONVariant)
     metrics: Mapped[Optional[Any]] = mapped_column(JSONVariant)
@@ -2193,6 +2198,9 @@ class BacktestRunSeries(Base):
     equity: Mapped[Optional[Any]] = mapped_column(JSONVariant)
     drawdown: Mapped[Optional[Any]] = mapped_column(JSONVariant)
     signals: Mapped[Optional[Any]] = mapped_column(JSONVariant)
+    #: Non-curve payload parts needed for byte-identical read-back:
+    #: {"benchmark": …, "monte_carlo": …}. Small; ride with the series.
+    extras: Mapped[Optional[Any]] = mapped_column(JSONVariant)
     #: Serialized size in bytes — feeds retention sizing (R7/R8).
     bytes_written: Mapped[int] = mapped_column(
         BigInteger().with_variant(Integer, "sqlite"), nullable=False, server_default=text("0")

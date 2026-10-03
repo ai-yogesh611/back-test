@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     engine              VARCHAR(30)  NOT NULL,
     payload_version     INTEGER      NOT NULL DEFAULT 1,
     params              JSONB        NOT NULL,
+    config              JSONB        NOT NULL,
     readiness           JSONB,
     cost_shock          JSONB,
     metrics             JSONB,
@@ -119,6 +120,7 @@ CREATE TABLE IF NOT EXISTS backtest_run_series (
     equity        JSONB,
     drawdown      JSONB,
     signals       JSONB,
+    extras        JSONB,
     bytes_written BIGINT      NOT NULL DEFAULT 0,
     stored_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT fk_bt_series_run FOREIGN KEY (run_id)
