@@ -526,10 +526,16 @@ class OptimizationStore:
         source: str = "manual",
         description: str | None = None,
         optimization_run_id: str | None = None,
+        backtest_run_id: str | None = None,
         backtest_metrics: dict | None = None,
         created_by: str | None = None,
     ) -> dict:
-        """Insert a preset; a clashing (strategy, name) gets a numeric suffix."""
+        """Insert a preset; a clashing (strategy, name) gets a numeric suffix.
+
+        ``backtest_run_id`` is the ledger lineage link (PRD R3): set when the
+        preset is saved from a plain backtest, ``SET NULL`` if that row is
+        ever removed.
+        """
         with self.db.session() as s:
             base, final, n = name.strip()[:90] or "Preset", None, 1
             candidate = base
@@ -554,6 +560,7 @@ class OptimizationStore:
                 params=clean_json(params),
                 source=source,
                 optimization_run_id=optimization_run_id,
+                backtest_run_id=backtest_run_id,
                 backtest_metrics=clean_json(backtest_metrics),
                 is_active=True,
                 created_by=created_by,

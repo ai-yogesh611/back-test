@@ -696,3 +696,48 @@ def test_service_records_baseline_only_on_fresh_path():
     service._bt_ledger = Exploding()
     service._record_baseline(cfg, "b" * 32, fresh, {})  # must not raise
     assert calls[-1] == {"fail": "optimizer-baseline/bbbbbbbb"}
+
+
+# --- UI wiring + preset lineage (Slice 3, PRD R3/R4) --------------------------
+
+
+def test_preset_lineage_records_backtest_run(ledger):
+    """A preset saved from a plain backtest names the ledger row (R3)."""
+    from backtest.optimization.store import OptimizationStore
+
+    store = OptimizationStore(ledger.db)
+    run_id = ledger.save_run(_payload())
+    preset = store.create_preset(
+        strategy_id="sma_crossover",
+        name="From backtest",
+        params={"fast": 10, "slow": 30},
+        backtest_run_id=run_id,
+    )
+    assert preset["backtest_run_id"] == run_id
+    plain = store.create_preset(
+        strategy_id="sma_crossover", name="Manual", params={"fast": 11}
+    )
+    assert plain["backtest_run_id"] is None
+
+
+def test_backtest_page_wires_ledger_ui():
+    client = create_app(source="synthetic").test_client()
+    page = client.get("/backtest")
+    assert page.status_code == 200
+    html = page.get_data(as_text=True)
+    for element_id in ("recentRuns", "persistBadge", "seriesNotice", "chartCard"):
+        assert f'id="{element_id}"' in html
+
+    js = client.get("/static/js/backtest.js").get_data(as_text=True)
+    # localStorage run cache is gone; history is server-backed (R4).
+    assert "backtest_recent_runs" not in js
+    assert "openStoredRun" in js and "/api/backtest/runs" in js
+
+
+def test_compare_page_wires_history_ui():
+    client = create_app(source="synthetic").test_client()
+    html = client.get("/compare").get_data(as_text=True)
+    assert 'id="compareHistory"' in html
+    assert 'id="comparePersistBadge"' in html
+    js = client.get("/static/js/compare.js").get_data(as_text=True)
+    assert "openStoredCompare" in js and "/api/backtest/compares" in js

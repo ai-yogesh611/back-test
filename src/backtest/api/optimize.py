@@ -655,6 +655,9 @@ def create_preset() -> Tuple[Response, int]:
         params=params,
         source="manual",
         description=body.get("description"),
+        # PRD R3 lineage: a preset saved from a plain backtest names the
+        # ledger row it came from (nullable; SET NULL if that run is removed).
+        backtest_run_id=body.get("backtest_run_id") or None,
         created_by=_user(),
     )
     return _ok({"preset": preset}, 201)
