@@ -1,27 +1,27 @@
 {
   "schema": 1,
-  "saved_at": "2026-09-21T20:20:30.909305",
+  "saved_at": "2026-09-30T10:22:05.238600",
   "manager": {
-    "total_capital": 250000.0,
-    "peak_equity": 1632435.04,
-    "day_start_equity": 425324.5,
-    "current_day": "2026-09-21",
-    "halted": true,
-    "halt_reason": "Portfolio drawdown 61.62% breached max 25.00% (equity 626,569.42 vs peak 1,632,435.04)",
-    "halt_mode": "EMERGENCY_FLATTEN",
-    "halted_ts": "2026-09-21T14:15:27.609131+00:00",
-    "tick_count": 458,
-    "tick_index": 355
+    "total_capital": 2250000.0,
+    "peak_equity": 2309269.75,
+    "day_start_equity": 2252601.9041,
+    "current_day": "2026-09-30",
+    "halted": false,
+    "halt_reason": null,
+    "halt_mode": null,
+    "halted_ts": null,
+    "tick_count": 2723,
+    "tick_index": 2571
   },
   "buckets": {
     "paper": {
-      "peak": 1632435.04,
-      "halted": true,
-      "halt_reason": "Portfolio drawdown 61.62% breached max 25.00% (equity 626,569.42 vs peak 1,632,435.04)",
-      "halt_mode": "EMERGENCY_FLATTEN",
-      "halted_ts": "2026-09-21T14:15:27.609131+00:00",
-      "day_start": 425324.5,
-      "day": "2026-09-21"
+      "peak": 2309269.75,
+      "halted": false,
+      "halt_reason": null,
+      "halt_mode": null,
+      "halted_ts": null,
+      "day_start": 2252601.9041,
+      "day": "2026-09-30"
     },
     "live": {
       "peak": 0.0,
@@ -30,7 +30,7 @@
       "halt_mode": null,
       "halted_ts": null,
       "day_start": 0.0,
-      "day": "2026-09-21"
+      "day": null
     }
   },
   "runners": [
@@ -84,7 +84,10 @@
             "take_profit_points": 25,
             "stop_loss_points": 25
           }
-        }
+        },
+        "retry_policy": null,
+        "segment": null,
+        "execution_broker": null
       },
       "portfolio": {
         "portfolio_id": "7f984ead-7fa0-49aa-94d4-f238b58ce1b8",
@@ -112,26 +115,40 @@
         "equity_history": [],
         "orders": []
       },
-      "status": "PAUSED",
+      "status": "RUNNING",
       "error": null,
-      "bars_processed": 0,
+      "bars_processed": 1,
       "created_ts": "2026-09-21T07:42:49.174630+00:00",
       "peak_equity": 100000.0,
       "max_drawdown_pct": 0.0,
       "day_start_equity": 100000.0,
       "current_day": "2026-09-21",
-      "last_price": {},
-      "last_bar_ts": {},
+      "last_price": {
+        "BANKNIFTY": 54259.95
+      },
+      "last_bar_ts": {
+        "BANKNIFTY": "2026-09-30 01:46:00"
+      },
       "last_option_pnl": 0.0,
       "closed_trades_cache": [],
-      "equity_curve": [],
+      "equity_curve": [
+        {
+          "ts": "2026-09-29T20:16:50.596686+00:00",
+          "equity": 100000.0
+        }
+      ],
+      "position_rules": {},
+      "bridge_manual_rules": {
+        "stop_loss": null,
+        "target": null
+      },
       "bridge": {
         "scalars": {
           "open_structure_id": null,
           "executed_count": 0,
           "closed_count": 0,
           "underlying": "NIFTY",
-          "_bar_index": 0,
+          "_bar_index": 1,
           "_entry_bar_index": null,
           "_exit_bar_index": null,
           "_bars_without_view": 0,
@@ -140,7 +157,7 @@
           "_entry_premium": "0",
           "_settlement_count": 0,
           "_reentries_today": 0,
-          "_reentry_day": null,
+          "_reentry_day": "2026-09-30",
           "last_unrealized_pnl": "0",
           "last_spot": null,
           "last_mtm_ts": null,
@@ -205,7 +222,10 @@
             "take_profit_points": 25,
             "stop_loss_points": 25
           }
-        }
+        },
+        "retry_policy": null,
+        "segment": null,
+        "execution_broker": null
       },
       "portfolio": {
         "portfolio_id": "b00b2b19-ce12-4b2a-8f8b-a28ef61f3687",
@@ -233,26 +253,40 @@
         "equity_history": [],
         "orders": []
       },
-      "status": "PAUSED",
+      "status": "RUNNING",
       "error": null,
-      "bars_processed": 0,
+      "bars_processed": 1,
       "created_ts": "2026-09-21T07:42:49.498106+00:00",
       "peak_equity": 100000.0,
       "max_drawdown_pct": 0.0,
       "day_start_equity": 100000.0,
       "current_day": "2026-09-21",
-      "last_price": {},
-      "last_bar_ts": {},
+      "last_price": {
+        "BANKNIFTY": 54259.95
+      },
+      "last_bar_ts": {
+        "BANKNIFTY": "2026-09-30 01:46:00"
+      },
       "last_option_pnl": 0.0,
       "closed_trades_cache": [],
-      "equity_curve": [],
+      "equity_curve": [
+        {
+          "ts": "2026-09-29T20:16:50.661405+00:00",
+          "equity": 100000.0
+        }
+      ],
+      "position_rules": {},
+      "bridge_manual_rules": {
+        "stop_loss": null,
+        "target": null
+      },
       "bridge": {
         "scalars": {
           "open_structure_id": null,
           "executed_count": 0,
           "closed_count": 0,
           "underlying": "NIFTY",
-          "_bar_index": 0,
+          "_bar_index": 1,
           "_entry_bar_index": null,
           "_exit_bar_index": null,
           "_bars_without_view": 0,
@@ -261,7 +295,7 @@
           "_entry_premium": "0",
           "_settlement_count": 0,
           "_reentries_today": 0,
-          "_reentry_day": null,
+          "_reentry_day": "2026-09-30",
           "last_unrealized_pnl": "0",
           "last_spot": null,
           "last_mtm_ts": null,
@@ -319,7 +353,10 @@
             "take_profit_points": 5,
             "stop_loss_points": 5
           }
-        }
+        },
+        "retry_policy": null,
+        "segment": null,
+        "execution_broker": null
       },
       "portfolio": {
         "portfolio_id": "0c3c3648-309e-434a-a7cc-176c392456f8",
@@ -347,19 +384,19 @@
         "equity_history": [],
         "orders": []
       },
-      "status": "PAUSED",
+      "status": "RUNNING",
       "error": null,
-      "bars_processed": 187,
+      "bars_processed": 188,
       "created_ts": "2026-09-21T07:42:49.817077+00:00",
       "peak_equity": 120571.5,
       "max_drawdown_pct": 0.5958696298149857,
       "day_start_equity": 117069.75,
       "current_day": "2026-09-21",
       "last_price": {
-        "NIFTY": 24516.077
+        "NIFTY": 22716.2
       },
       "last_bar_ts": {
-        "NIFTY": "2026-09-21 14:15:25"
+        "NIFTY": "2026-09-30 01:46:00"
       },
       "last_option_pnl": 0.0,
       "closed_trades_cache": [],
@@ -1483,43 +1520,56 @@
         {
           "ts": "2026-09-21T14:15:25.918251+00:00",
           "equity": 117089.75
+        },
+        {
+          "ts": "2026-09-29T20:16:51.239432+00:00",
+          "equity": 109269.75
+        },
+        {
+          "ts": "2026-09-29T20:16:51.240411+00:00",
+          "equity": 109269.75
         }
       ],
+      "position_rules": {},
+      "bridge_manual_rules": {
+        "stop_loss": null,
+        "target": null
+      },
       "bridge": {
         "scalars": {
-          "open_structure_id": "struct_20260921141525_0094",
+          "open_structure_id": null,
           "executed_count": 94,
-          "closed_count": 93,
+          "closed_count": 94,
           "underlying": "NIFTY",
-          "_bar_index": 187,
-          "_entry_bar_index": 187,
-          "_exit_bar_index": null,
+          "_bar_index": 188,
+          "_entry_bar_index": null,
+          "_exit_bar_index": 188,
           "_bars_without_view": 0,
-          "_structure_direction": "neutral",
-          "_structure_expiry": "2026-09-24",
-          "_entry_premium": "7803.75",
+          "_structure_direction": null,
+          "_structure_expiry": null,
+          "_entry_premium": "0",
           "_settlement_count": 0,
           "_reentries_today": 0,
-          "_reentry_day": "2026-09-21",
-          "last_unrealized_pnl": "0",
-          "last_spot": 24495.2875,
-          "last_mtm_ts": "2026-09-21 14:15:24",
+          "_reentry_day": "2026-09-30",
+          "last_unrealized_pnl": 0,
+          "last_spot": 22716.2,
+          "last_mtm_ts": "2026-09-30 01:46:00",
           "last_exit": {
             "exited": true,
-            "structure_id": "struct_20260921141523_0093",
+            "structure_id": "struct_20260921141525_0094",
             "structure_type": "long_call",
             "underlying": "NIFTY",
             "direction": "neutral",
-            "reason": "take_profit",
-            "detail": "target 1,489 \u2265 5",
-            "pnl": 1479.0,
+            "reason": "stop_loss",
+            "detail": "stop -7,800 \u2264 -5",
+            "pnl": -7800.0,
             "bars_held": 1,
             "strategy_name": ""
           }
         },
         "broker": {
           "capital": "50000.0",
-          "available_cash": "109266.00",
+          "available_cash": "109269.75",
           "statutory_fees_paid": "0",
           "structures": [
             {
@@ -4505,8 +4555,8 @@
               "underlying": "NIFTY",
               "expiry": "2026-09-24",
               "opened_at": "2026-09-21T14:15:25.923312",
-              "closed_at": null,
-              "exit_reason": null,
+              "closed_at": "2026-09-30T01:46:00",
+              "exit_reason": "stop_loss",
               "legs": [
                 {
                   "position_id": "pos_20260921141525_0094",
@@ -4522,15 +4572,548 @@
                   "side": "BUY",
                   "quantity": 1,
                   "entry_price": "104.05",
-                  "current_price": "104.05",
-                  "status": "open",
-                  "realized_pnl": "0",
-                  "unrealized_pnl": "0",
+                  "current_price": "0.05",
+                  "status": "closed",
+                  "realized_pnl": "-7800.00",
+                  "unrealized_pnl": "-7800.00",
                   "commission": "20.0"
                 }
               ]
             }
           ]
+        }
+      }
+    },
+    {
+      "config": {
+        "name": "ema_pullback\u00b7NIFTY50\u00b715min",
+        "strategy_name": "ema_pullback",
+        "allocated_capital": 1000000.0,
+        "target_type": "SYMBOL_UNIVERSE",
+        "symbols": [
+          "RELIANCE",
+          "TCS",
+          "HDFCBANK",
+          "ICICIBANK",
+          "BHARTIARTL",
+          "INFY",
+          "ITC",
+          "SBIN",
+          "LT",
+          "HINDUNILVR",
+          "BAJFINANCE",
+          "KOTAKBANK",
+          "AXISBANK",
+          "MARUTI",
+          "SUNPHARMA",
+          "ASIANPAINT",
+          "TITAN",
+          "BAJAJFINSV",
+          "NESTLEIND",
+          "ULTRACEMCO",
+          "ONGC",
+          "NTPC",
+          "POWERGRID",
+          "M&M",
+          "TATAMOTORS",
+          "TATASTEEL",
+          "WIPRO",
+          "HCLTECH",
+          "ADANIENT",
+          "ADANIPORTS",
+          "COALINDIA",
+          "GRASIM",
+          "JSWSTEEL",
+          "TECHM",
+          "HDFCLIFE",
+          "DRREDDY",
+          "CIPLA",
+          "BRITANNIA",
+          "DIVISLAB",
+          "EICHERMOT",
+          "BAJAJ-AUTO",
+          "HEROMOTOCO",
+          "APOLLOHOSP",
+          "BPCL",
+          "INDUSINDBK",
+          "SBILIFE",
+          "TATACONSUM",
+          "HINDALCO",
+          "TRIDENT",
+          "LTIM"
+        ],
+        "universe_id": "NIFTY50",
+        "timeframe": "15min",
+        "strategy_params": {
+          "fast": 9,
+          "slow": 15,
+          "stretch_pct": -1
+        },
+        "max_pool_positions": 5,
+        "position_pct": null,
+        "instance_id": "bc3fc4533e0445fbb36b53198ac4f499",
+        "max_drawdown_pct": 0.25,
+        "daily_loss_limit_pct": 0.15,
+        "allow_short": false,
+        "mode": "paper",
+        "source": "mstock",
+        "instrument": {
+          "type": "equity"
+        },
+        "playbook_id": null,
+        "playbook_version": null,
+        "playbook_snapshot": null,
+        "retry_policy": null,
+        "segment": "options_index",
+        "execution_broker": null
+      },
+      "portfolio": {
+        "portfolio_id": "0d0002ee-5585-4829-b1a0-d572d5bdcd05",
+        "name": "ema_pullback\u00b7NIFTY50\u00b715min",
+        "initial_capital": "1000000.0000",
+        "current_cash": "1000000.0000",
+        "base_currency": "INR",
+        "status": "active",
+        "mode": "paper",
+        "source": "synthetic",
+        "created_at": "2026-09-29T20:16:49.882527+00:00",
+        "realized_pnl": "0",
+        "total_commission": "0",
+        "limits": {
+          "allow_short": false,
+          "max_open_positions": null,
+          "max_position_value": null,
+          "max_position_pct": null,
+          "max_gross_exposure_pct": null,
+          "max_leverage": "1",
+          "min_trade_value": null
+        },
+        "positions": [],
+        "closed_positions": [],
+        "equity_history": [],
+        "orders": []
+      },
+      "status": "RUNNING",
+      "error": null,
+      "bars_processed": 48,
+      "created_ts": "2026-09-29T20:16:49.889024+00:00",
+      "peak_equity": 1000000.0,
+      "max_drawdown_pct": 0.0,
+      "day_start_equity": 1000000.0,
+      "current_day": "2026-09-29",
+      "last_price": {
+        "RELIANCE": 1182.0,
+        "TCS": 2032.4,
+        "HDFCBANK": 722.7,
+        "ICICIBANK": 1292.2,
+        "BHARTIARTL": 1771.2,
+        "INFY": 1015.4,
+        "ITC": 265.1,
+        "SBIN": 964.7,
+        "LT": 3749.1,
+        "HINDUNILVR": 1863.8,
+        "BAJFINANCE": 973.8,
+        "KOTAKBANK": 406.0,
+        "AXISBANK": 1212.1,
+        "MARUTI": 11877.0,
+        "SUNPHARMA": 1865.0,
+        "ASIANPAINT": 2415.0,
+        "TITAN": 4675.0,
+        "BAJAJFINSV": 1742.4,
+        "NESTLEIND": 1345.7,
+        "ULTRACEMCO": 10829.0,
+        "ONGC": 230.0,
+        "NTPC": 323.5,
+        "POWERGRID": 261.5,
+        "M&M": 2947.8,
+        "TATASTEEL": 188.0,
+        "WIPRO": 156.79,
+        "HCLTECH": 1222.0,
+        "ADANIENT": 2972.9,
+        "ADANIPORTS": 1822.0,
+        "COALINDIA": 425.0,
+        "GRASIM": 3100.0,
+        "JSWSTEEL": 1272.4,
+        "TECHM": 1510.5,
+        "HDFCLIFE": 523.55,
+        "DRREDDY": 1251.9,
+        "CIPLA": 1379.3,
+        "BRITANNIA": 4835.0,
+        "DIVISLAB": 9431.0,
+        "EICHERMOT": 7179.0,
+        "BAJAJ-AUTO": 10811.0,
+        "HEROMOTOCO": 5208.0,
+        "APOLLOHOSP": 8659.0,
+        "BPCL": 299.35,
+        "INDUSINDBK": 878.0,
+        "SBILIFE": 1735.0,
+        "TATACONSUM": 967.7,
+        "HINDALCO": 955.2,
+        "TRIDENT": 22.44
+      },
+      "last_bar_ts": {
+        "RELIANCE": "2026-09-29 15:29:00",
+        "TCS": "2026-09-29 15:29:00",
+        "HDFCBANK": "2026-09-29 15:29:00",
+        "ICICIBANK": "2026-09-29 15:29:00",
+        "BHARTIARTL": "2026-09-29 15:29:00",
+        "INFY": "2026-09-29 15:29:00",
+        "ITC": "2026-09-29 15:29:00",
+        "SBIN": "2026-09-29 15:29:00",
+        "LT": "2026-09-29 15:29:00",
+        "HINDUNILVR": "2026-09-29 15:29:00",
+        "BAJFINANCE": "2026-09-29 15:29:00",
+        "KOTAKBANK": "2026-09-29 15:29:00",
+        "AXISBANK": "2026-09-29 15:29:00",
+        "MARUTI": "2026-09-29 15:29:00",
+        "SUNPHARMA": "2026-09-29 15:29:00",
+        "ASIANPAINT": "2026-09-29 15:29:00",
+        "TITAN": "2026-09-29 15:29:00",
+        "BAJAJFINSV": "2026-09-29 15:29:00",
+        "NESTLEIND": "2026-09-29 15:29:00",
+        "ULTRACEMCO": "2026-09-29 15:29:00",
+        "ONGC": "2026-09-29 15:29:00",
+        "NTPC": "2026-09-29 15:29:00",
+        "POWERGRID": "2026-09-29 15:29:00",
+        "M&M": "2026-09-29 15:29:00",
+        "TATASTEEL": "2026-09-29 15:29:00",
+        "WIPRO": "2026-09-29 15:29:00",
+        "HCLTECH": "2026-09-29 15:29:00",
+        "ADANIENT": "2026-09-29 15:29:00",
+        "ADANIPORTS": "2026-09-29 15:29:00",
+        "COALINDIA": "2026-09-29 15:29:00",
+        "GRASIM": "2026-09-29 15:29:00",
+        "JSWSTEEL": "2026-09-29 15:29:00",
+        "TECHM": "2026-09-29 15:29:00",
+        "HDFCLIFE": "2026-09-29 15:29:00",
+        "DRREDDY": "2026-09-29 15:29:00",
+        "CIPLA": "2026-09-29 15:29:00",
+        "BRITANNIA": "2026-09-29 15:29:00",
+        "DIVISLAB": "2026-09-29 15:29:00",
+        "EICHERMOT": "2026-09-29 15:29:00",
+        "BAJAJ-AUTO": "2026-09-29 15:29:00",
+        "HEROMOTOCO": "2026-09-29 15:29:00",
+        "APOLLOHOSP": "2026-09-29 15:29:00",
+        "BPCL": "2026-09-29 15:29:00",
+        "INDUSINDBK": "2026-09-29 15:29:00",
+        "SBILIFE": "2026-09-29 15:29:00",
+        "TATACONSUM": "2026-09-29 15:29:00",
+        "HINDALCO": "2026-09-29 15:29:00",
+        "TRIDENT": "2026-09-29 15:29:00"
+      },
+      "last_option_pnl": 0.0,
+      "closed_trades_cache": [],
+      "equity_curve": [
+        {
+          "ts": "2026-09-29T20:16:56.697471+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:17:00.914008+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:17:05.763869+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:17:12.349071+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:17:17.531341+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:17:21.898208+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:17:26.107968+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:17:30.841267+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:17:34.849793+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:17:39.475790+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:17:43.870563+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:17:48.305073+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:17:52.419121+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:17:56.546534+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:18:00.775877+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:18:04.993725+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:18:09.332125+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:18:13.762017+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:18:18.135113+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:18:22.286280+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:18:26.271882+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:18:30.468301+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:18:34.561343+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:18:40.280378+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:18:50.147699+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:18:55.289452+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:19:00.422553+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:19:06.231963+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:19:11.847647+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:19:16.009525+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:19:20.087806+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:19:24.375191+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:19:28.975152+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:19:33.497019+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:19:39.579881+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:19:45.861593+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:19:54.344226+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:20:00.333812+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:20:06.512651+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:20:12.735877+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:20:17.925264+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:20:24.672800+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:20:29.359603+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:20:34.510736+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:20:40.450788+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:20:44.828770+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:20:49.915854+00:00",
+          "equity": 1000000.0
+        },
+        {
+          "ts": "2026-09-29T20:20:55.529167+00:00",
+          "equity": 1000000.0
+        }
+      ],
+      "position_rules": {}
+    },
+    {
+      "config": {
+        "name": "atm_instant_buy\u00b7NIFTY\u00b75min",
+        "strategy_name": "atm_instant_buy",
+        "allocated_capital": 1000000.0,
+        "target_type": "SINGLE_SYMBOL",
+        "symbols": [
+          "NIFTY"
+        ],
+        "universe_id": null,
+        "timeframe": "5min",
+        "strategy_params": {
+          "underlying": "NIFTY"
+        },
+        "max_pool_positions": 5,
+        "position_pct": null,
+        "instance_id": "b1ff54093b6741688ab0c8be11ee9f53",
+        "max_drawdown_pct": 0.25,
+        "daily_loss_limit_pct": 0.15,
+        "allow_short": false,
+        "mode": "paper",
+        "source": "mstock",
+        "instrument": {
+          "type": "option",
+          "expression": {
+            "type": {
+              "BULLISH": "bull_call_spread",
+              "BEARISH": "bear_put_spread"
+            },
+            "quantity": 2
+          }
+        },
+        "playbook_id": null,
+        "playbook_version": null,
+        "playbook_snapshot": {
+          "type": {
+            "BULLISH": "bull_call_spread",
+            "BEARISH": "bear_put_spread"
+          },
+          "quantity": 2
+        },
+        "retry_policy": null,
+        "segment": "options_index",
+        "execution_broker": null
+      },
+      "portfolio": {
+        "portfolio_id": "a98230fa-2c38-40d5-866d-90b6464343a9",
+        "name": "atm_instant_buy\u00b7NIFTY\u00b75min",
+        "initial_capital": "1000000.0000",
+        "current_cash": "1000000.0000",
+        "base_currency": "INR",
+        "status": "active",
+        "mode": "paper",
+        "source": "synthetic",
+        "created_at": "2026-09-30T04:13:24.197219+00:00",
+        "realized_pnl": "0",
+        "total_commission": "0",
+        "limits": {
+          "allow_short": false,
+          "max_open_positions": null,
+          "max_position_value": null,
+          "max_position_pct": null,
+          "max_gross_exposure_pct": null,
+          "max_leverage": "1",
+          "min_trade_value": null
+        },
+        "positions": [],
+        "closed_positions": [],
+        "equity_history": [],
+        "orders": []
+      },
+      "status": "RUNNING",
+      "error": null,
+      "bars_processed": 0,
+      "created_ts": "2026-09-30T04:13:24.208242+00:00",
+      "peak_equity": 1000000.0,
+      "max_drawdown_pct": 0.0,
+      "day_start_equity": 1000000.0,
+      "current_day": null,
+      "last_price": {},
+      "last_bar_ts": {},
+      "last_option_pnl": 0.0,
+      "closed_trades_cache": [],
+      "equity_curve": [],
+      "position_rules": {},
+      "bridge_manual_rules": {
+        "stop_loss": null,
+        "target": null
+      },
+      "bridge": {
+        "scalars": {
+          "open_structure_id": null,
+          "executed_count": 0,
+          "closed_count": 0,
+          "underlying": "NIFTY",
+          "_bar_index": 0,
+          "_entry_bar_index": null,
+          "_exit_bar_index": null,
+          "_bars_without_view": 0,
+          "_structure_direction": null,
+          "_structure_expiry": null,
+          "_entry_premium": "0",
+          "_settlement_count": 0,
+          "_reentries_today": 0,
+          "_reentry_day": null,
+          "last_unrealized_pnl": "0",
+          "last_spot": null,
+          "last_mtm_ts": null,
+          "last_exit": null
+        },
+        "broker": {
+          "capital": "1000000.0",
+          "available_cash": "1000000.0",
+          "statutory_fees_paid": "0",
+          "structures": []
         }
       }
     }
