@@ -85,8 +85,13 @@
 </div>
 <div id="slotsRow" class="slots-row"></div>
 
+<!-- Stored comparisons ledger (run-persistence PRD R4): tiles read
+     GET /api/backtest/compares; loading one never touches the process pool. -->
+<section id="compareHistory" class="recent-runs" hidden></section>
+
 <!-- ================= RESULTS ================= -->
 <section id="results" class="results-panel" hidden>
+    <div id="comparePersistBadge" class="prov-strip" hidden></div>
     <div id="compareProvenance" class="prov-strip"></div>
     <div class="card">
         <div class="tabs">

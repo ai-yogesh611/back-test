@@ -8,7 +8,9 @@
     <a href="/optimize" class="btn">{{ icon('sliders', 15) }} Optimize parameters</a>
 {% endcall %}
 
-<!-- Cached, actual results. Never automatically runs or deploys a strategy. -->
+<!-- Server-backed ledger history (run-persistence PRD R4). No run cache in
+     the browser: tiles read GET /api/backtest/runs, opening one reads the
+     stored payload back — nothing here runs a simulation automatically. -->
 <section id="recentRuns" class="recent-runs" hidden></section>
 
 <div class="page-grid backtest-grid">
@@ -67,10 +69,12 @@
 
     <section id="results" class="results-panel" aria-label="Backtest results" hidden>
         <div class="results-overview-head"><h2>Performance overview</h2><span id="backtest-result-caption">Historical simulation</span></div>
+        <div id="persistBadge" class="prov-strip" hidden></div>
         <div id="resultProvenance" class="prov-strip"></div>
         <div id="metricsCards" class="metrics-grid"></div>
         <div id="backtestOutput">
-            <div class="card">
+            <div id="seriesNotice" hidden></div>
+            <div class="card" id="chartCard">
                 <div class="tabs" role="group" aria-label="Performance charts">
                     <button class="tab active" data-tab="equity" type="button">Equity curve</button>
                     <button class="tab" data-tab="drawdown" type="button">Drawdown</button>
@@ -82,7 +86,7 @@
                     <div class="tab-pane" data-pane="signals"><div class="chart-wrap"><canvas id="signalsChart" role="img" aria-label="Historical prices with buy and sell signals"></canvas></div></div>
                 </div>
             </div>
-            <div class="card">
+            <div class="card" id="tradeLedgerCard">
                 <div class="card-head">
                     <h2 class="card-title">Trade ledger</h2>
                     <div class="actions">

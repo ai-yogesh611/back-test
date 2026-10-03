@@ -33,14 +33,20 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import traceback
 from concurrent.futures import ProcessPoolExecutor
-from typing import Any
+from typing import Any, Optional
 
 import pandas as pd
 from flask import Blueprint, current_app, jsonify, request
 
 from backtest.adapters.backtest_adapter import BacktestAdapter
+from backtest.api.backtest_run_store import (
+    BacktestRunLedger,
+    PayloadVersionMismatch,
+    build_ledger,
+)
 from backtest.data.provenance import ENGINE_FILL_EXACT, ENGINE_MIXED
 from backtest.engine.backtest_runner import resolve_interval, resolve_warmup_start
 from backtest.engine.backtest_runner import run_backtest as _run_driver
@@ -62,6 +68,116 @@ log = get_logger(__name__)
 # matches a direct run over the same candles (indicators simply ramp over
 # the first bars, as they do in a standalone backtest).
 WARMUP_BARS = 0
+
+#: Guards the first lazy build of the app's run ledger (PRD R3). The ledger is
+#: a deployment feature: it attaches to the configured candle DB, never a
+#: default. Tests/dev apps inject ``app.config["BACKTEST_LEDGER"]`` (a ledger,
+#: or ``None`` to disable); a synthetic-source app never touches the DB.
+_ledger_lock = threading.Lock()
+
+
+def _ledger() -> "BacktestRunLedger | None":
+    """The app's run ledger (injected, or lazily built once for real sources)."""
+    app = current_app
+    if "BACKTEST_LEDGER" in app.config:
+        return app.config["BACKTEST_LEDGER"]  # explicit ledger or explicit None
+    ext = app.extensions.setdefault("backtest_ledger", {})
+    if "ledger" not in ext:
+        with _ledger_lock:
+            if "ledger" not in ext:
+                # A synthetic demo app has no candle DB to persist against and
+                # must never open the deployment one — cache the decision.
+                if str(app.config.get("BACKTEST_SOURCE") or "").lower() == "synthetic":
+                    ext["ledger"] = None
+                else:
+                    ext["ledger"] = build_ledger()
+    return ext["ledger"]
+
+
+def _persist_run(payload: dict, *, strategy_cls: Any, where: str) -> dict:
+    """Write a completed single run to the ledger; fail soft but loud.
+
+    Returns the fields to fold into the response (PRD R3): ``{}`` when no
+    ledger is configured (dev/synthetic — the run response keeps its plain
+    shape), ``{persisted: true, run_id, persist_error: null}`` on success, or
+    a ``persisted=false`` field set + alert on a real write failure. The
+    parent row commits first, then the heavy series separately; a series
+    failure still leaves a listable row with flat metrics, so ``persisted``
+    stays ``true`` when the parent landed.
+    """
+    ledger = _ledger()
+    if ledger is None:
+        return {}
+    try:
+        run_id = ledger.save_run(payload, kind="single", strategy_cls=strategy_cls)
+        try:
+            ledger.save_series(run_id, payload)
+        except Exception as exc:  # noqa: BLE001 — series is best-effort
+            log.warning("[%s] series write failed run=%s: %s", where, run_id, exc)
+        return ledger.ok_persist(run_id)
+    except Exception as exc:  # noqa: BLE001 — the run itself already succeeded
+        return ledger.fail_persist(where, exc)
+
+
+def _persist_compare(
+    data: dict,
+    jobs: list,
+    results: dict,
+    shared_provenance: dict,
+    comparison: Optional[dict],
+) -> dict:
+    """Write a completed run-many to the ledger; same soft-but-loud contract.
+
+    Transaction 1 (atomic): R1b parent + one R1 child per successful slot.
+    Transaction 2+: each child's series separately, best-effort — a series
+    failure leaves the parent and flat metrics listable, so ``persisted``
+    stays true when transaction 1 landed. Failed slots ride in
+    ``slot_errors`` only; the ledger never holds a child without a payload.
+    """
+    ledger = _ledger()
+    if ledger is None:
+        return {}
+    where = "run-many"
+    try:
+        children: list = []
+        slot_errors: dict = {}
+        for job in jobs:
+            sid = str(job["id"])
+            payload = results.get(sid)
+            if isinstance(payload, dict) and "error" in payload:
+                slot_errors[sid] = {"error": payload["error"]}
+                continue
+            if isinstance(payload, dict):
+                children.append((sid, payload))
+
+        def cls_for(name: str):
+            try:
+                resolved = _resolve_strategy(name)
+            except Exception:  # noqa: BLE001 — fingerprint is best-effort
+                return None
+            return resolved if not isinstance(resolved, str) else None
+
+        out = ledger.save_compare(
+            config_snapshot={"shared": data.get("shared") or {}, "slots": data.get("slots") or []},
+            provenance=shared_provenance,
+            comparison_block=comparison,
+            slot_errors=slot_errors,
+            children=children,
+            comparison_mode=shared_provenance.get("comparison_mode") or "strategies",
+            strategy_cls_for=cls_for,
+        )
+        run_ids = out["child_run_ids"]
+        for sid, payload in children:
+            try:
+                ledger.save_series(run_ids[sid], payload)
+            except Exception as exc:  # noqa: BLE001 — series is best-effort
+                log.warning("[%s] series write failed slot=%s: %s", where, sid, exc)
+        return {"persisted": True, "compare_id": out["compare_id"], "persist_error": None}
+    except Exception as exc:  # noqa: BLE001 — the comparison itself succeeded
+        fields = ledger.fail_persist(where, exc)
+        fields.pop("run_id", None)
+        fields["compare_id"] = None
+        return fields
 
 
 def _source() -> Any:
@@ -424,6 +540,7 @@ def run_backtest_endpoint() -> tuple:
     # rendered above it.
     payload["readiness"] = build_readiness(payload)
     _summarise(payload, f"run/{strategy}", params)
+    payload.update(_persist_run(payload, strategy_cls=resolved, where=f"run/{strategy}"))
     return jsonify(payload), 200
 
 
@@ -737,10 +854,9 @@ def run_many() -> tuple:
     comparison = _comparison_block(
         results, jobs, current_app.config["BACKTEST_SOURCE"]
     )
-    return (
-        jsonify({"results": results, "provenance": shared_provenance, "comparison": comparison}),
-        200,
-    )
+    payload = {"results": results, "provenance": shared_provenance, "comparison": comparison}
+    payload.update(_persist_compare(data, jobs, results, shared_provenance, comparison))
+    return (jsonify(payload), 200)
 
 
 # ---------------------------------------------------------------------------
@@ -854,3 +970,122 @@ def run_single_backtest(params: dict) -> dict:
         traceback_text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
         log.debug("[slot %s] failed: %s", sid, exc)  # child-side only
         return {"error": f"{exc.__class__.__name__}: {exc}", "traceback": traceback_text}
+
+
+# ---------------------------------------------------------------------------
+# Run ledger reads (PRD R4) — history list, health stats, full-run detail
+# ---------------------------------------------------------------------------
+
+
+def _ledger_or_503() -> tuple[object, int] | None:
+    """``(json, status)`` error response when the ledger is offline, else None."""
+    if _ledger() is not None:
+        return None
+    return jsonify({"error": "run ledger database unavailable"}), 503
+
+
+@backtest_bp.get("/api/backtest/runs")
+def list_runs_endpoint() -> tuple:
+    """Server-backed backtest history (replaces the localStorage list, R4)."""
+    err = _ledger_or_503()
+    if err:
+        return err
+    args = request.args
+    try:
+        limit = max(1, min(200, int(args.get("limit", 50))))
+        offset = max(0, int(args.get("offset", 0)))
+    except ValueError:
+        return jsonify({"error": "limit and offset must be integers"}), 400
+    min_sharpe = args.get("min_sharpe")
+    if min_sharpe is not None:
+        try:
+            min_sharpe = float(min_sharpe)
+        except ValueError:
+            return jsonify({"error": "min_sharpe must be a number"}), 400
+    try:
+        body = _ledger().list_runs(
+            strategy=args.get("strategy"),
+            symbol=args.get("symbol"),
+            timeframe=args.get("timeframe"),
+            kind=args.get("kind"),
+            min_sharpe=min_sharpe,
+            limit=limit,
+            offset=offset,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.exception("[runs] list failed: %s", exc)
+        return jsonify({"error": f"ledger read failed: {exc}"}), 500
+    return jsonify(body), 200
+
+
+#: Registered before ``/runs/<run_id>`` so the static segment wins.
+@backtest_bp.get("/api/backtest/runs/stats")
+def run_stats_endpoint() -> tuple:
+    """Ledger health (PRD R8): sizes, counts, last persist error."""
+    err = _ledger_or_503()
+    if err:
+        return err
+    try:
+        return jsonify(_ledger().stats()), 200
+    except Exception as exc:  # noqa: BLE001
+        log.exception("[runs] stats failed: %s", exc)
+        return jsonify({"error": f"ledger read failed: {exc}"}), 500
+
+
+@backtest_bp.get("/api/backtest/runs/<run_id>")
+def get_run_endpoint(run_id: str) -> tuple:
+    """Full run reconstruction — never re-runs anything (R3 read rule)."""
+    err = _ledger_or_503()
+    if err:
+        return err
+    try:
+        record = _ledger().get_run(run_id)
+    except PayloadVersionMismatch as exc:
+        # PRD §5.3: a stored payload this build cannot render is refused, never
+        # re-drawn through today's adapter.
+        return jsonify({"error": str(exc), "code": "payload_version_mismatch"}), 422
+    except Exception as exc:  # noqa: BLE001
+        log.exception("[runs] detail %s failed: %s", run_id, exc)
+        return jsonify({"error": f"ledger read failed: {exc}"}), 500
+    if record is None:
+        return jsonify({"error": f"run {run_id} not found"}), 404
+    return jsonify(record), 200
+
+
+@backtest_bp.get("/api/backtest/compares")
+def list_compares_endpoint() -> tuple:
+    """Stored comparisons, newest first (R4 — compare page reads history)."""
+    err = _ledger_or_503()
+    if err:
+        return err
+    try:
+        limit = max(1, min(200, int(request.args.get("limit", 50))))
+        offset = max(0, int(request.args.get("offset", 0)))
+    except ValueError:
+        return jsonify({"error": "limit and offset must be integers"}), 400
+    try:
+        body = _ledger().list_compares(limit=limit, offset=offset)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("[compares] list failed: %s", exc)
+        return jsonify({"error": f"ledger read failed: {exc}"}), 500
+    return jsonify(body), 200
+
+
+@backtest_bp.get("/api/backtest/compares/<compare_id>")
+def get_compare_endpoint(compare_id: str) -> tuple:
+    """Reconstructed comparison — read-back only, never re-runs (R3)."""
+    err = _ledger_or_503()
+    if err:
+        return err
+    try:
+        record = _ledger().get_compare(compare_id)
+    except PayloadVersionMismatch as exc:
+        # comparison_version guards the stored block shape exactly like
+        # payload_version guards a single run's.
+        return jsonify({"error": str(exc), "code": "comparison_version_mismatch"}), 422
+    except Exception as exc:  # noqa: BLE001
+        log.exception("[compares] detail %s failed: %s", compare_id, exc)
+        return jsonify({"error": f"ledger read failed: {exc}"}), 500
+    if record is None:
+        return jsonify({"error": f"comparison {compare_id} not found"}), 404
+    return jsonify(record), 200

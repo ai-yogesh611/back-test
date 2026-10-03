@@ -32,6 +32,10 @@ SQLITE_CHAIN = [
     MIGRATIONS / "004_add_trade_structures.sqlite.sql",
 ]
 SQLITE_OPT = MIGRATIONS / "009_013_optimization_engine.sqlite.sql"
+#: 018 later touched parameter_presets (backtest_run_id lineage column) —
+#: the fixture applies it after the optimization mirror so the ORM and the
+#: hand-built schema describe the same table.
+SQLITE_LEDGER = MIGRATIONS / "018_backtest_run_ledger.sqlite.sql"
 PG_FILES = {
     "009": MIGRATIONS / "009_optimization_core.sql",
     "010": MIGRATIONS / "010_optimization_audit_presets.sql",
@@ -57,7 +61,7 @@ SEED_IDS = [f"00000000-0000-4000-8000-00000000000{i}" for i in (1, 2, 3)]
 def sqlite_db(tmp_path: Path) -> Path:
     path = tmp_path / "opt.db"
     conn = sqlite3.connect(path)
-    for f in [*SQLITE_CHAIN, SQLITE_OPT]:
+    for f in [*SQLITE_CHAIN, SQLITE_OPT, SQLITE_LEDGER]:
         assert f.exists(), f
         conn.executescript(f.read_text())
     conn.close()
@@ -209,13 +213,13 @@ def test_store_runs_on_the_hand_migrated_database(sqlite_db: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_alembic_chain_009_to_017():
+def test_alembic_chain_009_to_018():
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config(str(REPO_ROOT / "alembic.ini")))
-    assert script.get_heads() == ["017"]
-    revs = ("009", "010", "011", "012", "013", "014", "015", "016", "017")
+    assert script.get_heads() == ["018"]
+    revs = ("009", "010", "011", "012", "013", "014", "015", "016", "017", "018")
     chain = {r: script.get_revision(r).down_revision for r in revs}
     assert chain == {
         "009": "008",
@@ -227,6 +231,7 @@ def test_alembic_chain_009_to_017():
         "015": "014",
         "016": "015",
         "017": "016",
+        "018": "017",
     }
 
 

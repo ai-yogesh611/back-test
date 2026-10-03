@@ -1418,6 +1418,14 @@ class ParameterPreset(Base):
             "optimization_runs.run_id", ondelete="SET NULL", name="fk_presets_opt_run"
         ),
     )
+    #: Backtest-run ledger lineage (migration 018, PRD R3): set when the
+    #: preset is saved from a plain backtest run ("Promote to Forward" anchor).
+    backtest_run_id: Mapped[Optional[str]] = mapped_column(
+        UUIDStr,
+        ForeignKey(
+            "backtest_runs.run_id", ondelete="SET NULL", name="fk_presets_backtest_run"
+        ),
+    )
     backtest_metrics: Mapped[Optional[Any]] = mapped_column(JSONVariant)
 
     is_active: Mapped[bool] = mapped_column(
@@ -1971,3 +1979,252 @@ class MarketHoliday(Base):
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<MarketHoliday {self.holiday_date} {self.description}>"
+
+
+# ---------------------------------------------------------------------------
+# Backtest Run Ledger (docs/BACKTEST-RUN-PERSISTENCE-PRD.md, migration 018)
+# ---------------------------------------------------------------------------
+
+
+class BacktestRunKind(StrEnum):
+    SINGLE = "single"
+    COMPARE_SLOT = "compare_slot"
+    OPTIMIZER_BASELINE = "optimizer_baseline"
+
+
+class LedgerSeriesStatus(StrEnum):
+    PRESENT = "present"
+    EVICTED = "evicted"
+    WRITE_FAILED = "write_failed"
+
+
+class BacktestRun(Base):
+    """One completed, successful backtest — immutable ledger row (PRD R1).
+
+    Append-only: the same config re-run on re-fetched data is a new fact, not
+    an update. Flat metric columns are a *projection* of ``metrics`` written
+    through the optimizer's sanitizer; ``metrics`` stays the source of truth
+    for full re-render.
+    """
+
+    __tablename__ = "backtest_runs"
+
+    run_id: Mapped[str] = mapped_column(UUIDStr, primary_key=True, default=_uuid4_str)
+    #: sha256 of the canonical (sort_keys, allow_nan=False) config JSON.
+    #: Display dedupe only — never a uniqueness constraint.
+    config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'single'")
+    )
+    #: Set for compare slots. SET NULL: deleting a comparison must never
+    #: delete the ledger facts about its individual runs.
+    parent_compare_id: Mapped[Optional[str]] = mapped_column(
+        UUIDStr,
+        ForeignKey(
+            "backtest_compare_runs.compare_id",
+            ondelete="SET NULL",
+            name="fk_bt_runs_compare",
+        ),
+    )
+    #: Set for optimizer baseline rows (PRD R6) only.
+    optimization_run_id: Mapped[Optional[str]] = mapped_column(
+        UUIDStr,
+        ForeignKey(
+            "optimization_runs.run_id", ondelete="SET NULL", name="fk_bt_runs_opt_run"
+        ),
+    )
+
+    # -- economic determinants (also inside config_hash, flat for filtering) --
+    strategy_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(30), nullable=False)
+    timeframe: Mapped[str] = mapped_column(String(10), nullable=False)
+    date_from: Mapped[date] = mapped_column(Date, nullable=False)
+    date_to: Mapped[date] = mapped_column(Date, nullable=False)
+    capital: Mapped[Decimal] = mapped_column(Money, nullable=False)
+    #: backtest_driver | quick_screen — cross-engine aggregation is invalid.
+    engine: Mapped[str] = mapped_column(String(30), nullable=False)
+
+    #: Schema version of the stored payload. Bumped in BacktestAdapter (single
+    #: canonical source); read endpoint refuses mismatched majors with 422.
+    payload_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("1")
+    )
+    params: Mapped[Any] = mapped_column(JSONVariant, nullable=False)
+    #: payload["config"] verbatim (strategy/symbol/capital/stop_loss/
+    #: take_profit/bars/strategy_params + timeframe/from/to/engine). The flat
+    #: columns are its projection for filtering; read-back uses this so the
+    #: reconstructed payload is shape-identical to the live response.
+    config: Mapped[Any] = mapped_column(JSONVariant, nullable=False)
+    readiness: Mapped[Optional[Any]] = mapped_column(JSONVariant)
+    cost_shock: Mapped[Optional[Any]] = mapped_column(JSONVariant)
+    metrics: Mapped[Optional[Any]] = mapped_column(JSONVariant)
+
+    # -- flat metric projection (same sanitizer as optimization results) ------
+    sharpe: Mapped[Optional[Decimal]] = mapped_column(Score)
+    sortino: Mapped[Optional[Decimal]] = mapped_column(Score)
+    calmar: Mapped[Optional[Decimal]] = mapped_column(Score)
+    total_return: Mapped[Optional[Decimal]] = mapped_column(Score)
+    cagr: Mapped[Optional[Decimal]] = mapped_column(Score)
+    max_drawdown: Mapped[Optional[Decimal]] = mapped_column(Score)
+    profit_factor: Mapped[Optional[Decimal]] = mapped_column(Score)
+    #: Percentage: 54.20 = 54.2 % of closed trades were winners.
+    win_rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
+    total_trades: Mapped[Optional[int]] = mapped_column(Integer)
+
+    #: Lifecycle of the heavy series row (R2). write_failed until the series
+    #: transaction commits; retention sets evicted. UI never shows a missing
+    #: series as ``present`` because the status flips in the same txn as the
+    #: DELETE (PRD R7 two-step sweep).
+    series_status: Mapped[str] = mapped_column(
+        String(12), nullable=False, server_default=text("'write_failed'")
+    )
+
+    # -- data attestation (flat columns + JSON written by one helper) --------
+    data_source: Mapped[Optional[str]] = mapped_column(String(30))
+    bars_count: Mapped[Optional[int]] = mapped_column(Integer)
+    fetched_first_ts: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    fetched_last_ts: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    data_fetch_date: Mapped[Optional[date]] = mapped_column(Date)
+    provenance: Mapped[Optional[Any]] = mapped_column(JSONVariant)
+    #: Code-side attestation: {app_git_sha, strategy_sha256}. Non-null
+    #: asserted at write — the ledger must tell apart same-name, different-code.
+    code_fingerprint: Mapped[Any] = mapped_column(JSONVariant, nullable=False)
+
+    created_by: Mapped[Optional[str]] = mapped_column(
+        String(100), comment="Becomes NOT NULL when web auth ships."
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(_in_check("kind", BacktestRunKind), name="ck_bt_runs_kind"),
+        CheckConstraint(
+            _in_check("series_status", LedgerSeriesStatus), name="ck_bt_runs_series_status"
+        ),
+        CheckConstraint(
+            "win_rate IS NULL OR (win_rate >= 0 AND win_rate <= 100)",
+            name="ck_bt_runs_win_rate",
+        ),
+        Index(
+            "ix_backtest_runs_list",
+            "strategy_id",
+            "symbol",
+            "timeframe",
+            text("created_at DESC"),
+        ),
+        Index("ix_backtest_runs_config", "config_hash", text("created_at DESC")),
+        Index("ix_backtest_runs_kind", "kind", text("created_at DESC")),
+        Index(
+            "ix_backtest_runs_opt",
+            "optimization_run_id",
+            postgresql_where=text("optimization_run_id IS NOT NULL"),
+            sqlite_where=text("optimization_run_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_backtest_runs_compare",
+            "parent_compare_id",
+            postgresql_where=text("parent_compare_id IS NOT NULL"),
+            sqlite_where=text("parent_compare_id IS NOT NULL"),
+        ),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<BacktestRun {self.run_id[:8]} {self.strategy_id}:{self.symbol} {self.kind}>"
+
+
+class BacktestCompareRun(Base):
+    """One run-many comparison: shared attestation + stored comparison block (R1b)."""
+
+    __tablename__ = "backtest_compare_runs"
+
+    compare_id: Mapped[str] = mapped_column(UUIDStr, primary_key=True, default=_uuid4_str)
+    #: The literal values run_many stamps today (L732-734).
+    comparison_mode: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'strategies'")
+    )
+    #: Schema version of comparison_block; mismatched major → 422 on read-back.
+    comparison_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("1")
+    )
+    config_snapshot: Mapped[Any] = mapped_column(JSONVariant, nullable=False)
+
+    data_source: Mapped[Optional[str]] = mapped_column(String(30))
+    date_from: Mapped[Optional[date]] = mapped_column(Date)
+    date_to: Mapped[Optional[date]] = mapped_column(Date)
+    symbols_used: Mapped[Optional[Any]] = mapped_column(JSONVariant)
+    engines_used: Mapped[Optional[Any]] = mapped_column(JSONVariant)
+    provenance: Mapped[Optional[Any]] = mapped_column(JSONVariant)
+
+    #: correlation matrix + Sharpe significance, stored verbatim so review
+    #: reads the same numbers the page showed at the time.
+    comparison_block: Mapped[Optional[Any]] = mapped_column(JSONVariant)
+    slot_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: {slot_id: {"error": msg}} — honest about partial comparisons.
+    slot_errors: Mapped[Optional[Any]] = mapped_column(JSONVariant)
+
+    created_by: Mapped[Optional[str]] = mapped_column(
+        String(100), comment="Becomes NOT NULL when web auth ships."
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "comparison_mode IN ('strategies','generalization')",
+            name="ck_bt_compares_mode",
+        ),
+        CheckConstraint("slot_count >= 0", name="ck_bt_compares_slots_nonneg"),
+        Index("ix_backtest_compares_created", text("created_at DESC")),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return (
+            f"<BacktestCompareRun {self.compare_id[:8]} "
+            f"{self.comparison_mode} x{self.slot_count}>"
+        )
+
+
+class BacktestRunSeries(Base):
+    """Heavy per-run payloads (trades/equity/drawdown/signals), retention-capped (R2).
+
+    Written in a transaction SEPARATE from the parent ledger row; the parent's
+    ``series_status`` flips to ``present`` only when this row commits, so the
+    ledger never claims a series it does not have.
+    """
+
+    __tablename__ = "backtest_run_series"
+
+    run_id: Mapped[str] = mapped_column(
+        UUIDStr,
+        ForeignKey(
+            "backtest_runs.run_id", ondelete="CASCADE", name="fk_bt_series_run"
+        ),
+        primary_key=True,
+    )
+    trades: Mapped[Optional[Any]] = mapped_column(JSONVariant)
+    equity: Mapped[Optional[Any]] = mapped_column(JSONVariant)
+    drawdown: Mapped[Optional[Any]] = mapped_column(JSONVariant)
+    signals: Mapped[Optional[Any]] = mapped_column(JSONVariant)
+    #: Non-curve payload parts needed for byte-identical read-back:
+    #: {"benchmark": …, "monte_carlo": …}. Small; ride with the series.
+    extras: Mapped[Optional[Any]] = mapped_column(JSONVariant)
+    #: Serialized size in bytes — feeds retention sizing (R7/R8).
+    bytes_written: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"), nullable=False, server_default=text("0")
+    )
+    stored_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<BacktestRunSeries {self.run_id[:8]} {self.bytes_written}B>"
+
+
+#: Tables owned by the backtest run ledger (scoped ``create_all`` helper).
+BACKTEST_LEDGER_TABLES = (
+    BacktestCompareRun.__table__,
+    BacktestRun.__table__,
+    BacktestRunSeries.__table__,
+)

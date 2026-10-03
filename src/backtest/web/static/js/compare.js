@@ -37,6 +37,15 @@ async function fetchJSON(url, opts) {
     return d;
 }
 
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (m) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]
+));
+
+function fmtDateRange(from, to) {
+    const f = (d) => (d || "").split("-").reverse().join("/");
+    return `${f(from)} – ${f(to)}`;
+}
+
 // ---------------------------------------------------------------------------
 // Param rendering is provided by components/params_form.js (shared).
 // ---------------------------------------------------------------------------
@@ -279,9 +288,21 @@ async function runAll() {
         lastProvenance = data.provenance || null;
         lastComparison = data.comparison || null;
         renderResults(slots);
+        const badge = $("comparePersistBadge");
+        if (badge) {
+            const lost = data.persisted === false;
+            badge.hidden = !lost;
+            if (lost) {
+                badge.innerHTML = `<span class="badge bg-light-danger">⚠ NOT STORED</span> `
+                    + `<span class="muted small">This comparison is not in the history ledger`
+                    + (data.persist_error ? ` (${esc(data.persist_error)})` : "")
+                    + ` — re-run it if the result matters.</span>`;
+            }
+        }
         const failed = slots.length - ok.length;
         showToast(`Compared ${ok.length} slot${ok.length > 1 ? "s" : ""}`
             + (failed ? ` · ${failed} failed` : ""), failed ? "warning" : "success");
+        loadCompareHistory();
     } catch (err) {
         showToast(err.message || "Run failed", "error");
         document.getElementById("compareTable").innerHTML = "";
@@ -327,6 +348,122 @@ function onSlotAction(slot, kind) {
         showToast("Promoting to Forward…", "success");
         setTimeout(() => { window.location.href = "/forward"; }, 400);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Stored comparison history (run-persistence PRD R4)
+// Tiles list backtest_compare_runs rows; loading one reconstructs the table,
+// panels and provenance from stored payloads — no process pool, no re-run.
+// ---------------------------------------------------------------------------
+
+const COMPARISON_LIST_VERSION = 1;  // mirrors backtest_run_store.COMPARISON_VERSION
+
+async function loadCompareHistory() {
+    let rows = [];
+    try {
+        const body = await fetchJSON("/api/backtest/compares?limit=6");
+        rows = body.compares || [];
+    } catch { /* ledger offline — no history section */ }
+    renderCompareHistory(rows);
+}
+
+function renderCompareHistory(rows) {
+    const wrap = $("compareHistory");
+    if (!wrap) return;
+    if (!rows.length) { wrap.hidden = true; wrap.innerHTML = ""; return; }
+    wrap.hidden = false;
+    wrap.innerHTML =
+        `<div class="recent-head"><h2 class="card-title">Comparison history</h2></div>` +
+        `<div class="recent-grid">` +
+        rows.map((r) => {
+            const outdated = r.comparison_version !== COMPARISON_LIST_VERSION;
+            const syms = (r.symbols_used || []).join(", ") || "—";
+            return `
+            <div class="card recent-tile${outdated ? "" : " g-card-hover"}" data-id="${esc(r.compare_id)}"
+                 role="button" tabindex="0" ${outdated ? 'aria-disabled="true"' : ""}
+                 title="${outdated ? "Stored with different comparison math — re-run" : "Load the stored comparison — no re-run"}">
+                <div class="recent-tile-top">
+                    <strong>${esc(r.comparison_mode)}</strong>
+                    <span class="badge badge-subtle">${r.slot_count} slots</span>
+                    ${outdated
+                        ? `<span class="badge bg-light-danger">⛠ Outdated calc logic — re-run</span>`
+                        : `<span class="badge bg-light-success">Load</span>`}
+                </div>
+                <div class="recent-tile-sub muted">${esc(syms)} · ${fmtDateRange(r.date_from, r.date_to)}</div>
+                <div class="recent-tile-stats">
+                    <span>${esc(r.data_source || "source ?")}</span>
+                    <span>${esc((r.created_at || "").slice(0, 10))}</span>
+                </div>
+            </div>`;
+        }).join("") +
+        `</div>`;
+    wrap.querySelectorAll(".recent-tile").forEach((tile) => {
+        if (tile.getAttribute("aria-disabled") === "true") return;
+        const load = () => openStoredCompare(tile.dataset.id);
+        tile.addEventListener("click", load);
+        tile.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); load(); }
+        });
+    });
+}
+
+async function openStoredCompare(compareId) {
+    let rec;
+    try {
+        rec = await fetchJSON(`/api/backtest/compares/${encodeURIComponent(compareId)}`);
+    } catch (err) {
+        showToast(err.message || "Could not load stored comparison", "error");
+        return;
+    }
+    const p = rec.payload;
+    const errors = p.slot_errors || {};
+    const generalization = rec.ledger.comparison_mode === "generalization";
+    const built = [];
+    const kids = rec.children || [];
+    for (let i = 0; i < kids.length; i++) {
+        let detail;
+        try {
+            detail = await fetchJSON(`/api/backtest/runs/${encodeURIComponent(kids[i].run_id)}`);
+        } catch { continue; }  // child read failure: show what we can
+        const cfg = detail.payload.config || {};
+        const slot = {
+            id: kids[i].run_id,
+            label: generalization
+                ? `${cfg.strategy || "?"} · ${cfg.symbol || "?"}`
+                : (cfg.strategy || kids[i].strategy_id || `slot ${i + 1}`),
+            color: PALETTE[i % PALETTE.length],
+            result: detail.payload,
+            card: null,
+            // Form-side shape for the "Open in Backtest" hand-off: the ledger
+            // stores strategy_params/engine, the prefills read params/mode.
+            runConfig: {
+                strategy: cfg.strategy, symbol: cfg.symbol, timeframe: cfg.timeframe,
+                from_date: cfg.from_date, to_date: cfg.to_date, capital: cfg.capital,
+                params: cfg.strategy_params || {},
+                mode: cfg.engine === "quick_screen" ? "quick_screen" : "",
+            },
+        };
+        built.push(slot);
+    }
+    Object.entries(errors).forEach(([sid, e], j) => {
+        built.push({ id: `err-${sid}`, label: `slot ${sid}`, error: e.error,
+                     color: PALETTE[(built.length + j) % PALETTE.length], card: null });
+    });
+    if (!built.some((s) => s.result)) {
+        showToast("Stored comparison has no readable slot results — re-run", "error");
+        return;
+    }
+    lastResults = built.filter((s) => s.result && Array.isArray(s.result.equity));
+    lastProvenance = p.provenance || null;
+    lastComparison = p.comparison || null;
+    const badge = $("comparePersistBadge");
+    if (badge) badge.hidden = true;
+    $("emptyState").hidden = true;
+    $("results").hidden = false;
+    renderResults(built);
+    const partial = Object.keys(errors).length;
+    showToast(`Loaded stored comparison${partial ? ` — ⚠ partial result (${partial} slot(s) failed)` : ""}`,
+              partial ? "warning" : "info");
 }
 
 // ---------------------------------------------------------------------------
@@ -434,6 +571,7 @@ async function init() {
     } else {
         addSlot(); addSlot();   // start with 2 slots
     }
+    loadCompareHistory();
 }
 
 document.addEventListener("DOMContentLoaded", init);

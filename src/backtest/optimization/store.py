@@ -178,10 +178,18 @@ class OptimizationStore:
         Production PostgreSQL is migrated by Alembic (009–013); this keeps
         SQLite dev databases and ``:memory:`` test databases usable without a
         migration step. ``checkfirst`` makes it a no-op on a migrated DB.
-        """
-        from backtest.db.models import Base
 
-        Base.metadata.create_all(self.db.engine, tables=list(OPTIMIZATION_TABLES), checkfirst=True)
+        The ledger tables ride along because ``parameter_presets`` carries a
+        ``backtest_run_id`` FK (PRD R3 lineage), and SQLite refuses the preset
+        seed insert outright when the referenced table does not exist.
+        """
+        from backtest.db.models import BACKTEST_LEDGER_TABLES, Base
+
+        Base.metadata.create_all(
+            self.db.engine,
+            tables=list(OPTIMIZATION_TABLES) + list(BACKTEST_LEDGER_TABLES),
+            checkfirst=True,
+        )
         if seed:
             with self.db.session() as s:
                 existing = s.scalar(
@@ -518,10 +526,16 @@ class OptimizationStore:
         source: str = "manual",
         description: str | None = None,
         optimization_run_id: str | None = None,
+        backtest_run_id: str | None = None,
         backtest_metrics: dict | None = None,
         created_by: str | None = None,
     ) -> dict:
-        """Insert a preset; a clashing (strategy, name) gets a numeric suffix."""
+        """Insert a preset; a clashing (strategy, name) gets a numeric suffix.
+
+        ``backtest_run_id`` is the ledger lineage link (PRD R3): set when the
+        preset is saved from a plain backtest, ``SET NULL`` if that row is
+        ever removed.
+        """
         with self.db.session() as s:
             base, final, n = name.strip()[:90] or "Preset", None, 1
             candidate = base
@@ -546,6 +560,7 @@ class OptimizationStore:
                 params=clean_json(params),
                 source=source,
                 optimization_run_id=optimization_run_id,
+                backtest_run_id=backtest_run_id,
                 backtest_metrics=clean_json(backtest_metrics),
                 is_active=True,
                 created_by=created_by,

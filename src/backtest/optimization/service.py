@@ -91,6 +91,11 @@ SENSITIVITY_POINTS = 25
 SENSITIVITY_ROUNDS = 3
 APPLY_TARGETS = ("paper", "live", "ab_test", "none")
 
+#: Not-probed marker for the lazy run-ledger (PRD R6). ``None`` means
+#: "probed and unavailable" (or explicitly disabled) — the two must not
+#: collide, or every baseline evaluation would re-open the database.
+_LEDGER_UNPROBED = object()
+
 
 class OptimizationError(Exception):
     """User-facing service error (maps to HTTP 4xx)."""
@@ -211,12 +216,14 @@ class OptimizationService:
         default_source: str | None = None,
         manager_getter: Callable[[], Any] | None = None,
         fail_stale: bool = True,
+        backtest_ledger: Any = _LEDGER_UNPROBED,
     ) -> None:
         self.store = store
         self.workers = workers if workers is not None else default_workers()
         self.loader = loader or default_loader
         self.default_source = default_source
         self._manager_getter = manager_getter
+        self._bt_ledger = backtest_ledger
         self._jobs: dict[str, _Job] = {}
         self._jobs_lock = threading.Lock()
         self._slot = threading.Semaphore(1)
@@ -716,6 +723,81 @@ class OptimizationService:
             return None
         return result.get("regimes")
 
+    # -- run ledger (PRD R6) ---------------------------------------------------
+
+    def _backtest_ledger(self) -> Any:
+        """Lazy ledger handle over the SAME DatabaseManager as the optimize store.
+
+        The service runs on background threads with no Flask app context, so it
+        cannot use the API's ``_ledger()``. Probed once and cached — including
+        the ``None`` result, so an offline database costs one failed connection
+        for the process, not one per baseline evaluation.
+        """
+        if self._bt_ledger is not _LEDGER_UNPROBED:
+            return self._bt_ledger
+        self._bt_ledger = None
+        try:
+            from backtest.api.backtest_run_store import BacktestRunLedger
+
+            ledger = BacktestRunLedger(self.store.db)
+            ledger.ensure_schema()
+            self._bt_ledger = ledger
+        except Exception:  # noqa: BLE001 — the audit row is best-effort
+            log.warning(
+                "[run-ledger] optimizer baseline persistence disabled", exc_info=True
+            )
+        return self._bt_ledger
+
+    def _record_baseline(
+        self, cfg: OptimizationConfig, run_id: str, baseline: dict, attestation: dict
+    ) -> None:
+        """One immutable ledger row per baseline EVALUATION (PRD R6).
+
+        Only the fresh path reaches this: the imported path re-quotes an
+        existing backtest — which already owns a ledger row — instead of
+        evaluating anything here, and recording a re-quote as an evaluation
+        would be a fabricated audit fact. Grid candidates never do; they stay
+        in ``optimization_results``. Failure is logged + alerted, never fatal
+        to the running job.
+        """
+        ledger = self._backtest_ledger()
+        if ledger is None:
+            return
+        bt = cfg.backtest
+        try:
+            from backtest.strategy.registry import get_strategy
+
+            strategy_cls = get_strategy(cfg.strategy_id)
+        except Exception:  # noqa: BLE001 — fingerprint is best-effort
+            strategy_cls = None
+        config = {
+            "strategy": cfg.strategy_id,
+            "symbol": bt.symbol,
+            "timeframe": bt.timeframe,
+            "from_date": bt.start_date,
+            "to_date": bt.end_date,
+            "strategy_params": dict(cfg.baseline_params or {}),
+            "engine": bt.engine,
+            "capital": bt.initial_capital,
+        }
+        where = f"optimizer-baseline/{run_id[:8]}"
+        try:
+            row_id = ledger.save_optimizer_baseline(
+                optimization_run_id=run_id,
+                config=config,
+                metrics=baseline.get("metrics") or {},
+                provenance=attestation or {},
+                strategy_cls=strategy_cls,
+            )
+        except Exception as exc:  # noqa: BLE001 — the job already has its baseline
+            ledger.fail_persist(where, exc)
+        else:
+            log.info(
+                "[run-ledger] baseline row %s recorded for optimize run %s",
+                row_id[:8],
+                run_id[:8],
+            )
+
     def _execute(self, job: _Job) -> None:
         cfg = job.cfg
         run_id = job.run_id
@@ -833,6 +915,8 @@ class OptimizationService:
                 baseline_metrics=baseline["metrics"] or {"error": baseline["error"]},
                 baseline_score=None if baseline["error"] else baseline["score"],
             )
+            if not baseline.get("error") and not baseline.get("imported"):
+                self._record_baseline(cfg, run_id, baseline, attestation or {})
 
             # -- main search -------------------------------------------------
             self._set_phase(job, "search", cfg.method)

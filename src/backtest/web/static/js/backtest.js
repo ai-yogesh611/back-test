@@ -3,35 +3,21 @@
  * Orchestrates: strategy dropdown + dynamic params, run, render results,
  * chart tabs, Save to Compare, Export CSV, Promote to Forward, pre-fill.
  */
-let lastRun = null;          // {config, result}
+let lastRun = null;          // {config, result, resultId, stored?}
 let currentParams = {};      // schema for the selected strategy
 let symbolPicker = null;     // components/symbol_picker.js handle
+let recentRuns = [];         // flat ledger rows from GET /api/backtest/runs
 
-// --- Recent-run history (localStorage) --------------------------------------
-// Each completed run is cached so it can be re-opened without re-running.
-// Full trades/equity are kept (trimmed to the last 12 runs) — a completed
-// backtest is deterministic for the same config + data range, so replaying
-// the cached result is identical to re-running against the same source.
-const RECENT_RUNS_KEY = "backtest_recent_runs";
-const MAX_RECENT_RUNS = 12;
+// --- Recent-run history (server ledger) --------------------------------------
+// The run-persistence PRD R4 retires the localStorage cache: the server's
+// ledger IS the history, so tiles list R1 flat metrics and opening a run
+// reads the stored payload back (GET /api/backtest/runs/<id>). Nothing is
+// re-run by clicking a tile, and nothing is cached in the browser.
+const RECENT_RUNS_LIMIT = 12;
 
-function getRecentRuns() {
-    try { return JSON.parse(localStorage.getItem(RECENT_RUNS_KEY) || "[]"); }
-    catch { return []; }
-}
-
-function saveRecentRun(run) {
-    const runs = getRecentRuns();
-    // same strategy+symbol+range+params → replace (it is the same test)
-    const keyOf = (r) => JSON.stringify([r.config.strategy, r.config.symbol, r.config.timeframe, r.config.from_date, r.config.to_date, r.config.params]);
-    const existing = runs.findIndex((r) => keyOf(r) === keyOf(run));
-    if (existing >= 0) runs.splice(existing, 1);
-    runs.unshift(run);
-    while (runs.length > MAX_RECENT_RUNS) runs.pop();
-    try { localStorage.setItem(RECENT_RUNS_KEY, JSON.stringify(runs)); }
-    catch { /* storage full → drop trades, keep metrics */ }
-    renderRecentRuns();
-}
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (m) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]
+));
 
 const $ = (id) => document.getElementById(id);
 
@@ -136,11 +122,12 @@ async function runBacktest() {
             body: JSON.stringify(config),
         });
         // §6: a handle for this rendered result, so the Optimize hand-off and
-        // its audit chain have something to name. Backtests are stateless —
-        // nothing about this run is persisted server-side.
+        // its audit chain have something to name. The ledger row (if the
+        // write landed) is identified by result.run_id — the browser keeps
+        // no cache of its own.
         lastRun = { config, result, resultId: TuneThis.mintResultId() };
         renderResults(result);
-        saveRecentRun(lastRun);
+        loadRecentRuns();
         showToast("Backtest complete", "success");
     } catch (err) {
         showToast(err.message || "Backtest failed", "error");
@@ -156,8 +143,44 @@ async function runBacktest() {
 
 function renderResults(result) {
     if ($("backtestOutput")) $("backtestOutput").hidden = false;
+    const stored = lastRun && lastRun.stored;
     const caption = $("backtest-result-caption");
-    if (caption && lastRun) caption.textContent = `${lastRun.config.symbol} · ${lastRun.config.from_date} — ${lastRun.config.to_date}`;
+    if (caption) {
+        caption.textContent = stored
+            ? `stored run ${stored.created_at || "?"}, source ${stored.data_source || "unknown"}`
+            : (lastRun ? `${lastRun.config.symbol} · ${lastRun.config.from_date} — ${lastRun.config.to_date}` : "Historical simulation");
+    }
+    // PRD R3/R4: a run whose ledger write failed is NOT in the history list,
+    // so the result page must say so persistently — a toast would be gone by
+    // the time anyone acts on the number.
+    const badge = $("persistBadge");
+    if (badge) {
+        const lost = result && result.persisted === false;
+        badge.hidden = !lost;
+        if (lost) {
+            badge.innerHTML = `<span class="badge bg-light-danger">⚠ NOT STORED</span> `
+                + `<span class="muted small">This run is not in the server history`
+                + (result.persist_error ? ` (${esc(result.persist_error)})` : "")
+                + ` — re-run it if the result matters.</span>`;
+        }
+    }
+    // A stored run whose heavy series is gone renders its flat metrics honestly
+    // instead of drawing an empty chart (PRD R4 series_status handling).
+    const seriesStatus = stored ? stored.series_status : "present";
+    const degraded = seriesStatus !== "present";
+    const notice = $("seriesNotice");
+    if (notice) {
+        notice.hidden = !degraded;
+        notice.innerHTML = seriesStatus === "evicted"
+            ? `<div class="card"><span class="badge badge-subtle">📉 Chart data expired</span> `
+              + `<span class="muted small">Series evicted by retention policy. The metrics above are `
+              + `the stored ledger row.</span></div>`
+            : `<div class="card"><span class="badge bg-light-danger">⛔ Storage error</span> `
+              + `<span class="muted small">The chart series failed to persist. Re-run recommended.</span></div>`;
+    }
+    if ($("chartCard")) $("chartCard").hidden = degraded;
+    if ($("tradeLedgerCard")) $("tradeLedgerCard").hidden = degraded;
+    if ($("runChecks")) $("runChecks").hidden = degraded;
     // Engine + data provenance first: every number below it is read through
     // these two badges (PRD backTest-enhance §1.1/§1.2).
     if (typeof Provenance !== "undefined") Provenance.renderInto("resultProvenance", result.provenance);
@@ -168,23 +191,32 @@ function renderResults(result) {
     // PRD §3.1/§3.2/§3.3: buy-and-hold reference, slippage stress and trade
     // sequence resampling. Read from the same payload as the cards above, so a
     // check can never qualify a different result than the one being shown.
-    if (typeof RunChecks !== "undefined") RunChecks.renderInto("runChecks", result);
+    if (!degraded && typeof RunChecks !== "undefined") RunChecks.renderInto("runChecks", result);
     // PRD §5: the readiness summary, from the same payload as everything above.
     if (typeof Certification !== "undefined") Certification.renderInto("certification", result.readiness);
     // PRD §6: carry this result into Optimize. Never hidden — see the note in
     // tune_this.js about why a not-yet-certifiable result is precisely when
     // someone wants to tune.
     if (typeof TuneThis !== "undefined") TuneThis.renderInto("tuneThis", lastRun);
-    TradeTable.render("tradeTable-wrap", result.trades);
+    if (!degraded && Array.isArray(result.trades)) TradeTable.render("tradeTable-wrap", result.trades);
     // default tab = equity; render lazily on tab switch
     renderChartForPane("equity");
 }
 
 function renderChartForPane(pane) {
     if (!lastRun) return;
-    if (pane === "equity") renderEquityChart("equityChart", lastRun.result.equity);
-    else if (pane === "drawdown") renderDrawdownChart("drawdownChart", lastRun.result.drawdown);
-    else if (pane === "signals") renderSignalsChart("signalsChart", lastRun.result.signals);
+    const series = (pane, key) => {
+        const el = $(pane);
+        if (!el) return;
+        const data = lastRun.result[key];
+        if (!Array.isArray(data) || !data.length) { el.replaceChildren(); return; }
+        if (pane === "equity") renderEquityChart("equityChart", data);
+        else if (pane === "drawdown") renderDrawdownChart("drawdownChart", data);
+        else if (pane === "signals") renderSignalsChart("signalsChart", data);
+    };
+    if (pane === "equity") series("equityChart", "equity");
+    else if (pane === "drawdown") series("drawdownChart", "drawdown");
+    else if (pane === "signals") series("signalsChart", "signals");
 }
 
 // ---------------------------------------------------------------------------
@@ -193,6 +225,10 @@ function renderChartForPane(pane) {
 
 function saveToCompare() {
     if (!lastRun) { showToast("Run a backtest first", "warning"); return; }
+    if (lastRun.stored && lastRun.stored.series_status !== "present") {
+        showToast("Chart data is not stored for this run — re-run it before saving to compare", "warning");
+        return;
+    }
     const res = SessionState.addCompareSlot(lastRun);
     if (!res.ok) { showToast("Compare is full (4/4)", "warning"); return; }
     showToast(`Saved to Compare — slot ${res.index}/${SessionState.maxCompareSlots}`, "success");
@@ -201,6 +237,10 @@ function saveToCompare() {
 function exportCsv() {
     if (!lastRun) { showToast("Run a backtest first", "warning"); return; }
     const trades = lastRun.result.trades;
+    if (!Array.isArray(trades)) {
+        showToast("Stored series unavailable for this run — export needs a fresh run", "warning");
+        return;
+    }
     const header = ["id", "date", "exit_date", "side", "entry", "exit", "pnl", "result"];
     const lines = [header.join(",")];
     trades.forEach((t) => {
@@ -257,8 +297,8 @@ function showBanner(text) {
 }
 
 // ---------------------------------------------------------------------------
-// Recent runs — tile row of already-tested configs with cached results.
-// Clicking a tile restores the exact result (no re-run) + pre-fills the form.
+// Recent runs — tiles of ledger rows (flat R1 metrics only). Clicking a tile
+// reads the stored payload back; it never re-runs the simulation.
 // ---------------------------------------------------------------------------
 
 function fmtDateRange(from, to) {
@@ -266,70 +306,107 @@ function fmtDateRange(from, to) {
     return `${f(from)} – ${f(to)}`;
 }
 
+async function loadRecentRuns() {
+    try {
+        const body = await fetchJSON(`/api/backtest/runs?limit=${RECENT_RUNS_LIMIT}`);
+        recentRuns = body.runs || [];
+    } catch {
+        recentRuns = [];  // ledger offline (or a source that never persists)
+    }
+    renderRecentRuns();
+}
+
 function renderRecentRuns() {
     const wrap = document.getElementById("recentRuns");
     if (!wrap) return;
-    const runs = getRecentRuns();
-    if (!runs.length) { wrap.hidden = true; wrap.innerHTML = ""; return; }
+    if (!recentRuns.length) { wrap.hidden = true; wrap.innerHTML = ""; return; }
     wrap.hidden = false;
     wrap.innerHTML =
-        `<div class="recent-head"><h2 class="card-title">Recent Runs</h2>` +
-        `<button class="btn btn-ghost btn-small" id="clearRecentBtn" type="button">Clear</button></div>` +
+        `<div class="recent-head"><h2 class="card-title">Recent Runs</h2></div>` +
         `<div class="recent-grid">` +
-        runs.map((r, i) => {
-            const m = r.result.metrics || {};
-            const pnlCls = (m.total_pnl ?? 0) >= 0 ? "pos" : "neg";
-            const wr = (typeof m.closed_trades === "number" && m.closed_trades === 0) ? "—" : `${(m.win_rate_pct ?? 0).toFixed(1)}%`;
+        recentRuns.map((r, i) => {
+            const ret = (r.total_return ?? 0) * 100;
+            const wr = r.total_trades === 0 ? "—" : `${(r.win_rate ?? 0).toFixed(1)}%`;
+            const dd = ((r.max_drawdown ?? 0) * 100).toFixed(1);
+            const status = r.series_status === "evicted"
+                ? `<span class="badge badge-subtle" title="Charts evicted by retention; metrics still stored">no chart</span>`
+                : r.series_status === "write_failed"
+                    ? `<span class="badge bg-light-danger" title="Series failed to persist — re-run recommended">⛔</span>`
+                    : "";
             return `
             <div class="card recent-tile g-card-hover" data-idx="${i}" role="button" tabindex="0"
-                 title="Open cached result — no re-run">
+                 title="Open the stored result — read from the ledger, no re-run">
                 <div class="recent-tile-top">
-                    <strong>${r.config.strategy}</strong>
-                    <span class="badge ${pnlCls === "pos" ? "bg-light-success" : "bg-light-danger"}">${fmtMoney(m.total_pnl)}</span>
+                    <strong>${esc(r.strategy_id)}</strong>
+                    <span class="badge ${ret >= 0 ? "bg-light-success" : "bg-light-danger"}">${ret >= 0 ? "+" : ""}${ret.toFixed(1)}%</span>
+                    ${status}
                 </div>
-                <div class="recent-tile-sub muted">${r.config.symbol} · ${r.config.timeframe} · ${fmtDateRange(r.config.from_date, r.config.to_date)}</div>
+                <div class="recent-tile-sub muted">${esc(r.symbol)} · ${esc(r.timeframe)} · ${fmtDateRange(r.date_from, r.date_to)}</div>
                 <div class="recent-tile-stats">
                     <span>WR ${wr}</span>
-                    <span>DD ${(m.max_drawdown_pct ?? 0).toFixed(1)}%</span>
-                    <span>${m.total_trades ?? 0} trades</span>
-                    <span>Sharpe ${(m.sharpe ?? 0).toFixed(2)}</span>
+                    <span>DD ${dd}%</span>
+                    <span>${r.total_trades ?? 0} trades</span>
+                    <span>Sharpe ${(r.sharpe ?? 0).toFixed(2)}</span>
                 </div>
             </div>`;
         }).join("") +
         `</div>`;
-
-    wrap.querySelector("#clearRecentBtn").addEventListener("click", () => {
-        localStorage.removeItem(RECENT_RUNS_KEY);
-        renderRecentRuns();
-        showToast("Recent runs cleared", "info");
-    });
     wrap.querySelectorAll(".recent-tile").forEach((tile) => {
-        tile.addEventListener("click", () => openRecentRun(Number(tile.dataset.idx)));
+        const open = () => openStoredRun(recentRuns[Number(tile.dataset.idx)].run_id);
+        tile.addEventListener("click", open);
+        tile.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+        });
     });
 }
 
-function openRecentRun(idx) {
-    const run = getRecentRuns()[idx];
-    if (!run) return;
-    lastRun = run;
-    const cfg = run.config;
+/** Rebuild the form-side config from a stored payload.config (ledger shape:
+ *  strategy_params + engine, not the UI's params + mode). */
+function configFromLedger(cfg) {
+    return {
+        strategy: cfg.strategy,
+        symbol: cfg.symbol,
+        timeframe: cfg.timeframe,
+        from_date: cfg.from_date,
+        to_date: cfg.to_date,
+        capital: cfg.capital,
+        params: cfg.strategy_params || {},
+        mode: cfg.engine === "quick_screen" ? "quick_screen" : "",
+    };
+}
+
+async function openStoredRun(runId) {
+    let rec;
+    try {
+        rec = await fetchJSON(`/api/backtest/runs/${encodeURIComponent(runId)}`);
+    } catch (err) {
+        showToast(err.message || "Could not open stored run", "error");
+        return;
+    }
+    const payload = rec.payload;
+    const cfg = configFromLedger(payload.config || {});
+    lastRun = { config: cfg, result: payload, resultId: TuneThis.mintResultId(), stored: rec.ledger };
     // pre-fill the form so "Run" would re-produce the same test
     try {
         $("strategy").value = cfg.strategy || "";
         if (cfg.symbol) $("symbol").value = cfg.symbol;
-        if (cfg.timeframe) $("timeframe").value = cfg.timeframe;
+        if (cfg.timeframe) {
+            const want = Timeframes.toCanonical(cfg.timeframe);
+            const sel = $("timeframe");
+            if (want && [...sel.options].some((o) => o.value === want)) sel.value = want;
+        }
         if (cfg.from_date) $("fromDate").value = cfg.from_date;
         if (cfg.to_date) $("toDate").value = cfg.to_date;
         if (cfg.capital) $("capital").value = cfg.capital;
+        if ($("fastPreview")) $("fastPreview").checked = cfg.mode === "quick_screen";
     } catch { /* form nodes always present */ }
     fetchJSON(`/api/strategies/${encodeURIComponent(cfg.strategy)}/params`)
         .then((p) => { renderParams(p); applyParamOverrides(cfg.params); })
-        .catch(() => { /* cached result still shown */ });
+        .catch(() => { /* stored result still shown */ });
     $("emptyState").hidden = true;
     $("results").hidden = false;
-    renderResults(run.result);
-    renderChartForPane("equity");
-    showToast(`Opened cached result — ${cfg.strategy} (${cfg.symbol}). No re-run needed.`, "info");
+    renderResults(payload);
+    showToast(`Opened stored run — ${cfg.strategy} (${cfg.symbol}). Read from the ledger, not re-run.`, "info");
 }
 
 async function init() {
@@ -348,7 +425,7 @@ async function init() {
     $("saveCompareBtn").addEventListener("click", saveToCompare);
     $("exportCsvBtn").addEventListener("click", exportCsv);
     $("promoteBtn").addEventListener("click", promoteToForward);
-    renderRecentRuns();
+    loadRecentRuns();
 
     // §1.3/§1.4: the picker and the timeframe dropdown are driven by what the
     // server says the chosen symbol actually has, so neither can offer a
