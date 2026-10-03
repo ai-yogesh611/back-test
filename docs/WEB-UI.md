@@ -123,7 +123,7 @@ after a refresh.
 
 Runner matrix + bucket metrics over the SSE snapshot, with seven trading tabs —
 `Positions · Equity · Orders · Risk & intelligence · Trade history · Playbooks ·
-Activity log` (step-by-step usage: [USER-GUIDE.md](USER-GUIDE.md) §2.1):
+Activity log` (step-by-step usage: [how-to/portfolio.md](how-to/portfolio.md)):
 
 - **Aggregate Open Positions** — one flat row per open position (equity + option
   structures, legs listed underneath), with Target / Stop / net Δ-Θ columns and an
