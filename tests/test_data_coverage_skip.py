@@ -22,10 +22,10 @@ from backtest.api import data_manager as dm
 
 
 def test_coverage_threshold_scales_with_timeframe():
-    assert dm._coverage_threshold("1min") == 263   # ceil(375 * 0.7)
-    assert dm._coverage_threshold("5min") == 53    # ceil(75  * 0.7)
-    assert dm._coverage_threshold("15min") == 18   # ceil(25  * 0.7)
-    assert dm._coverage_threshold("1hour") == 5    # ceil(6   * 0.7)
+    assert dm._coverage_threshold("1min") == 338   # ceil(375 * 0.9)
+    assert dm._coverage_threshold("5min") == 68    # ceil(75  * 0.9)
+    assert dm._coverage_threshold("15min") == 23   # ceil(25  * 0.9)
+    assert dm._coverage_threshold("1hour") == 6    # ceil(6   * 0.9)
     assert dm._coverage_threshold("1day") == 1     # any single daily bar counts
     assert dm._coverage_threshold("mystery") == 1  # unknown tf -> never skip wrongly
 
@@ -105,7 +105,7 @@ def test_missing_weekday_requeues_whole_window():
 
 
 # ---------------------------------------------------------------------------
-# _covered_days — the DB probe
+# _probe_covered_days — the batched, gap-aware DB probe (2026-10-04)
 # ---------------------------------------------------------------------------
 
 
@@ -121,6 +121,7 @@ class _FakeConn:
     def __init__(self, rows=None, exc=None):
         self._rows = rows or []
         self._exc = exc
+        self.params = None
 
     def __enter__(self):
         return self
@@ -131,6 +132,7 @@ class _FakeConn:
     def execute(self, sql, params=None):
         if self._exc is not None:
             raise self._exc
+        self.params = params
         return _FakeResult(self._rows)
 
 
@@ -139,36 +141,69 @@ class _FakeEngine:
         self._rows = rows
         self._exc = exc
         self.last_params = None
+        self.last_sql = None
 
     def connect(self):
         if self._exc is not None:
             raise self._exc
-        return _FakeConn(self._rows, self._exc)
+        conn = _FakeConn(self._rows, self._exc)
+        self._conn = conn
+        return conn
 
 
-def test_covered_days_keeps_only_days_over_threshold():
+def test_probe_returns_covered_days_per_symbol():
     engine = _FakeEngine(
         rows=[
-            (datetime(2026, 6, 1), 375),  # full day
-            (datetime(2026, 6, 2), 12),   # a few stray bars — below 263, not trusted
-            (date(2026, 6, 3), 300),      # already a date object
+            ("TCS", date(2026, 6, 1), 375),        # full day
+            ("TCS", date(2026, 6, 2), 12),         # a few stray bars — below 338
+            ("TCS", date(2026, 6, 3), 340),        # complete enough
+            ("RELIANCE", date(2026, 6, 1), 370),   # covered for its own symbol
         ]
     )
-    covered = dm._covered_days(engine, "TCS", "NSE", "1min", "2026-06-01", "2026-06-05")
-    assert covered == {date(2026, 6, 1), date(2026, 6, 3)}
+    covered = dm._probe_covered_days(
+        engine, ["TCS", "RELIANCE"], "1min", "2026-06-01", "2026-06-05"
+    )
+    assert covered == {
+        "TCS": {date(2026, 6, 1), date(2026, 6, 3)},
+        "RELIANCE": {date(2026, 6, 1)},
+    }
 
 
-def test_covered_days_probe_error_returns_empty_never_skips():
+def test_probe_treats_inbetween_hole_as_not_covered():
+    """A day missing hours of bars (300 of 375 distinct minutes) must NOT
+    count as fetched — it would feed a gappy session into backtests."""
+    engine = _FakeEngine(rows=[("TCS", date(2026, 6, 1), 300)])
+    covered = dm._probe_covered_days(engine, ["TCS"], "1min", "2026-06-01", "2026-06-01")
+    assert covered == {}
+
+
+def test_probe_error_returns_empty_never_skips():
     engine = _FakeEngine(exc=RuntimeError("table missing"))
-    covered = dm._covered_days(engine, "TCS", "NSE", "1min", "2026-06-01", "2026-06-05")
-    assert covered == set()  # caller then does a full fetch
+    covered = dm._probe_covered_days(
+        engine, ["TCS"], "1min", "2026-06-01", "2026-06-05"
+    )
+    assert covered == {}  # caller then does a full fetch
 
 
-def test_covered_days_passes_requested_range_to_query():
+def test_probe_is_exchange_agnostic_and_binds_every_symbol():
     engine = _FakeEngine(rows=[])
-    dm._covered_days(engine, "TCS", "NSE", "1min", "2022-01-03", "2026-10-03")
-    # no assertion on captured params (fake discards them) — smoke test that the
-    # probe runs cleanly against the user's from/to without raising.
+    dm._probe_covered_days(
+        engine, ["TCS", "RELIANCE"], "1min", "2022-01-03", "2026-10-03"
+    )
+    params = engine._conn.params
+    assert params is not None
+    # no exchange filter — bars stored under either exchange cover the symbol
+    assert "exchange" not in params
+    # one IN-placeholder per distinct symbol
+    assert params["s0"] == "TCS" and params["s1"] == "RELIANCE"
+    assert params["timeframe"] == "1min"
+
+
+def test_probe_with_no_symbols_returns_empty_without_querying():
+    engine = _FakeEngine(rows=[])
+    covered = dm._probe_covered_days(engine, [], "1min", "2026-06-01", "2026-06-05")
+    assert covered == {}
+    assert engine.last_params is None  # never even connected
 
 
 # ---------------------------------------------------------------------------
@@ -213,3 +248,54 @@ def test_explicit_windows_fetch_only_those(monkeypatch):
     assert errors == 0
     assert len(bars) == 1
     assert requested == ["2026-06-04"]  # the skipped window was never requested
+
+
+# ---------------------------------------------------------------------------
+# Holiday-aware skip (2026-10-04): weekday closures must not re-probe windows
+# ---------------------------------------------------------------------------
+
+def test_holiday_weekday_does_not_mark_window_missing():
+    # Window B = Thu 04..Sat 06; Fri 05 is a market holiday, everything else
+    # covered -> the whole range is "complete" and B is dropped.
+    covered = {date(2026, 6, d) for d in (1, 2, 3, 4)}
+    holidays = {date(2026, 6, 5)}
+    assert dm._windows_needing_fetch(_WINS, covered, holidays) == []
+
+
+def test_holidays_never_rescue_a_real_missing_weekday():
+    # Mon 01 is a holiday and rescued (window A drops), but Fri 05 is a
+    # genuine hole (not covered, not a holiday) → window B stays.
+    covered = {date(2026, 6, d) for d in (2, 3, 4)}
+    holidays = {date(2026, 6, 1)}
+    kept = dm._windows_needing_fetch(_WINS, covered, holidays)
+    assert [(s.strftime("%m-%d"), e.strftime("%m-%d")) for s, e in kept] == [
+        ("06-04", "06-06")
+    ]
+
+
+def test_empty_coverage_fetches_every_window_even_with_holidays():
+    # The full-fetch guard stays: with nothing stored we still walk everything
+    # (holidays only shrink resume noise, never a genuine first fetch).
+    assert dm._windows_needing_fetch(_WINS, set(), {date(2026, 6, 5)}) == _WINS
+
+
+def test_legacy_two_arg_call_still_works():
+    # Signature is backwards compatible (holidays default to empty).
+    assert dm._windows_needing_fetch(_WINS, set()) == _WINS
+
+
+# ---------------------------------------------------------------------------
+# _load_market_holidays — the per-job calendar read
+# ---------------------------------------------------------------------------
+
+def test_load_market_holidays_normalises_rows_to_dates():
+    engine = _FakeEngine(
+        rows=[(datetime(2026, 1, 26),), (date(2026, 3, 4),)]
+    )
+    got = dm._load_market_holidays(engine, "2026-01-01", "2026-12-31")
+    assert got == {date(2026, 1, 26), date(2026, 3, 4)}
+
+
+def test_load_market_holidays_error_returns_empty_never_blocks_fetch():
+    engine = _FakeEngine(exc=RuntimeError("relation market_holidays does not exist"))
+    assert dm._load_market_holidays(engine, "2026-01-01", "2026-12-31") == set()

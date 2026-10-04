@@ -20,7 +20,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import requests
@@ -228,6 +228,46 @@ def fetch_stop() -> tuple:
     return jsonify({"status": "stopping"}), 200
 
 
+@data_bp.post("/api/data/clear")
+def fetch_clear() -> tuple:
+    """Reset a finished job's state back to idle.
+
+    A completed/cancelled/failed fetch used to leave its progress panel up
+    forever — even across page reloads — because the job state itself still
+    said ``done``/``error`` and every page load re-showed it. Clearing
+    restores the idle defaults so the Data tab can dismiss the panel for
+    good. A RUNNING job is refused: stop it first (2026-10-04).
+    """
+    with _lock:
+        if _job["status"] == "running":
+            return (
+                jsonify({"error": "A fetch job is running. Stop it before clearing."}),
+                409,
+            )
+        _job.update(
+            status="idle",
+            symbol="",
+            fetched=0,
+            total=0,
+            bars_total=0,
+            bars_symbol=0,
+            failed=0,
+            failed_list=[],
+            from_date="",
+            to_date="",
+            timeframe="1min",
+            error=None,
+            started_at=None,
+            elapsed="",
+            cancel=False,
+            chunk_done=0,
+            chunk_total=0,
+            chunk_errors=0,
+            skipped=0,
+        )
+    return jsonify({"status": "idle"}), 200
+
+
 @data_bp.post("/api/data/fetch")
 def fetch_start() -> tuple:
     """Start a background fetch job.
@@ -417,6 +457,11 @@ def invalidate_coverage_cache() -> None:
     with _coverage_lock:
         _coverage_cache["at"] = 0.0
         _coverage_cache["report"] = None
+    # Freshness watches the same MAX(ts::date) the fetch moves — refresh it
+    # together so the topbar chip flips right when the job finishes.
+    with _freshness_lock:
+        _freshness_cache["at"] = 0.0
+        _freshness_cache["payload"] = None
 
 
 def _coverage_report(refresh: bool = False):
@@ -660,6 +705,29 @@ def _run_fetch_job_inner(
         len(all_windows),
     )
 
+    # One probe for the whole job (2026-10-04): a single grouped query returns
+    # every symbol's covered days, instead of one round-trip per symbol.
+    covered_by_symbol: dict[str, set] = {}
+    if coverage_enabled and instruments:
+        covered_by_symbol = _probe_covered_days(
+            engine,
+            [str(i["tradingsymbol"]) for i in instruments],
+            timeframe,
+            from_date,
+            to_date,
+        )
+
+    # Holiday closures are symbol-independent, so read them once per job and
+    # let the skip treat them like weekends: days that can never hold bars.
+    holiday_dates: set = set()
+    if coverage_enabled:
+        holiday_dates = _load_market_holidays(engine, from_date, to_date)
+        log.info(
+            "[data] %d market holiday(s) in %s..%s — windows touching only "
+            "holidays will not be re-probed",
+            len(holiday_dates), from_date, to_date,
+        )
+
     # One breaker per job: it watches post-retry chunk outcomes across ALL
     # symbols, so a gateway that dies mid-run stops the run instead of the
     # run grinding through the remaining 190 symbols.
@@ -703,10 +771,9 @@ def _run_fetch_job_inner(
         # zero API requests; scattered 502 holes get gap-filled, not re-walked.
         needed_windows = all_windows
         if coverage_enabled:
-            covered = _covered_days(
-                engine, symbol, inst_exchange, timeframe, from_date, to_date
-            )
-            needed_windows = _windows_needing_fetch(all_windows, covered)
+            covered = covered_by_symbol.get(str(symbol).strip().upper(), set())
+            needed_windows = _windows_needing_fetch(all_windows, covered,
+                                                    holiday_dates)
             if not needed_windows:
                 log.info(
                     "[data] %s: %s..%s already complete (%d window(s) fully "
@@ -1056,7 +1123,13 @@ _FULL_DAY_BARS = {
     "1hour": 6,  # 375 / 60, floored
     "1day": 1,
 }
-COVERAGE_FRACTION = 0.7
+#: Completeness fraction for a stored day to count as "fetched". Raised from
+#: 0.7 (2026-10-03) to 0.9 (2026-10-04): at 0.7 a day could be missing up to
+#: ~110 of its 375 minutes and still be trusted — a multi-hour in-between hole
+#: that silently distorts every backtest on that day. At 0.9 any hole larger
+#: than ~37 minutes (1min bars) re-fetches the window. Override with
+#: DATA_FETCH_DAY_COMPLETENESS.
+COVERAGE_FRACTION = float(os.getenv("DATA_FETCH_DAY_COMPLETENESS", "0.9"))
 
 
 def _coverage_skip_enabled() -> bool:
@@ -1088,33 +1161,49 @@ def _build_windows(from_date: str, to_date: str, chunk_days: int) -> list:
     return windows
 
 
-def _covered_days(engine, symbol: str, exchange: str, timeframe: str,
-                  from_date: str, to_date: str) -> set:
-    """Days within the requested range already holding enough bars to skip.
+def _probe_covered_days(
+    engine, symbols: list[str], timeframe: str, from_date: str, to_date: str
+) -> dict[str, set]:
+    """One query for the WHOLE job: which days already hold enough bars.
 
-    Queries ``market_data_cache`` grouped by calendar day and keeps days whose
-    bar count reaches :func:`_coverage_threshold`. The whole IST session
-    (09:15–15:30) maps into one stored UTC day even with the known ts-mislabel
-    bug, so day grouping is reliable. Returns an empty set on ANY error — the
-    symbol simply gets a full fetch rather than being wrongly skipped because a
-    probe failed.
+    Replaces the per-symbol probe (a round-trip per symbol — 200 queries for
+    the curated universe). Two correctness upgrades over the old probe
+    (2026-10-04):
+
+    * ``COUNT(DISTINCT ts)`` — duplicate/re-written rows can no longer inflate
+      coverage into skipping a day that is actually thin.
+    * The raised :data:`COVERAGE_FRACTION` (0.9) means a stored day with an
+      in-between hole of missing hours no longer counts as fetched: it is
+      re-fetched instead of silently feeding gappy bars into backtests.
+
+    Exchange-agnostic: the cache's ``exchange`` column is unreliable (one
+    symbol's bars land under BSE or NSE depending on which catalogue row the
+    fetch resolved), and for backtest reads bars are bars. Filtering by
+    exchange used to blind the probe into re-fetching an already-complete
+    symbol wholesale.
+
+    Returns ``{}`` on ANY error — every symbol then gets a full fetch rather
+    than being wrongly skipped because a probe failed.
     """
+    if not symbols:
+        return {}
     threshold = _coverage_threshold(timeframe)
+    bind = {f"s{i}": s for i, s in enumerate(dict.fromkeys(symbols))}
+    in_clause = ", ".join(f":{k}" for k in bind)
     sql = text(
-        "SELECT date_trunc('day', ts)::date AS d, COUNT(*) AS n "
+        "SELECT symbol, date_trunc('day', ts)::date AS d, COUNT(DISTINCT ts) AS n "
         "FROM market_data_cache "
-        "WHERE symbol = :symbol AND exchange = :exchange AND timeframe = :timeframe "
+        f"WHERE timeframe = :timeframe AND symbol IN ({in_clause}) "
         "AND ts::date >= :from_date AND ts::date <= :to_date "
-        "GROUP BY d"
+        "GROUP BY symbol, d"
     )
-    covered: set = set()
+    covered: dict[str, set] = {}
     try:
         with engine.connect() as conn:
             rows = conn.execute(
                 sql,
                 {
-                    "symbol": symbol,
-                    "exchange": exchange,
+                    **bind,
                     "timeframe": timeframe,
                     "from_date": from_date,
                     "to_date": to_date,
@@ -1122,17 +1211,52 @@ def _covered_days(engine, symbol: str, exchange: str, timeframe: str,
             ).all()
     except Exception as exc:  # noqa: BLE001 — probing must never break a fetch
         log.warning(
-            "[data] coverage probe failed for %s %s (%s..%s): %s — fetching full range",
-            symbol, timeframe, from_date, to_date, exc,
+            "[data] coverage probe failed (%s symbols, %s, %s..%s): %s — fetching full ranges",
+            len(bind), timeframe, from_date, to_date, exc,
         )
         return covered
-    for d, n in rows:
+    for symbol, d, n in rows:
         if n >= threshold:
-            covered.add(d.date() if hasattr(d, "date") else d)
+            day = d.date() if hasattr(d, "date") else d
+            covered.setdefault(str(symbol).strip().upper(), set()).add(day)
     return covered
 
 
-def _windows_needing_fetch(windows: list, covered_days: set) -> list:
+def _load_market_holidays(engine, from_date: str, to_date: str) -> set:
+    """Exchange-closure dates inside the requested range, from ``market_holidays``.
+
+    Seeded from the NSE holiday-master API (2022–2026 as of 2026-10-04, see
+    ``tools/seed_market_holidays.py``). A weekday here can never hold session
+    bars, so the coverage skip must not count it as "missing" — without this,
+    every window touching a holiday is re-probed on every resume forever
+    (~12–16 dates/symbol/run; the 2025-10-21 Diwali Muhurat special session is
+    listed too, and its ~61 stored bars are all that day will ever have).
+
+    Returns ``{}`` on ANY error (missing table, bad column) — the skip then
+    behaves like before and merely re-probes holiday windows.
+    """
+    sql = text(
+        "SELECT holiday_date FROM market_holidays "
+        "WHERE holiday_date >= :from_date AND holiday_date <= :to_date "
+        "AND is_trading_holiday IS NOT FALSE"
+    )
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                sql, {"from_date": from_date, "to_date": to_date}
+            ).all()
+    except Exception as exc:  # noqa: BLE001 — calendar read must never break a fetch
+        log.warning(
+            "[data] holiday calendar read failed (%s..%s): %s — "
+            "holiday windows will be re-probed (old behaviour)",
+            from_date, to_date, exc,
+        )
+        return set()
+    return {r[0].date() if hasattr(r[0], "date") else r[0] for r in rows}
+
+
+def _windows_needing_fetch(windows: list, covered_days: set,
+                           holidays=()) -> list:
     """Keep only the windows whose span includes a *missing trading day*.
 
     Only Mon–Fri days can hold session bars, so a weekday is the sole thing
@@ -1142,9 +1266,10 @@ def _windows_needing_fetch(windows: list, covered_days: set) -> list:
     symbol would never be skipped (verified live 2026-10-03: AB-CAPITAL kept
     all 578 windows because the weekend days never appear in the DB).
 
-    Consequence: a weekday market holiday has no stored bars, so its window is
-    re-probed on every resume — cheap (returns empty candles fast), and far
-    rarer than the weekend case (~12 holidays/yr vs ~104 weekend days).
+    ``holidays`` (from :func:`_load_market_holidays`) extends the "cannot hold
+    bars" set to weekday exchange closures, so a fully-fetched symbol's resume
+    drops its windows on the FIRST pass instead of re-probing ~14 holiday
+    windows per symbol per run.
 
     ``covered_days`` empty → every window (a genuine full fetch). All weekdays
     covered → empty list (caller skips the symbol with zero requests). A window
@@ -1160,13 +1285,192 @@ def _windows_needing_fetch(windows: list, covered_days: set) -> list:
         d = c_start
         missing = False
         while d <= c_end:
-            if d.weekday() < 5 and d.date() not in covered_days:
+            if (d.weekday() < 5 and d.date() not in covered_days
+                    and d.date() not in holidays):
                 missing = True
                 break
             d += timedelta(days=1)
         if missing:
             needed.append((c_start, c_end))
     return needed
+
+
+# ---------------------------------------------------------------------------
+# Data-freshness chip (2026-10-04) — tail-staleness of completed sessions
+# ---------------------------------------------------------------------------
+
+#: Minute-of-day (IST) by which the last session's bars are expected to have
+#: settled in mStock's historical endpoint. Flagging at 15:31 would nag about
+#: a session still incomplete; the 0.9 coverage probe would re-fetch it anyway
+#: — the chip waits until that cannot be an artifact.
+DATA_SETTLE_MIN_IST = 16 * 60 + 15  # 16:15 IST
+
+_IST = timezone(timedelta(hours=5, minutes=30))
+_freshness_lock = threading.Lock()
+_freshness_cache: dict[str, Any] = {"at": 0.0, "payload": None, "updating": False}
+
+
+def _is_session_day(d, holidays) -> bool:
+    """A day that should have produced bars: Mon–Fri and not an exchange closure."""
+    return d.weekday() < 5 and d not in holidays
+
+
+def _last_settled_session(now_ist, holidays) -> date:
+    """Most recent session whose bars are due in the DB as of ``now_ist``.
+
+    Today counts only past :data:`DATA_SETTLE_MIN_IST`; otherwise the target
+    walks back over weekends and ``market_holidays`` closures (45-day cap for
+    pathological calendars — callers see an over-strict target, never a lie
+    that data is current).
+    """
+    if (_is_session_day(now_ist.date(), holidays)
+            and now_ist.hour * 60 + now_ist.minute >= DATA_SETTLE_MIN_IST):
+        return now_ist.date()
+    d = now_ist.date() - timedelta(days=1)
+    for _ in range(45):
+        if _is_session_day(d, holidays):
+            return d
+        d -= timedelta(days=1)
+    return d
+
+
+def _count_missing_sessions(last_day, target: date, holidays) -> int:
+    """Trading sessions in ``(last_day, target]` — tail staleness only.
+
+    Assumes everything up to ``last_day`` is covered; holes *inside* that
+    stretch are the coverage probe's job (it re-fetches their windows), while
+    the chip answers the one question a global widget can ask cheaply: "is
+    the newest session in the database?"
+    """
+    if last_day is None or last_day >= target:
+        return 0
+    n, d = 0, last_day + timedelta(days=1)
+    while d <= target:
+        if _is_session_day(d, holidays):
+            n += 1
+        d += timedelta(days=1)
+    return n
+
+
+def _compute_freshness() -> dict:
+    """Per-timeframe staleness vs the last completed session. Never raises."""
+    with _lock:
+        fetching = _job["status"] == "running"
+    out: dict[str, Any] = {
+        "db_available": False, "fetching": fetching, "level": "unknown",
+        "label": "DATA ?", "title": "Freshness unknown — database unreachable",
+        "per_timeframe": {}, "target_day": None,
+    }
+    engine = None
+    try:
+        engine = create_engine(DB_URL, echo=False)
+        now_ist = datetime.now(_IST)
+        with engine.connect() as conn:
+            rows = conn.execute(text(
+                "SELECT timeframe, MAX(ts::date) FROM market_data_cache "
+                "GROUP BY timeframe"
+            )).all()
+        # Holiday window only needs to cover the walkback; 60 days reaches
+        # any realistic gap (longest NSE stretch is under 10).
+        holidays = _load_market_holidays(
+            engine,
+            (now_ist.date() - timedelta(days=60)).isoformat(),
+            now_ist.date().isoformat(),
+        )
+        target = _last_settled_session(now_ist, holidays)
+        out["target_day"] = target.isoformat()
+        per, worst = {}, 0
+        for tf, last in rows:
+            last_d = last.date() if hasattr(last, "date") else last
+            missing = _count_missing_sessions(last_d, target, holidays)
+            per[str(tf)] = {
+                "last_day": last_d.isoformat() if last_d else None,
+                "missing": missing,
+            }
+            worst = max(worst, missing)
+        out["per_timeframe"] = per
+        out["db_available"] = True
+        if fetching:
+            out["level"] = "fetching"
+            out["label"] = "DATA FETCHING"
+            out["title"] = "A fetch is running — the chip updates when it finishes."
+        elif not per:
+            out["level"] = "red"
+            out["label"] = "NO CACHED DATA"
+            out["title"] = "market_data_cache is empty — fetch the curated universe."
+        else:
+            level = "current" if worst == 0 else ("amber" if worst == 1 else "red")
+            details = " · ".join(
+                f"{tf}: {v['last_day'] or 'no data'}"
+                + (f" ({v['missing']} behind)" if v["missing"] else "")
+                for tf, v in sorted(per.items())
+            )
+            out["level"] = level
+            out["label"] = ("DATA CURRENT" if level == "current"
+                            else f"DATA {worst} SESSION{'S' if worst > 1 else ''} BEHIND")
+            out["title"] = (
+                f"Last completed session: {target.isoformat()}. {details}."
+                + ("" if level == "current" else " Click to fetch on the Data tab.")
+            )
+    except Exception as exc:  # noqa: BLE001 — a chip must never break a page render
+        log.warning("[data] freshness check failed: %s", exc)
+    finally:
+        if engine is not None:
+            engine.dispose()
+    return out
+
+
+def _spawn_freshness_refresh() -> None:
+    """Recompute the freshness payload off-thread; at most one runner."""
+    def _run() -> None:
+        try:
+            payload = _compute_freshness()
+            with _freshness_lock:
+                _freshness_cache["payload"] = payload
+                _freshness_cache["at"] = time.time()
+        except Exception as exc:  # noqa: BLE001 — next render retries anyway
+            log.warning("[data] background freshness refresh failed: %s", exc)
+        finally:
+            with _freshness_lock:
+                _freshness_cache["updating"] = False
+
+    with _freshness_lock:
+        if _freshness_cache["updating"]:
+            return
+        _freshness_cache["updating"] = True
+    threading.Thread(target=_run, daemon=True, name="data-freshness-refresh").start()
+
+
+#: The grouped MAX over the hypertable costs ~14s until migration 019
+#: (``ix_mdc_tf_ts``) lands — and it can only be built while fetches are
+#: idle (Timescale rejects CONCURRENTLY). So the render path NEVER computes
+#: inline: it serves the cached payload and refreshes in the background
+#: (stale-while-revalidate). A gray "CHECKING" chip beats a 14s page.
+_FRESHNESS_TTL_SECONDS = 300.0
+
+
+def get_data_freshness() -> dict:
+    """Cached freshness payload for the topbar chip; never blocks a render."""
+    with _freshness_lock:
+        payload = _freshness_cache["payload"]
+        expired = payload is None or (
+            time.time() - _freshness_cache["at"] >= _FRESHNESS_TTL_SECONDS
+        )
+    if expired:
+        _spawn_freshness_refresh()
+    if payload is not None:
+        return payload  # stale but truthful-ish; refresh is in flight
+    return {
+        "db_available": False, "fetching": False, "level": "unknown",
+        "label": "DATA CHECKING", "title": "First freshness check running — updates shortly.",
+        "per_timeframe": {}, "target_day": None,
+    }
+
+
+@data_bp.route("/api/data/freshness", methods=["GET"])
+def api_data_freshness():
+    """JSON the topbar chip re-renders from (initially it is server-rendered)."""
+    return jsonify(get_data_freshness())
 
 
 def _fetch_bars_chunked(

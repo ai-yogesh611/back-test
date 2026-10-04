@@ -116,6 +116,65 @@ kbd { border: 1px solid var(--border); border-radius: 4px; padding: 1px 4px; fon
   background: #6B7280;
 }
 
+/* Data-freshness chip (tail-staleness vs the last completed session).
+   Color encodes staleness only; never infer execution mode from it. */
+.data-freshness-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 9999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 3px 8px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  user-select: none;
+  cursor: default;
+  transition: all 0.2s ease;
+}
+.freshness-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 4px;
+  flex-shrink: 0;
+  background: #6B7280;
+}
+.data-freshness-chip[data-state="current"] {
+  background: rgba(16, 185, 129, 0.10);
+  border: 1px solid rgba(16, 185, 129, 0.28);
+  color: #34D399;
+}
+.data-freshness-chip[data-state="current"] .freshness-dot { background: #10B981; }
+.data-freshness-chip[data-state="amber"] {
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  color: #FBBF24;
+  cursor: pointer;
+}
+.data-freshness-chip[data-state="amber"] .freshness-dot { background: #F59E0B; }
+.data-freshness-chip[data-state="red"] {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #F87171;
+  cursor: pointer;
+}
+.data-freshness-chip[data-state="red"] .freshness-dot { background: #EF4444; }
+.data-freshness-chip[data-state="fetching"] {
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  color: #93C5FD;
+}
+.data-freshness-chip[data-state="fetching"] .freshness-dot {
+  background: #3B82F6;
+  animation: market-dot-pulse 1.5s ease-in-out infinite;
+}
+.data-freshness-chip[data-state="unknown"] {
+  background: rgba(107, 114, 128, 0.15);
+  border: 1px solid rgba(107, 114, 128, 0.35);
+  color: #9CA3AF;
+}
+.data-freshness-chip[data-state="unknown"] .freshness-dot { background: #6B7280; }
+
 .risk-strip.risk-strip-frozen {
   border-color: rgba(107, 114, 128, 0.4) !important;
 }
