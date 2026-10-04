@@ -87,6 +87,32 @@
               <span class="aw-pill-text">alert${c.total === 1 ? "" : "s"}</span> ${parts}</button>`;
   }
 
+  // Broker-session alerts carry a direct fix: open the SAME auth popup the
+  // nav chip uses (password → TOTP), so the feed can be revived without
+  // leaving the page. The alert auto-resolves on verified re-login.
+  const SESSION_ALERTS = { broker_session_expiring: 1, broker_session_expired: 1 };
+
+  function isSessionAlert(a) {
+    return !!(a && SESSION_ALERTS[a.alert_type]);
+  }
+
+  function reloginButton(a) {
+    if (!isSessionAlert(a)) return "";
+    const broker = (a.data && a.data.broker) || "";
+    return `<button class="btn btn-primary btn-small" type="button" data-aw="relogin"`
+      + ` data-broker="${esc(broker)}">Re-login</button>`;
+  }
+
+  function openRelogin(broker) {
+    const ui = window.BrokerAuthUI;
+    if (ui && typeof ui.open === "function") {
+      ui.open(broker ? { broker } : {});
+      return true;
+    }
+    toast("Broker login popup unavailable on this page.", "error");
+    return false;
+  }
+
   function renderItem(a, now) {
     const sev = a.severity || "info";
     const summary = a.data && a.data.summary ? `<div class="aw-item-summary muted">${esc(a.data.summary)}</div>` : "";
@@ -100,6 +126,7 @@
         <div class="aw-item-msg">${esc(a.message)}</div>
         ${summary}
         <div class="aw-item-actions">
+          ${reloginButton(a)}
           <button class="btn btn-ghost btn-small" type="button" data-aw="details" data-id="${esc(a.alert_id)}">View Details</button>
           <button class="btn btn-ghost btn-small" type="button" data-aw="dismiss" data-id="${esc(a.alert_id)}">Dismiss</button>
         </div>
@@ -278,10 +305,13 @@
           ${subscriptionsBlock(a)}
         </div>
         <div class="modal-foot">
+          ${isSessionAlert(a)
+            ? `<button class="btn btn-primary" type="button" data-aw="relogin" data-broker="${esc((a.data && a.data.broker) || "")}">Re-login</button>`
+            : ""}
           <a class="btn btn-ghost" href="${deepLink(a)}" data-aw="deeplink">View in Risk Board →</a>
           <button class="btn btn-ghost" type="button" data-aw="review" data-id="${esc(a.alert_id)}">Mark as reviewed</button>
           <button class="btn btn-ghost" type="button" data-aw="dismiss" data-id="${esc(a.alert_id)}">Dismiss</button>
-          <button class="btn btn-primary" type="button" data-aw="close-modal">Close</button>
+          <button class="btn ${isSessionAlert(a) ? "btn-ghost" : "btn-primary"}" type="button" data-aw="close-modal">Close</button>
         </div>
       </div>`;
   }
@@ -407,6 +437,7 @@
     const action = t.dataset.aw;
     const id = t.dataset.id;
     if (action === "toggle") setExpanded(!state.expanded);
+    else if (action === "relogin") openRelogin(t.dataset.broker || "");
     else if (action === "details") openDetail(id);
     else if (action === "dismiss") lifecycle(id, "dismiss");
     else if (action === "review") lifecycle(id, "review");
@@ -430,7 +461,8 @@
 
   window.AlertWidget = {
     init, poll, render, apply, openDetail, closeDetail, setExpanded,
-    renderMinimized, renderExpanded, renderDetail, metricRows, sortAlerts, deepLink, ago, esc,
+    renderMinimized, renderExpanded, renderDetail, renderItem, metricRows, sortAlerts, deepLink, ago, esc,
+    isSessionAlert, reloginButton, openRelogin,
     getState: () => state,
   };
 

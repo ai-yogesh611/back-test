@@ -163,6 +163,40 @@ CATALOG: Dict[str, Dict[str, Any]] = {
             "Keep it halted — a halted bucket is a decision, not a failure.",
         ],
     },
+    AlertType.BROKER_SESSION_EXPIRING.value: {
+        "title": "Broker login expiring",
+        "section": "pi-root",
+        "what_it_means": [
+            "The broker API session has less than 30 minutes of validity left. "
+            "When it dies, live bars stop, runner entries pause (fail-closed), "
+            "and portfolio marks work off stale prices.",
+            "This is a system event, not a market signal — nothing is wrong "
+            "with the strategies themselves.",
+        ],
+        "typical_responses": [
+            "Click Re-login on the alert: the broker popup takes password + "
+            "TOTP and refreshes the session without stopping anything else.",
+            "Do it before the expiry — a mid-day session drop means missing bars.",
+            "Ignore only if the feed is genuinely not needed right now.",
+        ],
+    },
+    AlertType.BROKER_SESSION_EXPIRED.value: {
+        "title": "Broker session expired",
+        "section": "pi-root",
+        "what_it_means": [
+            "The broker session is dead and its token was cleared: live feeds, "
+            "forward entries and portfolio marks for that broker are paused "
+            "until someone re-authenticates. Nothing auto-renews.",
+            "Runners keep their state; they simply stop receiving bars and "
+            "refuse new orders (fail-closed) until the session returns.",
+        ],
+        "typical_responses": [
+            "Click Re-login on the alert and complete password + TOTP — the "
+            "alert closes itself as soon as the session is verified.",
+            "After re-login, check that runners resumed and the feed is "
+            "producing fresh bars again.",
+        ],
+    },
 }
 
 

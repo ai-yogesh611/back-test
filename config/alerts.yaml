@@ -84,6 +84,8 @@ default:
     position_opened: [telegram, log]
     position_closed: [telegram, log]
     daily_summary: [telegram, email, log]
+    broker_session_expiring: [telegram, log]
+    broker_session_expired: [telegram, log]
 
   # Quiet hours – suppress non-critical alerts during night (IST)
   quiet_hours_enabled: false
@@ -111,6 +113,8 @@ default:
     position_opened: "📈 Position opened: {symbol} {side} {quantity} @ {price}"
     position_closed: "📉 Position closed: {symbol} {side} {quantity} @ {price} | PnL: {pnl}"
     daily_summary: "📊 Daily Summary: Equity {equity} | P&L {pnl} | Trades {trades} | Win Rate {win_rate}%"
+    broker_session_expiring: "🟡 {broker_display_name} login expires {expires_at} — Re-login (password + TOTP) in the web UI to keep feeds running."
+    broker_session_expired: "🔴 {broker_display_name} session EXPIRED — live feeds and runner entries PAUSED. Re-login (password + TOTP) now."
 
   keep_history: true
   max_history: 1000
@@ -163,6 +167,8 @@ profiles:
       risk_limit_breach: [telegram, log]
       system_error: [telegram, log]
       daily_summary: [telegram, log]
+      broker_session_expiring: [telegram, log]
+      broker_session_expired: [telegram, log]
 
   # All channels – for testing all integrations
   all_channels:
