@@ -453,6 +453,17 @@ def create_app(
                 "is_open": True,
             }
 
+        try:
+            from backtest.api.data_manager import get_data_freshness
+
+            d_fresh = get_data_freshness()
+        except Exception:  # noqa: BLE001 — the chip degrades, the page must not
+            d_fresh = {
+                "db_available": False, "fetching": False, "level": "unknown",
+                "label": "DATA ?", "title": "Freshness check unavailable",
+                "per_timeframe": {}, "target_day": None,
+            }
+
         return {
             "currency_code": app.config["CURRENCY"],
             "currency_symbol": app.config["CURRENCY_SYMBOL"],
@@ -462,6 +473,7 @@ def create_app(
             "source_tags": sorted(SOURCE_TAG_VALUES),
             "default_source_tag": _default_source_tag(),
             "market_status": m_state,
+            "data_freshness": d_fresh,
         }
 
     _register_request_logging(app)

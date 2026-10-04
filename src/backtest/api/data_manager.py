@@ -20,7 +20,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import requests
@@ -457,6 +457,11 @@ def invalidate_coverage_cache() -> None:
     with _coverage_lock:
         _coverage_cache["at"] = 0.0
         _coverage_cache["report"] = None
+    # Freshness watches the same MAX(ts::date) the fetch moves — refresh it
+    # together so the topbar chip flips right when the job finishes.
+    with _freshness_lock:
+        _freshness_cache["at"] = 0.0
+        _freshness_cache["payload"] = None
 
 
 def _coverage_report(refresh: bool = False):
@@ -1226,6 +1231,184 @@ def _windows_needing_fetch(windows: list, covered_days: set,
         if missing:
             needed.append((c_start, c_end))
     return needed
+
+
+# ---------------------------------------------------------------------------
+# Data-freshness chip (2026-10-04) — tail-staleness of completed sessions
+# ---------------------------------------------------------------------------
+
+#: Minute-of-day (IST) by which the last session's bars are expected to have
+#: settled in mStock's historical endpoint. Flagging at 15:31 would nag about
+#: a session still incomplete; the 0.9 coverage probe would re-fetch it anyway
+#: — the chip waits until that cannot be an artifact.
+DATA_SETTLE_MIN_IST = 16 * 60 + 15  # 16:15 IST
+
+_IST = timezone(timedelta(hours=5, minutes=30))
+_freshness_lock = threading.Lock()
+_freshness_cache: dict[str, Any] = {"at": 0.0, "payload": None, "updating": False}
+
+
+def _is_session_day(d, holidays) -> bool:
+    """A day that should have produced bars: Mon–Fri and not an exchange closure."""
+    return d.weekday() < 5 and d not in holidays
+
+
+def _last_settled_session(now_ist, holidays) -> date:
+    """Most recent session whose bars are due in the DB as of ``now_ist``.
+
+    Today counts only past :data:`DATA_SETTLE_MIN_IST`; otherwise the target
+    walks back over weekends and ``market_holidays`` closures (45-day cap for
+    pathological calendars — callers see an over-strict target, never a lie
+    that data is current).
+    """
+    if (_is_session_day(now_ist.date(), holidays)
+            and now_ist.hour * 60 + now_ist.minute >= DATA_SETTLE_MIN_IST):
+        return now_ist.date()
+    d = now_ist.date() - timedelta(days=1)
+    for _ in range(45):
+        if _is_session_day(d, holidays):
+            return d
+        d -= timedelta(days=1)
+    return d
+
+
+def _count_missing_sessions(last_day, target: date, holidays) -> int:
+    """Trading sessions in ``(last_day, target]` — tail staleness only.
+
+    Assumes everything up to ``last_day`` is covered; holes *inside* that
+    stretch are the coverage probe's job (it re-fetches their windows), while
+    the chip answers the one question a global widget can ask cheaply: "is
+    the newest session in the database?"
+    """
+    if last_day is None or last_day >= target:
+        return 0
+    n, d = 0, last_day + timedelta(days=1)
+    while d <= target:
+        if _is_session_day(d, holidays):
+            n += 1
+        d += timedelta(days=1)
+    return n
+
+
+def _compute_freshness() -> dict:
+    """Per-timeframe staleness vs the last completed session. Never raises."""
+    with _lock:
+        fetching = _job["status"] == "running"
+    out: dict[str, Any] = {
+        "db_available": False, "fetching": fetching, "level": "unknown",
+        "label": "DATA ?", "title": "Freshness unknown — database unreachable",
+        "per_timeframe": {}, "target_day": None,
+    }
+    engine = None
+    try:
+        engine = create_engine(DB_URL, echo=False)
+        now_ist = datetime.now(_IST)
+        with engine.connect() as conn:
+            rows = conn.execute(text(
+                "SELECT timeframe, MAX(ts::date) FROM market_data_cache "
+                "GROUP BY timeframe"
+            )).all()
+        # Holiday window only needs to cover the walkback; 60 days reaches
+        # any realistic gap (longest NSE stretch is under 10).
+        holidays = _load_market_holidays(
+            engine,
+            (now_ist.date() - timedelta(days=60)).isoformat(),
+            now_ist.date().isoformat(),
+        )
+        target = _last_settled_session(now_ist, holidays)
+        out["target_day"] = target.isoformat()
+        per, worst = {}, 0
+        for tf, last in rows:
+            last_d = last.date() if hasattr(last, "date") else last
+            missing = _count_missing_sessions(last_d, target, holidays)
+            per[str(tf)] = {
+                "last_day": last_d.isoformat() if last_d else None,
+                "missing": missing,
+            }
+            worst = max(worst, missing)
+        out["per_timeframe"] = per
+        out["db_available"] = True
+        if fetching:
+            out["level"] = "fetching"
+            out["label"] = "DATA FETCHING"
+            out["title"] = "A fetch is running — the chip updates when it finishes."
+        elif not per:
+            out["level"] = "red"
+            out["label"] = "NO CACHED DATA"
+            out["title"] = "market_data_cache is empty — fetch the curated universe."
+        else:
+            level = "current" if worst == 0 else ("amber" if worst == 1 else "red")
+            details = " · ".join(
+                f"{tf}: {v['last_day'] or 'no data'}"
+                + (f" ({v['missing']} behind)" if v["missing"] else "")
+                for tf, v in sorted(per.items())
+            )
+            out["level"] = level
+            out["label"] = ("DATA CURRENT" if level == "current"
+                            else f"DATA {worst} SESSION{'S' if worst > 1 else ''} BEHIND")
+            out["title"] = (
+                f"Last completed session: {target.isoformat()}. {details}."
+                + ("" if level == "current" else " Click to fetch on the Data tab.")
+            )
+    except Exception as exc:  # noqa: BLE001 — a chip must never break a page render
+        log.warning("[data] freshness check failed: %s", exc)
+    finally:
+        if engine is not None:
+            engine.dispose()
+    return out
+
+
+def _spawn_freshness_refresh() -> None:
+    """Recompute the freshness payload off-thread; at most one runner."""
+    def _run() -> None:
+        try:
+            payload = _compute_freshness()
+            with _freshness_lock:
+                _freshness_cache["payload"] = payload
+                _freshness_cache["at"] = time.time()
+        except Exception as exc:  # noqa: BLE001 — next render retries anyway
+            log.warning("[data] background freshness refresh failed: %s", exc)
+        finally:
+            with _freshness_lock:
+                _freshness_cache["updating"] = False
+
+    with _freshness_lock:
+        if _freshness_cache["updating"]:
+            return
+        _freshness_cache["updating"] = True
+    threading.Thread(target=_run, daemon=True, name="data-freshness-refresh").start()
+
+
+#: The grouped MAX over the hypertable costs ~14s until migration 019
+#: (``ix_mdc_tf_ts``) lands — and it can only be built while fetches are
+#: idle (Timescale rejects CONCURRENTLY). So the render path NEVER computes
+#: inline: it serves the cached payload and refreshes in the background
+#: (stale-while-revalidate). A gray "CHECKING" chip beats a 14s page.
+_FRESHNESS_TTL_SECONDS = 300.0
+
+
+def get_data_freshness() -> dict:
+    """Cached freshness payload for the topbar chip; never blocks a render."""
+    with _freshness_lock:
+        payload = _freshness_cache["payload"]
+        expired = payload is None or (
+            time.time() - _freshness_cache["at"] >= _FRESHNESS_TTL_SECONDS
+        )
+    if expired:
+        _spawn_freshness_refresh()
+    if payload is not None:
+        return payload  # stale but truthful-ish; refresh is in flight
+    return {
+        "db_available": False, "fetching": False, "level": "unknown",
+        "label": "DATA CHECKING", "title": "First freshness check running — updates shortly.",
+        "per_timeframe": {}, "target_day": None,
+    }
+
+
+@data_bp.route("/api/data/freshness", methods=["GET"])
+def api_data_freshness():
+    """JSON the topbar chip re-renders from (initially it is server-rendered)."""
+    return jsonify(get_data_freshness())
 
 
 def _fetch_bars_chunked(

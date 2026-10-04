@@ -112,6 +112,14 @@
                         {%- endif -%}
                     </span>
                 </span>
+                <button id="data-freshness-chip"
+                        class="data-freshness-chip"
+                        data-state="{{ data_freshness.level }}"
+                        type="button"
+                        title="{{ data_freshness.title }}">
+                    <span class="freshness-dot" aria-hidden="true"></span>
+                    <span id="data-freshness-label" class="freshness-text">{{ data_freshness.label }}</span>
+                </button>
                 <button id="halt-pill" class="halt-pill halt-pill-unknown" type="button" title="Checking portfolio risk — click to view Risk Board">
                     <span id="halt-pill-dot" aria-hidden="true">⚪</span><span id="halt-pill-text">Checking</span>
                 </button>
@@ -213,6 +221,7 @@
     <script src="{{ url_for('static', filename='js/components/toast.js') }}"></script>
     <script src="{{ url_for('static', filename='js/components/loader.js') }}"></script>
     <script src="{{ url_for('static', filename='js/components/market_chip.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/components/freshness_chip.js') }}"></script>
     <script src="{{ url_for('static', filename='js/components/risk_strip.js') }}"></script>
     <script src="{{ url_for('static', filename='js/broker_status.js') }}"></script>
     <script src="{{ url_for('static', filename='js/broker_auth_modal.js') }}"></script>

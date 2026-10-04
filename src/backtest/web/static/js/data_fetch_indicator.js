@@ -13,6 +13,7 @@
     let pollInterval = null;
     
     let pollTimer = null;
+    let lastKnownRunning = false;
     
     function scheduleCheck(delayMs) {
         if (pollTimer) clearTimeout(pollTimer);
@@ -25,6 +26,7 @@
     
     async function checkStatus() {
         let isRunning = false;
+        const wasRunning = lastKnownRunning;
         try {
             const resp = await fetch('/api/data/status');
             const data = await resp.json();
@@ -45,6 +47,12 @@
             }
         } catch (err) {
             // Server might be restarting, ignore
+        }
+        lastKnownRunning = isRunning;
+        // A finished job just moved MAX(ts::date) — flip the freshness chip
+        // without waiting for the next page navigation.
+        if (wasRunning && !isRunning && window.refreshDataFreshnessChip) {
+            window.refreshDataFreshnessChip();
         }
         const delay = (typeof document.hidden === "boolean" && document.hidden)
             ? (isRunning ? 6000 : 45000)

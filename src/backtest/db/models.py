@@ -751,6 +751,10 @@ class MarketDataCache(Base):
         UniqueConstraint("symbol", "exchange", "timeframe", "ts", name="uq_mdc_bar"),
         Index("ix_mdc_symbol_tf_ts", "symbol", "timeframe", text("ts DESC")),
         Index("ix_mdc_ts", text("ts DESC")),
+        # Timeframe-leading so the freshness chip's per-timeframe
+        # ``ORDER BY ts DESC LIMIT 1`` is an O(log n) seek for EMPTY
+        # timeframes too (13.7s full scan without it, 2026-10-04).
+        Index("ix_mdc_tf_ts", "timeframe", text("ts DESC")),
     )
 
     def __repr__(self) -> str:  # pragma: no cover
