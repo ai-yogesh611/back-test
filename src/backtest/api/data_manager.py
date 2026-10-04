@@ -616,7 +616,7 @@ def coverage() -> tuple:
 # Background fetch job# -----------------------------------------------------------------------
 
 
-def _run_fetch_job(
+def _run_fetch_job_inner(
     token: str,
     timeframe: str,
     from_date: str,
@@ -644,8 +644,30 @@ def _run_fetch_job(
     )
 
     # Load instruments (explicit tick, or the curated scope: catalogue
-    # tokens for the NIFTY 200, fixed token map for the indices)
-    instruments, not_found = _load_instruments(engine, symbols, scope)
+    # tokens for the NIFTY 200, fixed token map for the indices). This is the
+    # one step that used to run OUTSIDE any error handling: a database or
+    # catalogue failure here (e.g. Postgres at max_connections) killed the
+    # thread silently, leaving the job wedged in "running" with total=0 —
+    # which the UI renders as the baffling "0 / 0 symbols" (2026-10-04).
+    try:
+        instruments, not_found = _load_instruments(engine, symbols, scope)
+    except Exception as exc:  # noqa: BLE001 — a wedged job hides the real cause
+        log.error(
+            "[data] instrument resolution failed — %s: %s. The fetch did NOT "
+            "start; retry once the database/catalogue is reachable.",
+            exc.__class__.__name__,
+            exc,
+        )
+        with _lock:
+            _job["status"] = "error"
+            _job["error"] = (
+                f"Instrument list could not be loaded ({exc.__class__.__name__}). "
+                "The database or instruments catalogue is unreachable — retry "
+                "in a moment."
+            )
+        invalidate_coverage_cache()
+        engine.dispose()
+        return
     total = len(instruments) + len(not_found)
     if not instruments:
         log.warning(
@@ -654,6 +676,13 @@ def _run_fetch_job(
             ",".join(symbols) if symbols else "none ticked",
             scope,
         )
+        # Zero instruments is not a "clean done with 0 stocks" — say why so
+        # the UI never celebrates an empty run as success.
+        with _lock:
+            _job["error"] = (
+                "No instruments matched this selection — nothing was fetched. "
+                "Tick symbols, or check the scope/tab."
+            )
     else:
         log.info("[data] %d instruments to fetch (%d not found)", len(instruments), len(not_found))
 
@@ -866,6 +895,39 @@ def _run_fetch_job(
     # next page load must not serve the pre-fetch answer for a minute.
     invalidate_coverage_cache()
     engine.dispose()
+
+
+def _run_fetch_job(
+    token: str,
+    timeframe: str,
+    from_date: str,
+    to_date: str,
+    symbols: list[str] | None,
+    scope: str,
+) -> None:
+    """Thread target: never let an unhandled error wedge the job state.
+
+    Any exception escaping the worker used to leave ``_job`` stuck in
+    "running" forever (total=0 → "0 / 0 symbols", Start blocked with 409),
+    because only the per-symbol loop had error handling. This wrapper is the
+    last-resort fence: the job lands in "error" with the real message, so the
+    UI shows why and the Start button comes back (2026-10-04).
+    """
+    try:
+        _run_fetch_job_inner(token, timeframe, from_date, to_date, symbols, scope)
+    except Exception as exc:  # noqa: BLE001 — a wedged job hides the real cause
+        log.error(
+            "[data] fetch job crashed unexpectedly — %s: %s",
+            exc.__class__.__name__,
+            exc,
+            exc_info=True,
+        )
+        with _lock:
+            _job["status"] = "error"
+            _job["error"] = (
+                f"Fetch job crashed ({exc.__class__.__name__}) — see the server "
+                "log for details. The job was stopped; retry when ready."
+            )
 
 
 def _index_row(symbol: str) -> dict | None:
