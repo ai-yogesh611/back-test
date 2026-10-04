@@ -27,7 +27,7 @@ import requests
 from flask import Blueprint, jsonify, request
 from sqlalchemy import create_engine, text
 
-from backtest.data.base import MSTOCK_INTERVAL_MAP
+from backtest.data.base import MSTOCK_INTERVAL_MAP, bar_timestamp
 from backtest.data.coverage import (
     INDEX_UNIVERSE,
     INSTRUMENT_TYPES,
@@ -1648,8 +1648,6 @@ def _extract_bars(payload) -> list[dict]:
 
 def _persist_bars(engine, bars: list[dict], symbol: str, exchange: str, timeframe: str) -> int:
     """Upsert OHLCV bars into market_data_cache."""
-    import pandas as pd
-
     if not bars:
         return 0
 
@@ -1671,10 +1669,7 @@ def _persist_bars(engine, bars: list[dict], symbol: str, exchange: str, timefram
     for bar in bars:
         try:
             if isinstance(bar, dict):
-                ts_raw = bar.get("t", bar.get("time", bar.get("timestamp")))
-                ts = pd.Timestamp(ts_raw)
-                if ts.tzinfo is not None:
-                    ts = ts.tz_convert("UTC").tz_localize(None)
+                ts = bar_timestamp(bar.get("t", bar.get("time", bar.get("timestamp"))))
                 o, h, l, c = (
                     float(bar.get("o", bar.get("open", 0))),
                     float(bar.get("h", bar.get("high", 0))),
@@ -1683,9 +1678,7 @@ def _persist_bars(engine, bars: list[dict], symbol: str, exchange: str, timefram
                 )
                 v = int(bar.get("v", bar.get("volume", 0)))
             elif isinstance(bar, (list, tuple)) and len(bar) >= 6:
-                ts = pd.Timestamp(bar[0])
-                if ts.tzinfo is not None:
-                    ts = ts.tz_convert("UTC").tz_localize(None)
+                ts = bar_timestamp(bar[0])
                 o, h, l, c = float(bar[1]), float(bar[2]), float(bar[3]), float(bar[4])
                 v = int(bar[5])
             else:
@@ -1703,7 +1696,7 @@ def _persist_bars(engine, bars: list[dict], symbol: str, exchange: str, timefram
                     "symbol": symbol,
                     "exchange": exchange,
                     "timeframe": timeframe,
-                    "ts": ts.to_pydatetime(),
+                    "ts": ts,
                     "open": o,
                     "high": h,
                     "low": l,
