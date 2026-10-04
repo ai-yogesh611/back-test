@@ -28,6 +28,10 @@ class AlertType(str, Enum):
     LIQUIDITY_DRY_UP = "liquidity_dry_up"
     DATA_FEED_STALE = "data_feed_stale"
     RISK_LIMIT_BREACH = "risk_limit_breach"
+    #: Broker login session entering its last 30 minutes (state alert per broker).
+    BROKER_SESSION_EXPIRING = "broker_session_expiring"
+    #: Broker login session dead — feeds/orders paused until re-login.
+    BROKER_SESSION_EXPIRED = "broker_session_expired"
 
     def __str__(self) -> str:  # "portfolio_gamma_critical", not "AlertType.X"
         return self.value
@@ -71,6 +75,8 @@ AUDIENCE: Dict[str, tuple] = {
     AlertType.LIQUIDITY_DRY_UP.value: ("strategies",),
     AlertType.DATA_FEED_STALE.value: ("trader",),
     AlertType.RISK_LIMIT_BREACH.value: ("trader",),
+    AlertType.BROKER_SESSION_EXPIRING.value: ("trader",),
+    AlertType.BROKER_SESSION_EXPIRED.value: ("trader",),
 }
 
 

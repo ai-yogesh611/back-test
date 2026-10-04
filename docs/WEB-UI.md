@@ -1,5 +1,10 @@
 # Web UI
 
+> **Looking for "how do I use this?"** — the operator manual lives in
+> [USER-GUIDE.md](USER-GUIDE.md) (index) and [how-to/](how-to/README.md) (one
+> step-by-step file per page and tab). This file is the developer reference:
+> templates, JS controllers and endpoints.
+
 ## Adding a new page (~45 minutes)
 
 1. Create template `src/backtest/web/templates/my_page.html`:
@@ -28,6 +33,25 @@ def my_page():
 
 ## Pages
 
+Index (all routes are registered in `src/backtest/web/app.py`; nav groups come from
+`templates/base.html`). How to *use* each one: [how-to/](how-to/README.md).
+
+| Page | URL | Template | Controller |
+|------|-----|----------|------------|
+| Backtest | `/`, `/backtest` | `backtest.html` | `backtest.js` |
+| Compare strategies | `/compare` | `compare.html` | `compare.js` |
+| Parameter optimization | `/optimize`, `/optimize/runs/<id>` | `optimize.html`, `optimize_run.html` | `optimize_setup.js`, `optimize_run.js` |
+| Strategy builder | `/strategy-builder` | `strategy_builder.html` | inline |
+| Engine playground | `/forward` | `forward.html` | `forward.js` |
+| Market data | `/data` | `data_manager.html` | `data_manager.js` |
+| Settings | `/settings` | `settings.html` | inline |
+| Portfolio (overview + buckets) | `/portfolio`, `/portfolio/paper`, `/portfolio/live` | `portfolio*.html` → `_portfolio_center.html` | `portfolio.js` |
+| Strategy analytics | `/analytics` | `analytics.html` | `analytics.js` |
+| Risk management | `/risk` | `risk.html` | `components/risk_page.js` |
+| Consolidated P&L | `/reporting` | `reporting.html` | `reporting.js` |
+
+(The manual `/options` page was removed — GAP-3; its views live in Portfolio.)
+
 ### 1. Backtest (`/backtest`)
 **Template:** `templates/backtest.html`
 **JS:** `static/js/backtest.js`
@@ -36,7 +60,8 @@ Single-strategy deep dive. Configure → Run → See results.
 
 **UI Elements:**
 - Strategy dropdown (auto-populated from `/api/strategies`)
-- Symbol dropdown (hardcoded: DEMO, BTCUSD, ETHUSD, NIFTY, INFY)
+- Instrument picker (`SymbolPicker`): `All / Equity / Index / F&O` filter tabs +
+  search; symbols with no stored bars are visible but not selectable and say so
 - Timeframe selector (1D, 1H, 4H, 1W)
 - Date range pickers (From/To)
 - Capital input
@@ -51,7 +76,12 @@ Single-strategy deep dive. Configure → Run → See results.
   `⏳ Open` instead of ✅/❌.
 - Chart tabs (Equity Curve, Drawdown, Price + Signals)
 - Trade table with pagination
-- Save to Compare / Export CSV / Promote to Forward buttons
+- Save to compare / Export CSV / **Open in playground** buttons (the last one
+  pre-fills `/forward` with this run)
+- Richer **metric sections** (collapsible), **run checks** (benchmark, cost shock,
+  Monte Carlo), an advisory **certification** traffic light and **Tune This**
+  (hands the run to `/optimize`, never starts a search by itself)
+- **Recent runs** — tiles from the server run ledger (`GET /api/backtest/runs`)
 
 ### 2. Compare (`/compare`)
 **Template:** `templates/compare.html`
@@ -91,7 +121,9 @@ after a refresh.
 **Template:** `templates/portfolio*.html` → `_portfolio_center.html`
 **JS:** `static/js/portfolio.js` + `components/position_actions.js` + `components/orders_tab.js`
 
-Runner matrix + bucket metrics over the SSE snapshot, with the trading tabs:
+Runner matrix + bucket metrics over the SSE snapshot, with seven trading tabs —
+`Positions · Equity · Orders · Risk & intelligence · Trade history · Playbooks ·
+Activity log` (step-by-step usage: [how-to/portfolio.md](how-to/portfolio.md)):
 
 - **Aggregate Open Positions** — one flat row per open position (equity + option
   structures, legs listed underneath), with Target / Stop / net Δ-Θ columns and an

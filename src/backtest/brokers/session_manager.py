@@ -126,6 +126,43 @@ def _default_broker_factory() -> BrokerAuthBase:
     return _lazy("mstock")
 
 
+# ----------------------------------------------------------------------
+# Session alerts (in-app widget + outbound channels, e.g. Telegram)
+# ----------------------------------------------------------------------
+#
+# The expiry monitor used to only log + set toast flags: a page left closed
+# meant a dead broker session went unnoticed and the feeds silently stopped.
+# Transitions now also publish platform alerts (dedupe key ``type:broker``),
+# which the global alert widget surfaces on every page and the outbound
+# notifier fans to the routed channels. Both helpers NEVER raise — the
+# monitor thread must survive a broken alerts layer.
+
+
+def _alert_broker():
+    from backtest.alerts.broker import get_alert_broker
+
+    return get_alert_broker()
+
+
+def _raise_session_alert(alert_type_value: str, severity: str, key: str, message: str, data: dict) -> None:
+    try:
+        _alert_broker().raise_alert(alert_type_value, severity, message, data=data, subject=key)
+    except Exception:  # noqa: BLE001 — publishing must never break the monitor
+        logger.debug("session alert publish failed (%s)", alert_type_value, exc_info=True)
+
+
+def _resolve_session_alerts(key: str) -> None:
+    """Close both session alerts for one broker (re-auth / logout / recovery)."""
+    try:
+        from backtest.alerts.types import AlertType
+
+        broker = _alert_broker()
+        broker.resolve_key(AlertType.BROKER_SESSION_EXPIRING.value, key)
+        broker.resolve_key(AlertType.BROKER_SESSION_EXPIRED.value, key)
+    except Exception:  # noqa: BLE001
+        logger.debug("session alert resolve failed for %s", key, exc_info=True)
+
+
 class BrokerSessionManager:
     """Holds ALL live broker sessions and their lifecycles (v2).
 
@@ -335,6 +372,9 @@ class BrokerSessionManager:
                 self._expiring_soon_flags[key] = False
                 self._expired_flags[key] = False
                 self._last_observed_status[key] = STATUS_AUTHENTICATED
+            # A fresh session resolves any open session alerts immediately —
+            # the widget/Telegram shouldn't wait for the next monitor tick.
+            _resolve_session_alerts(key)
             # Remember-session-today: when the toggle is ON the freshly
             # established session is persisted (per broker) for the next boot.
             self._save_remembered_session(key)
@@ -347,6 +387,8 @@ class BrokerSessionManager:
             key = self._normalize(broker.broker_name) or "unnamed"
             broker.logout()
             self._reset_flags(key)
+        # An explicit logout is deliberate — close any open session alerts.
+        _resolve_session_alerts(key)
         # An explicit logout also forgets that broker's remembered session —
         # keeping a dead session on disk after the user said "log out" is
         # wrong. Other REGISTRY brokers' remembered sessions are preserved;
@@ -653,10 +695,13 @@ class BrokerSessionManager:
         for key, broker in sessions:
             with self._lock:
                 try:
-                    status = broker.get_session_status().get("status")
+                    info = broker.get_session_status()
+                    status = info.get("status")
                 except Exception:
                     logger.exception("broker status poll failed for %s", key)
                     continue
+                display = getattr(broker, "broker_display_name", key)
+                expires_at = info.get("expires_at")
 
                 previous = self._last_observed_status.get(key)
                 if status == STATUS_EXPIRING_SOON and previous != STATUS_EXPIRING_SOON:
@@ -664,8 +709,18 @@ class BrokerSessionManager:
                     logger.warning(
                         "%s session expiring soon — re-authentication advised", key
                     )
+                    _raise_session_alert(
+                        "broker_session_expiring",
+                        "warning",
+                        key,
+                        f"{display} login expires in under 30 minutes"
+                        f" ({expires_at or 'shortly'}) — re-authenticate (password + TOTP)"
+                        " to keep live feeds and runners running.",
+                        {"broker": key, "broker_display_name": display, "expires_at": expires_at},
+                    )
                 elif status == STATUS_EXPIRED:
-                    if previous != STATUS_EXPIRED:
+                    first_observation = previous != STATUS_EXPIRED
+                    if first_observation:
                         self._expired_flags[key] = True
                     broker.logout()  # clear the token; no auto-renew
                     logger.warning(
@@ -678,7 +733,24 @@ class BrokerSessionManager:
                         delete_saved_session(key)
                     except Exception:  # noqa: BLE001 — cleanup is best-effort
                         pass
+                    if first_observation:
+                        # The expiring alert (if still open) is superseded.
+                        # Raise only on the transition: resolving + re-raising
+                        # every tick would re-notify Telegram every 5 minutes.
+                        _resolve_session_alerts(key)
+                        _raise_session_alert(
+                            "broker_session_expired",
+                            "critical",
+                            key,
+                            f"{display} session EXPIRED — live feeds, forward entries and "
+                            "portfolio marks are paused. Re-login (password + TOTP) now.",
+                            {"broker": key, "broker_display_name": display, "expires_at": None},
+                        )
                 elif status in (STATUS_AUTHENTICATED, STATUS_EXPIRING_SOON):
+                    if status == STATUS_AUTHENTICATED:
+                        # Recovered (re-login / renewed token): close any open
+                        # session alerts so the widget and Telegram clear.
+                        _resolve_session_alerts(key)
                     # Keep the remembered entry fresh (remaining validity
                     # shrinks every tick; a stale entry would restore a
                     # soon-dead session).
