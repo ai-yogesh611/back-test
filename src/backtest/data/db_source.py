@@ -217,21 +217,31 @@ class DbSource:
 
         return resampled
 
-    def list_symbols(self, timeframe: str = "1day") -> list[str]:
+    def list_symbols(self, timeframe: Optional[str] = "1day") -> list[str]:
         """
-        Returns sorted list of distinct symbols available in DB
-        for the given timeframe.
+        Returns sorted list of distinct symbols available in DB. Pass a
+        timeframe to restrict to it, or ``None`` for every timeframe present.
         """
         engine = self._get_engine()
-        query = text(
+        if timeframe is None:
+            query = text(
+                """
+                SELECT DISTINCT symbol FROM market_data_cache
+                ORDER BY symbol ASC
             """
-            SELECT DISTINCT symbol FROM market_data_cache
-            WHERE timeframe = :timeframe
-            ORDER BY symbol ASC
-        """
-        )
+            )
+            params: dict = {}
+        else:
+            query = text(
+                """
+                SELECT DISTINCT symbol FROM market_data_cache
+                WHERE timeframe = :timeframe
+                ORDER BY symbol ASC
+            """
+            )
+            params = {"timeframe": timeframe}
         with engine.connect() as conn:
-            result = conn.execute(query, {"timeframe": timeframe})
+            result = conn.execute(query, params)
             rows = [row[0] for row in result.fetchall()]
         log.info("[db] list_symbols(timeframe=%s) → %d symbols", timeframe, len(rows))
         if not rows:
