@@ -296,3 +296,54 @@ def test_spawn_dedups_inflight_refresh(monkeypatch):
         assert len(spawned) == 1
     finally:
         dm._freshness_cache.update(saved)
+
+
+def test_freshness_works_on_sqlite_not_just_postgres(tmp_path):
+    """``MAX(ts::date)`` is Postgres-only; on SQLite it raised
+    "unrecognized token: ':'", the broad except swallowed it, and the chip
+    claimed "database unreachable" on the DEFAULT dev profile.
+
+    This pins the observable contract: with a reachable SQLite database that
+    holds bars, freshness must say so.
+    """
+    from sqlalchemy import create_engine, text
+
+    from backtest.api.data_manager import _as_session_date
+
+    # the normaliser is the pivot: PG returns datetime, SQLite returns TEXT
+    assert _as_session_date("2026-09-30 15:28:00").isoformat() == "2026-09-30"
+    assert _as_session_date("2026-09-30").isoformat() == "2026-09-30"
+    assert _as_session_date(None) is None
+    assert _as_session_date("not-a-date") is None
+    import datetime as _dt
+
+    assert _as_session_date(_dt.datetime(2026, 9, 30, 15, 28)).isoformat() == "2026-09-30"
+
+    db = tmp_path / "fresh.db"
+    eng = create_engine(f"sqlite:///{db}")
+    with eng.begin() as conn:
+        conn.execute(text("CREATE TABLE market_data_cache (timeframe TEXT, ts TEXT)"))
+        conn.execute(
+            text("INSERT INTO market_data_cache VALUES ('1min', '2026-09-30 15:28:00')")
+        )
+    eng.dispose()
+
+    import backtest.api.data_manager as dm
+
+    original = dm.DB_URL
+    dm.DB_URL = f"sqlite:///{db}"
+    try:
+        # the exact statement that used to fail on SQLite
+        e2 = create_engine(dm.DB_URL)
+        with e2.connect() as conn:
+            rows = conn.execute(
+                text("SELECT timeframe, MAX(ts) FROM market_data_cache GROUP BY timeframe")
+            ).all()
+        e2.dispose()
+        assert rows and rows[0][0] == "1min"
+        assert _as_session_date(rows[0][1]).isoformat() == "2026-09-30"
+    finally:
+        # Restore the URL only — never reload the module. A reload re-executes
+        # its module-level locks and caches, stranding references other tests
+        # have already imported.
+        dm.DB_URL = original

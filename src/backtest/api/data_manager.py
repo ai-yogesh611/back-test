@@ -1334,6 +1334,28 @@ def _last_settled_session(now_ist, holidays) -> date:
     return d
 
 
+def _as_session_date(value) -> "date | None":
+    """Normalise a ``MAX(ts)`` value from any dialect to a plain date.
+
+    PostgreSQL hands back a ``datetime``; SQLite hands back the column's TEXT
+    (``"2026-09-30 15:28:00"``). The freshness walk compares this against a
+    ``date``, so both must land on the same type — a raw string used to make
+    every comparison silently unequal.
+    """
+    if value is None:
+        return None
+    if hasattr(value, "date") and not isinstance(value, str):
+        return value.date()
+    text_value = str(value).strip()
+    if not text_value:
+        return None
+    try:
+        return datetime.fromisoformat(text_value.replace("Z", "+00:00")).date()
+    except ValueError:
+        log.warning("[data] unparsable ts in market_data_cache: %r", text_value[:40])
+        return None
+
+
 def _count_missing_sessions(last_day, target: date, holidays) -> int:
     """Trading sessions in ``(last_day, target]` — tail staleness only.
 
@@ -1366,8 +1388,14 @@ def _compute_freshness() -> dict:
         engine = create_engine(DB_URL, echo=False)
         now_ist = datetime.now(_IST)
         with engine.connect() as conn:
+            # ``ts::date`` is PostgreSQL cast syntax. On SQLite it raises
+            # "unrecognized token: ':'", the whole block is swallowed by the
+            # except below, and the chip reports "database unreachable" — a
+            # false diagnosis on the DEFAULT dev profile (config/database.yaml
+            # → sqlite:///forward_test.db, and 13 sqlite migrations ship).
+            # MAX(ts) is portable; the value is normalised to a date below.
             rows = conn.execute(text(
-                "SELECT timeframe, MAX(ts::date) FROM market_data_cache "
+                "SELECT timeframe, MAX(ts) FROM market_data_cache "
                 "GROUP BY timeframe"
             )).all()
         # Holiday window only needs to cover the walkback; 60 days reaches
@@ -1381,7 +1409,7 @@ def _compute_freshness() -> dict:
         out["target_day"] = target.isoformat()
         per, worst = {}, 0
         for tf, last in rows:
-            last_d = last.date() if hasattr(last, "date") else last
+            last_d = _as_session_date(last)
             missing = _count_missing_sessions(last_d, target, holidays)
             per[str(tf)] = {
                 "last_day": last_d.isoformat() if last_d else None,
