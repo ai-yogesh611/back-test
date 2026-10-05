@@ -453,7 +453,9 @@ async function openStoredCompare(compareId) {
         showToast("Stored comparison has no readable slot results — re-run", "error");
         return;
     }
-    lastResults = built.filter((s) => s.result && Array.isArray(s.result.equity));
+    // A slot is plottable when its equity series has points — {dates, values} from
+    // the adapter, not an Array (an Array test dropped every slot on reload).
+    lastResults = built.filter((s) => s.result?.equity?.dates?.length);
     lastProvenance = p.provenance || null;
     lastComparison = p.comparison || null;
     const badge = $("comparePersistBadge");

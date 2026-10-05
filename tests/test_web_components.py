@@ -122,6 +122,30 @@ def test_symbol_picker_and_timeframes_behaviour():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_backtest_chart_panes_behaviour():
+    """The three result panes must plot the shape the server actually sends.
+
+    ``BacktestAdapter`` returns equity/drawdown as ``{dates, values}`` and signals
+    as ``{candles, buys, sells}``. A caller that tests those wrappers for being
+    Arrays rejects every payload, and all three panes go blank for every run —
+    metrics and trade ledger intact, so nothing else looks wrong. Pins that each
+    pane reaches its renderer, and that a series with no points leaves a blank
+    canvas rather than the previous run's curve.
+    """
+    result = subprocess.run(
+        ["node", str(_REPO_ROOT / "tests" / "js" / "test_backtest_chart_panes.mjs")],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert (
+        result.returncode == 0
+    ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "7 tests passed" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
 def test_richer_metric_sections_behaviour():
     """PRD backTest-enhance §2.2: the four expandable metric sections and the
     insufficient-trade-count banner.

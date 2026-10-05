@@ -203,20 +203,27 @@ function renderResults(result) {
     renderChartForPane("equity");
 }
 
+const CHART_CANVASES = { equity: "equityChart", drawdown: "drawdownChart", signals: "signalsChart" };
+
 function renderChartForPane(pane) {
     if (!lastRun) return;
-    const series = (pane, key) => {
-        const el = $(pane);
-        if (!el) return;
-        const data = lastRun.result[key];
-        if (!Array.isArray(data) || !data.length) { el.replaceChildren(); return; }
-        if (pane === "equity") renderEquityChart("equityChart", data);
-        else if (pane === "drawdown") renderDrawdownChart("drawdownChart", data);
-        else if (pane === "signals") renderSignalsChart("signalsChart", data);
-    };
-    if (pane === "equity") series("equityChart", "equity");
-    else if (pane === "drawdown") series("drawdownChart", "drawdown");
-    else if (pane === "signals") series("signalsChart", "signals");
+    const canvasId = CHART_CANVASES[pane];
+    if (!canvasId) return;
+    const el = $(canvasId);
+    if (!el) return;
+    const data = lastRun.result?.[pane];
+    // The adapter sends equity/drawdown as {dates, values} and signals as
+    // {candles, buys, sells}; the axis field is what counts as "no points".
+    // Testing the wrapper for an Array hid all three panes for every run.
+    const axis = pane === "signals" ? data?.candles : data?.dates;
+    if (!Array.isArray(axis) || !axis.length) {
+        // A run without this series must not leave the previous run's curve up.
+        window.Chart?.getChart?.(el)?.destroy();
+        return;
+    }
+    if (pane === "equity") renderEquityChart(canvasId, data);
+    else if (pane === "drawdown") renderDrawdownChart(canvasId, data);
+    else renderSignalsChart(canvasId, data);
 }
 
 // ---------------------------------------------------------------------------
