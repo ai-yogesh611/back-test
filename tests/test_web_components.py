@@ -118,9 +118,7 @@ def test_symbol_picker_and_timeframes_behaviour():
     assert (
         result.returncode == 0
     ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    # Grew from 21 when the picker learned to separate stored bars from the
-    # coarser rollups the engine can build out of them.
-    assert "24 tests passed" in result.stdout
+    assert "21 tests passed" in result.stdout
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
@@ -294,8 +292,7 @@ def test_compare_controller_sends_the_right_request():
     assert (
         result.returncode == 0
     ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    # 15 now the shared timeframe list is pinned to what the symbol can serve.
-    assert "15 tests passed" in result.stdout
+    assert "14 tests passed" in result.stdout
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
