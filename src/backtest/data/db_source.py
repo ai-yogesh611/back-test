@@ -45,6 +45,35 @@ _INTERVAL_TO_RULE = {
 _SOURCE_TF_PRIORITY = list(CANONICAL_TIMEFRAMES)
 
 
+def window_bounds(start: str, end: str) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """Resolve a caller's ``start``/``end`` into a **half-open** ``[lo, hi)``.
+
+    ``end`` means "up to and including this date", which is what every caller
+    in this repo means by it: the UI's picker is an ``<input type="date">``, the
+    API documents ``to_date``, and the Data tab's own coverage query uses
+    ``ts::date <= :to_date``. Comparing a timestamp column directly against a
+    bare date (``ts BETWEEN :start AND :end``) resolves to midnight and
+    therefore drops the ENTIRE final session — one day of a one-month run, and
+    every bar of a single-day run. Both are silent: the query succeeds and
+    returns a shorter frame.
+
+    So: a date-only ``end`` is widened to the next midnight and compared with
+    ``<``. An ``end`` that carries a clock time is treated as an instant and
+    kept inclusive (``<=``) — no caller does that today, but a mid-session
+    cut-off is a sensible thing to ask for and should not be silently widened
+    by a day.
+
+    ``start`` needs no adjustment: ``ts >= '2026-09-02'`` already includes the
+    whole first session on both backends.
+    """
+    lo = pd.Timestamp(start)
+    hi = pd.Timestamp(end)
+    if hi == hi.normalize():  # date-only → include the whole day
+        hi = hi + pd.Timedelta(days=1)
+        return lo, hi
+    return lo, hi + pd.Timedelta(microseconds=1)  # instant → inclusive
+
+
 class DbSource:
     """
     Reads OHLCV candles from market_data_cache (PostgreSQL / TimescaleDB).
@@ -92,13 +121,18 @@ class DbSource:
         # Find the best source timeframe (finest available)
         source_tf = self._find_best_source_tf(engine, symbol, interval)
 
+        # ``ts BETWEEN :start AND :end`` compared timestamps against midnight
+        # and silently dropped the whole final day — see window_bounds().
+        lo, hi_exclusive = window_bounds(start, end)
+
         query = text(
             """
             SELECT ts, open, high, low, close, volume
             FROM market_data_cache
             WHERE symbol = :symbol
               AND timeframe = :timeframe
-              AND ts BETWEEN :start AND :end
+              AND ts >= :start
+              AND ts < :end
             ORDER BY ts ASC
         """
         )
@@ -109,8 +143,8 @@ class DbSource:
             params={
                 "symbol": symbol,
                 "timeframe": source_tf,
-                "start": start,
-                "end": end,
+                "start": lo.to_pydatetime(),
+                "end": hi_exclusive.to_pydatetime(),
             },
         )
 
@@ -128,7 +162,8 @@ class DbSource:
             )
             raise ValueError(
                 f"Symbol '{symbol}' not found in database for timeframe '{source_tf}' "
-                f"between {start} and {end}. "
+                f"between {start} and {end} "
+                f"(stored {source_tf} bars matching {lo} <= ts < {hi_exclusive}). "
                 f"Run fetch_nifty500_historical.py --timeframe 1min to populate."
             )
 

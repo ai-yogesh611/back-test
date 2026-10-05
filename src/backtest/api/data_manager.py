@@ -1161,6 +1161,28 @@ def _build_windows(from_date: str, to_date: str, chunk_days: int) -> list:
     return windows
 
 
+def _day_expr(engine, column: str = "ts") -> str:
+    """SQL that reduces a timestamp column to a day, for the engine's dialect.
+
+    ``date_trunc('day', ts)::date`` / ``ts::date`` are PostgreSQL cast syntax
+    with no SQLite equivalent; on SQLite the whole probe raises, is swallowed by
+    its error handler, and returns ``{}`` — which means *every* symbol is
+    re-fetched in full on every resume, silently disabling the coverage skip on
+    the default dev profile (config/database.yaml → sqlite, 13 sqlite
+    migrations ship). ``date(ts)`` is SQLite's equivalent and yields the same
+    ``YYYY-MM-DD`` text.
+
+    An engine whose dialect cannot be read (a stub in a test, a proxy object) is
+    treated as the deployment target rather than raising: this is called while
+    building the probe's SQL, outside its ``except``, so raising here would take
+    down a fetch job that is otherwise perfectly able to run.
+    """
+    name = getattr(getattr(engine, "dialect", None), "name", None)
+    if name == "sqlite":
+        return f"date({column})"
+    return f"date_trunc('day', {column})::date"
+
+
 def _probe_covered_days(
     engine, symbols: list[str], timeframe: str, from_date: str, to_date: str
 ) -> dict[str, set]:
@@ -1190,15 +1212,18 @@ def _probe_covered_days(
     threshold = _coverage_threshold(timeframe)
     bind = {f"s{i}": s for i, s in enumerate(dict.fromkeys(symbols))}
     in_clause = ", ".join(f":{k}" for k in bind)
-    sql = text(
-        "SELECT symbol, date_trunc('day', ts)::date AS d, COUNT(DISTINCT ts) AS n "
-        "FROM market_data_cache "
-        f"WHERE timeframe = :timeframe AND symbol IN ({in_clause}) "
-        "AND ts::date >= :from_date AND ts::date <= :to_date "
-        "GROUP BY symbol, d"
-    )
     covered: dict[str, set] = {}
     try:
+        # Built inside the try: a dialect this cannot express must degrade to a
+        # full fetch like any other probe failure, not take the job down.
+        day = _day_expr(engine)
+        sql = text(
+            f"SELECT symbol, {day} AS d, COUNT(DISTINCT ts) AS n "
+            "FROM market_data_cache "
+            f"WHERE timeframe = :timeframe AND symbol IN ({in_clause}) "
+            f"AND {day} >= :from_date AND {day} <= :to_date "
+            "GROUP BY symbol, d"
+        )
         with engine.connect() as conn:
             rows = conn.execute(
                 sql,
@@ -1217,8 +1242,12 @@ def _probe_covered_days(
         return covered
     for symbol, d, n in rows:
         if n >= threshold:
-            day = d.date() if hasattr(d, "date") else d
-            covered.setdefault(str(symbol).strip().upper(), set()).add(day)
+            # PostgreSQL hands back a datetime, SQLite the TEXT 'YYYY-MM-DD';
+            # _windows_needing_fetch compares against ``date`` objects, so a raw
+            # string here would match nothing and disable the skip entirely.
+            day = _as_session_date(d)
+            if day is not None:
+                covered.setdefault(str(symbol).strip().upper(), set()).add(day)
     return covered
 
 

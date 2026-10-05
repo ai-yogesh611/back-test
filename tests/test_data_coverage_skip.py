@@ -207,6 +207,101 @@ def test_probe_with_no_symbols_returns_empty_without_querying():
 
 
 # ---------------------------------------------------------------------------
+# The probe must run on the DEFAULT profile, not only on PostgreSQL
+#
+# `date_trunc('day', ts)::date` is PostgreSQL cast syntax. On SQLite the probe
+# raised, its `except` returned {} — the documented "never skip wrongly" path —
+# and so every symbol was re-fetched in full on every resume. Safe, but it meant
+# the coverage skip never once fired on the default dev profile
+# (config/database.yaml → sqlite, and 13 sqlite migrations ship).
+# ---------------------------------------------------------------------------
+
+
+class _DialectEngine:
+    """Minimal engine carrying only what _day_expr reads."""
+
+    def __init__(self, name):
+        self.dialect = type("D", (), {"name": name})()
+
+
+def test_day_expr_is_dialect_aware():
+    assert dm._day_expr(_DialectEngine("sqlite")) == "date(ts)"
+    assert dm._day_expr(_DialectEngine("postgresql")) == "date_trunc('day', ts)::date"
+    # a named column is carried through
+    assert dm._day_expr(_DialectEngine("sqlite"), "bar_ts") == "date(bar_ts)"
+
+
+def test_day_expr_on_an_unknown_engine_does_not_raise():
+    """It is called OUTSIDE the probe's except block — raising kills the job."""
+
+    class _Opaque:  # no `.dialect` at all, like some proxies/stubs
+        pass
+
+    assert dm._day_expr(_Opaque()) == "date_trunc('day', ts)::date"
+
+
+def _sqlite_cache_with_full_session(path):
+    """A file-backed SQLite cache holding one complete 375-bar session.
+
+    Full, because the threshold is what decides coverage: 338 of 375 minutes
+    for 1min. A thin day is deliberately *not* covered (that is the point of
+    the raised fraction), so a small fixture would prove nothing.
+    """
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE TABLE market_data_cache ("
+                " symbol TEXT, timeframe TEXT, ts TEXT, "
+                " UNIQUE (symbol, timeframe, ts))"
+            )
+        )
+        conn.execute(
+            text("INSERT INTO market_data_cache (symbol, timeframe, ts) VALUES (:s, :t, :ts)"),
+            [
+                {
+                    "s": "RELIANCE",
+                    "t": "1min",
+                    "ts": f"2026-09-30 {9 + m // 60:02d}:{m % 60:02d}:00",
+                }
+                for m in range(15, 15 + 375)
+            ],
+        )
+    return engine
+
+
+def test_the_probe_runs_on_sqlite(tmp_path):
+    """The real thing: a file-backed SQLite cache, the default profile."""
+    engine = _sqlite_cache_with_full_session(tmp_path / "probe.db")
+    try:
+        covered = dm._probe_covered_days(
+            engine, ["RELIANCE"], "1min", "2026-09-01", "2026-09-30"
+        )
+    finally:
+        engine.dispose()
+
+    assert covered == {"RELIANCE": {date(2026, 9, 30)}}, (
+        "a fully-stored day must be reported as covered on SQLite too"
+    )
+
+
+def test_the_skip_actually_fires_on_sqlite(tmp_path):
+    """The end-to-end consequence: one probe + one comparison = zero refetches."""
+    engine = _sqlite_cache_with_full_session(tmp_path / "probe2.db")
+    try:
+        covered = dm._probe_covered_days(
+            engine, ["RELIANCE"], "1min", "2026-09-01", "2026-09-30"
+        )
+    finally:
+        engine.dispose()
+
+    window = [(datetime(2026, 9, 30), datetime(2026, 9, 30, 23, 59))]
+    assert dm._windows_needing_fetch(window, covered["RELIANCE"]) == []
+
+
+# ---------------------------------------------------------------------------
 # _fetch_bars_chunked honours an explicit windows list
 # ---------------------------------------------------------------------------
 
