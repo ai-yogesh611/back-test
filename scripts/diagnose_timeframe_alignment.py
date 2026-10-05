@@ -236,7 +236,17 @@ def main() -> int:
         head += "  (stored -> same instant in IST)"
     print(head)
     for row in alignment:
-        flag = "  <-- tz-sensitive" if row["tz_sensitive"] else ""
+        # The marker means "a wrong storage convention would show up HERE" — it
+        # is a property of the timeframe, not a finding. Naming it after the
+        # verdict keeps a passing line from reading like a warning: for IST
+        # storage the buckets are labelled as expected, and saying so is the
+        # difference between "check this" and "this is fine".
+        if not row["tz_sensitive"]:
+            flag = ""
+        elif tz["verdict"] == "utc":
+            flag = "  <-- OFFSET (see verdict)"
+        else:
+            flag = "  (convention-sensitive, matches expected)"
         tf, n = row["timeframe"], row["bars_in_sample"]
         line = f"   {tf:7s} {n:>7d} bars   {row['bucket_starts_stored']}"
         if show_ist:
