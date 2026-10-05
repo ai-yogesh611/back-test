@@ -40,13 +40,24 @@
         ));
     }
 
-    /** Coverage string for an option label: "1min/1day · 1,247 bars". */
+    /** Coverage string for an option label: "1min · 1,247 bars".
+     *
+     * Reads timeframes_STORED, not timeframes_AVAILABLE. The two answer
+     * different questions and only one belongs on a label: "available" is the
+     * derived set the dropdown offers, which is the same nine entries for every
+     * instrument holding healthy 1min data — no information about THIS symbol,
+     * and long enough to swamp the name beside it. "stored" is the one fact the
+     * label can carry that the user cannot guess: what was actually downloaded.
+     *
+     * The dropdown keeps using timeframes_available, because there the derived
+     * set is the whole point (a 1min symbol can answer 1day; a 1day-only symbol
+     * must never be offered 1min, since resampling runs one way).
+     */
     function detailOf(row) {
         if (!row || !row.data_available) return "";
         const bits = [];
-        if (row.timeframes_available && row.timeframes_available.length) {
-            bits.push(row.timeframes_available.join("/"));
-        }
+        const stored = row.timeframes_stored || [];
+        if (stored.length) bits.push(stored.join("/"));
         if (row.bars_count) bits.push(`${row.bars_count.toLocaleString()} bars`);
         return bits.join(" · ");
     }

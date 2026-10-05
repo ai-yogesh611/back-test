@@ -47,12 +47,18 @@ async function dmFetchCoverage(params) {
     return data;
 }
 
+/** Label detail for a Data-tab row: "1min · 4,817 bars".
+ *
+ * timeframes_STORED, deliberately — what was downloaded is the fact a row label
+ * can convey; timeframes_available is the derived set the Backtest picker
+ * offers, nine entries for any symbol with healthy 1min data, so printing it
+ * here told every row the same long thing. Mirrors SymbolPicker.detailOf().
+ */
 function dmDetail(row) {
     if (!row.data_available) return '';
     const bits = [];
-    if (row.timeframes_available && row.timeframes_available.length) {
-        bits.push(row.timeframes_available.join('/'));
-    }
+    const stored = row.timeframes_stored || [];
+    if (stored.length) bits.push(stored.join('/'));
     if (row.bars_count) bits.push(`${row.bars_count.toLocaleString()} bars`);
     return bits.join(' · ');
 }

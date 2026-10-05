@@ -57,18 +57,25 @@ function makeEl(id) {
 const elements = {};
 const el = (id) => (elements[id] = elements[id] || makeEl(id));
 
-/** Server response for the seeded coverage fixture. */
+/** Server response for the seeded coverage fixture.
+ *
+ * The two timeframe fields deliberately DISAGREE, because that is the real
+ * shape and the distinction the label bug was made of: RELIANCE holds only
+ * 1-minute bars but can serve eight coarser granularities on top of that.
+ */
 const COVERAGE = {
     instruments: [
         { symbol: "RELIANCE", name: "Reliance Industries Ltd.", instrument_type: "equity",
           data_available: true, bars_count: 1247, from_date: "2020-01-01", to_date: "2024-12-31",
-          timeframes_available: ["1min", "1day"] },
+          timeframes_stored: ["1min"],
+          timeframes_available: ["1min", "5min", "10min", "15min", "30min", "1hour", "4hour", "1day"] },
         { symbol: "NIFTY", name: "NIFTY 50", instrument_type: "index",
           data_available: true, bars_count: 1247, from_date: "2020-01-01", to_date: "2024-12-31",
-          timeframes_available: ["1day"] },
+          timeframes_stored: ["1day"], timeframes_available: ["1day", "1week"] },
         { symbol: "TCS", name: "Tata Consultancy Services", instrument_type: "equity",
           data_available: false, bars_count: 0, from_date: null, to_date: null,
-          timeframes_available: [], hint: "No data loaded. Go to Data tab → fetch data for this symbol." },
+          timeframes_stored: [], timeframes_available: [],
+          hint: "No data loaded. Go to Data tab → fetch data for this symbol." },
     ],
     total: 3, returned: 3, known_total: 206, available_total: 2,
     hidden_total: 1,
@@ -223,9 +230,53 @@ await test("a symbol WITH data is selectable and labelled with its coverage", as
     const rel = el("p3").options.find((o) => o.value === "RELIANCE");
     assert.equal(rel.disabled, false);
     assert.match(rel.textContent, /RELIANCE/);
-    assert.match(rel.textContent, /1min\/1day/);
+    assert.match(rel.textContent, /1min\b/);
     assert.match(rel.textContent, /1,247 bars/);
     assert.match(rel.title, /Reliance Industries/);
+});
+
+await test("the label lists what is STORED, never the derived set", async () => {
+    // The regression: `label = timeframes_available` printed the same eight-item
+    // list under every instrument that holds 1min data — identical text, no
+    // information about the symbol it sat beside.
+    SymbolPicker.mount({ select: "p6", search: "p6s", tabs: "p6t", summary: "p6sum" });
+    await tick();
+    const rel = el("p6").options.find((o) => o.value === "RELIANCE");
+    assert.match(rel.textContent, /1min ·/, "expected the stored timeframe");
+    for (const derived of ["5min", "15min", "1hour", "4hour", "1day"]) {
+        assert.ok(
+            !rel.textContent.includes(derived),
+            `derived timeframe ${derived} must not appear in the label: "${rel.textContent}"`
+        );
+    }
+});
+
+await test("the dropdown still offers the DERIVED set the server reports", async () => {
+    // The other half of the same distinction. timeframesFor() must keep reading
+    // timeframes_AVAILABLE — the label fix must not narrow what can be chosen,
+    // or a 1min symbol would offer a lone 1min and the original bug returns.
+    SymbolPicker.mount({ select: "p20", search: "p20s", tabs: "p20t", summary: "p20sum" });
+    await tick();
+    const picker = SymbolPicker.mount({
+        select: "p21", search: "p21s", tabs: "p21t", summary: "p21sum",
+    });
+    await tick();
+    eqList(
+        picker.timeframesFor("RELIANCE"),
+        ["1min", "5min", "10min", "15min", "30min", "1hour", "4hour", "1day"]
+    );
+    eqList(picker.timeframesFor("NIFTY"), ["1day", "1week"]);
+});
+
+await test("a daily-only symbol is never offered intraday", async () => {
+    // Resampling runs one way. Offering 1min for a symbol stored at 1day would
+    // send the user into a run that must fail.
+    const picker = SymbolPicker.mount({
+        select: "p22", search: "p22s", tabs: "p22t", summary: "p22sum",
+    });
+    await tick();
+    const tfs = picker.timeframesFor("NIFTY");
+    assert.ok(!tfs.includes("1min"), `NIFTY must not offer 1min, got ${tfs}`);
 });
 
 await test("the All/Equity/Index/F&O tabs are rendered", async () => {
@@ -299,8 +350,12 @@ await test("a truncated page says how many more with-data rows exist", async () 
 await test("timeframesFor answers from the loaded coverage", async () => {
     const picker = SymbolPicker.mount({ select: "p6", search: "p6s", tabs: "p6t", summary: "p6sum" });
     await tick();
-    eqList(picker.timeframesFor("RELIANCE"), ["1min", "1day"]);
-    eqList(picker.timeframesFor("NIFTY"), ["1day"]);
+    // The fixture's available sets: one 1min symbol, one daily-only, one empty.
+    eqList(
+        picker.timeframesFor("RELIANCE"),
+        ["1min", "5min", "10min", "15min", "30min", "1hour", "4hour", "1day"]
+    );
+    eqList(picker.timeframesFor("NIFTY"), ["1day", "1week"]);
     eqList(picker.timeframesFor("TCS"), []);
     eqList(picker.timeframesFor("UNKNOWN"), []);
 });

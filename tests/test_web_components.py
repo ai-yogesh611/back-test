@@ -118,7 +118,32 @@ def test_symbol_picker_and_timeframes_behaviour():
     assert (
         result.returncode == 0
     ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    assert "21 tests passed" in result.stdout
+    assert "24 tests passed" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_data_manager_row_labels_show_stored_not_derived_timeframes():
+    """The Data tab's row label reads "1min · 4,817 bars" — what was downloaded.
+
+    ``timeframes_available`` and ``timeframes_stored`` sit on the same coverage
+    row and mean different things: available is the derived set the Backtest
+    picker offers (nine entries for any symbol holding 1min data, identical for
+    every one of them), stored is what the fetch actually wrote. Printing the
+    former put the same long list under every instrument, which is noise rather
+    than information. The picker's copy of the same rule is pinned in
+    ``test_symbol_picker_and_timeframes_behaviour`` above.
+    """
+    result = subprocess.run(
+        ["node", str(_REPO_ROOT / "tests" / "js" / "test_data_manager_labels.mjs")],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert (
+        result.returncode == 0
+    ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "6 tests passed" in result.stdout
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
