@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -90,6 +91,12 @@ def main() -> int:
 
     # Ingest in-process rather than by subprocess: same code path, and the
     # output stays in this program's ordering instead of interleaving.
+    #
+    # The ingest resolves its target through ``get_db_url()`` — env first, then
+    # config/database.yaml — NOT through the ``--db`` argument this script was
+    # given. Without pinning FORWARD_TEST_DB_URL here, the migrations land in
+    # ``--db`` and the bars land in the default profile's database, and the
+    # failure surfaces only later as "no such table: market_data_cache".
     ingest = _load_ingest()
     argv = [
         str(INGEST),
@@ -98,11 +105,17 @@ def main() -> int:
         "--timeframe", "1min",
         "--source", "mstock",
     ]
-    saved_argv, sys.argv = sys.argv, argv
+    saved_argv, saved_url = sys.argv, os.environ.get("FORWARD_TEST_DB_URL")
+    sys.argv = argv
+    os.environ["FORWARD_TEST_DB_URL"] = f"sqlite:///{args.db.resolve()}"
     try:
         rc = ingest.main()
     finally:
         sys.argv = saved_argv
+        if saved_url is None:
+            os.environ.pop("FORWARD_TEST_DB_URL", None)
+        else:
+            os.environ["FORWARD_TEST_DB_URL"] = saved_url
     if rc != 0:
         return rc
 
@@ -114,6 +127,14 @@ def main() -> int:
         ).fetchall()
     finally:
         conn.close()
+
+    # The bars and the schema must be in the SAME file, or every later command
+    # in the docstring is a confusing failure. Cheap to prove, so prove it.
+    if not rows:
+        raise SystemExit(
+            f"ingest wrote nothing to {args.db} — check that the CSV at {args.csv} "
+            f"parsed and that FORWARD_TEST_DB_URL was not overridden"
+        )
 
     print("\nmarket_data_cache now holds:")
     for tf, n, lo, hi in rows:
