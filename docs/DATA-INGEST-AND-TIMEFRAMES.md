@@ -114,14 +114,37 @@ passes a real timestamp instead of a date still gets an exact instant:
 re-run rather than re-argued; `tests/test_real_reliance_september.py` runs the
 whole path and is skipped when the file is absent.
 
-Facts worth knowing about this file, all of them benign:
+Facts worth knowing about this file. **One of them is not benign:**
 
 | Observation | Reading |
 |---|---|
 | Every session is missing 15:16–15:19; six also miss 15:29 | A consistent 4-minute hole, not scattered corruption |
 | 126 bars have `o == h == l == c` | The single-price closing auction, all at or after 15:15 |
-| 9 September weekdays absent (01, 04, 07, 10, 14, 16, 22, 25, 28) | Holidays — worth confirming against the NSE calendar |
 | 370–371 bars/session | vs 375 for a full session, given the hole above |
+| **8 of 21 weekdays in 2–30 Sep hold no bars** | **7 of them are missing data, not holidays** |
+
+The file covers 13 sessions where 2–30 September 2026 contains 21 weekdays, one
+of which (Monday 14 September, Ganesh Chaturthi) was an NSE holiday — so **20
+sessions were available and 7 have no bars at all**:
+
+```
+2026-09-04 (Fri)   2026-09-16 (Wed)   2026-09-28 (Mon)
+2026-09-07 (Mon)   2026-09-22 (Tue)
+2026-09-10 (Thu)   2026-09-25 (Fri)
+```
+
+September 2026 has exactly one exchange holiday (14 September — confirmed
+against the NSE/BSE calendars for 2026, which list Ganesh Chaturthi as the only
+September closure). The other seven weekdays were trading days. Whatever
+produced this export dropped them — a 1-minute fetch that returned 13 of 20
+sessions, a third of the month missing.
+
+That is worth more than any resampling question here: a backtest over this file
+runs on 13 days of a 20-day month, and nothing in the app says so. The ingest
+script now prints the weekday gaps for exactly this reason (it cannot know the
+holiday calendar, so it lists them and lets you judge), and `market_holidays`
+seeded from `tools/seed_market_holidays.py` is what turns those gaps into a
+proper "missing" verdict instead of a guess.
 
 Resampling the stored minutes reproduces each session exactly (`open` at 09:15,
 `close` at 15:28/15:29, true high/low, summed volume) — checked against an

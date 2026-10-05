@@ -152,6 +152,18 @@ def _parse_timestamps(df: pd.DataFrame, cols: list[str]) -> tuple[pd.Series, str
     )
 
 
+def _runs(days: list) -> list[list]:
+    """Collapse consecutive dates into runs — ``04, 07, 10`` stays three lines,
+    but an unbroken ``22, 23, 24`` hole reads as one range instead of three."""
+    out: list[list] = []
+    for day in days:
+        if out and (day - out[-1][-1]).days == 1:
+            out[-1].append(day)
+        else:
+            out.append([day])
+    return out
+
+
 def _read_any(path: Path) -> pd.DataFrame:
     """Read with delimiter sniffing; fall back across the common separators."""
     for sep in (None, ",", ";", "\t", r"\s+"):
@@ -270,6 +282,26 @@ def main() -> int:
     med = int(per_session.median())
     print(f"sessions          {len(per_session)}  (median {med} bars/session)")
     print(f"storage timezone  {tz_label}")
+
+    # Weekday holes. A broker export that drops whole sessions still ingests
+    # cleanly — every bar it does contain is valid — and the backtest then runs
+    # on a half-empty month without a word. On the real RELIANCE file this
+    # reported 7 missing sessions, of which only one (14 Sep, Ganesh Chaturthi)
+    # is an NSE holiday: the other six are data the fetch never returned.
+    # The trading calendar is not available here, so every weekday in the range
+    # is listed and the operator judges — the point is that it is not silent.
+    span = pd.date_range(out["ts"].min().normalize(), out["ts"].max().normalize(), freq="B")
+    have = set(out["ts"].dt.normalize())
+    missing = [d for d in span if d not in have]
+    if missing:
+        print(f"weekday gaps      {len(missing)} of {len(span)} weekdays in range hold no bars:")
+        for group in _runs([d.date() for d in missing]):
+            span_txt = f"{group[0]}" if len(group) == 1 else f"{group[0]}..{group[-1]}"
+            print(f"                    {span_txt} ({len(group)} day"
+                  f"{'s' if len(group) > 1 else ''})")
+        print("                  -> check these against the NSE holiday list. A gap that")
+        print("                     is NOT a holiday is missing data, and a backtest will")
+        print("                     happily run on it.")
     if tz_verdict == "utc":
         print("                  -> 1hour/4hour resampling will be offset. Run")
         print("                     scripts/diagnose_timeframe_alignment.py after ingesting.")
