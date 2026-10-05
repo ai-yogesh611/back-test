@@ -38,7 +38,11 @@ from typing import Any, Iterable
 
 from sqlalchemy import text
 
-from backtest.data.base import CANONICAL_TIMEFRAMES
+from backtest.data.base import (
+    CANONICAL_TIMEFRAMES,
+    derive_serviceable_timeframes,
+    finest_timeframe,
+)
 from backtest.logging_config import get_logger
 
 log = get_logger(__name__)
@@ -132,12 +136,22 @@ _TYPE_MAP = {
 
 @dataclass
 class BarCoverage:
-    """What ``market_data_cache`` actually holds for one symbol."""
+    """What ``market_data_cache`` actually holds for one symbol.
+
+    ``timeframes_stored`` is the literal truth — the granularities somebody
+    downloaded. ``timeframes`` is what the symbol can *serve*, which is the
+    stored set plus everything derivable from the finest of them by resampling
+    (see :func:`backtest.data.base.derive_serviceable_timeframes`). A picker
+    offers ``timeframes``; the Data tab reports ``timeframes_stored`` so "what
+    did I download?" and "what can I run?" stop being the same question.
+    """
 
     bars_count: int = 0
     from_date: str | None = None
     to_date: str | None = None
     timeframes: list[str] = field(default_factory=list)
+    timeframes_stored: list[str] = field(default_factory=list)
+    bars_by_timeframe: dict[str, int] = field(default_factory=dict)
 
     @property
     def data_available(self) -> bool:
@@ -152,6 +166,11 @@ class BarCoverage:
             # Finest first (canonical order), so a picker never offers a
             # coarser timeframe before the finer one that is really stored.
             "timeframes_available": list(self.timeframes),
+            # What was literally downloaded, and how much of it: the Data tab's
+            # "source of truth" columns, and the evidence behind the derived
+            # list above.
+            "timeframes_stored": list(self.timeframes_stored),
+            "bars_by_timeframe": dict(self.bars_by_timeframe),
         }
 
 
@@ -303,8 +322,10 @@ def load_bar_coverage(engine: Any) -> dict[str, BarCoverage]:
         bars = int(row["bars"] or 0)
         cov.bars_count += bars
         tf = str(row["timeframe"] or "").strip()
-        if tf and tf not in cov.timeframes:
-            cov.timeframes.append(tf)
+        if tf and tf not in cov.timeframes_stored:
+            cov.timeframes_stored.append(tf)
+        if tf:
+            cov.bars_by_timeframe[tf] = cov.bars_by_timeframe.get(tf, 0) + bars
         earliest = _iso_date(row["earliest"])
         latest = _iso_date(row["latest"])
         # Totals span every stored granularity, so widen rather than overwrite.
@@ -312,7 +333,16 @@ def load_bar_coverage(engine: Any) -> dict[str, BarCoverage]:
         cov.to_date = _max_date(cov.to_date, latest)
 
     for cov in out.values():
-        cov.timeframes.sort(key=lambda tf: order.get(tf, len(order)))
+        cov.timeframes_stored.sort(key=lambda tf: order.get(tf, len(order)))
+        # Offer everything this symbol can SERVE, not only what it literally
+        # holds. A symbol fetched once at 1min could always answer 5min/1hour/
+        # 1day — DbSource has resampled since P4.3 — but the picker was handed
+        # only the stored list, so it hid eight of nine timeframes.
+        finest = finest_timeframe(cov.timeframes_stored)
+        cov.timeframes = derive_serviceable_timeframes(
+            cov.timeframes_stored,
+            finest_bars=cov.bars_by_timeframe.get(finest) if finest else None,
+        )
     log.info(
         "[coverage] bar coverage: %d symbols, %d bars",
         len(out),

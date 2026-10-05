@@ -10,7 +10,13 @@ from typing import Optional
 import pandas as pd
 from sqlalchemy import create_engine, text
 
-from backtest.data.base import normalize_candles
+from backtest.data.base import (
+    CANONICAL_TIMEFRAMES,
+    derive_serviceable_timeframes,
+    finest_timeframe,
+    normalize_candles,
+    normalize_timeframe,
+)
 from backtest.db.config import get_db_url
 from backtest.logging_config import get_logger
 
@@ -31,7 +37,12 @@ _INTERVAL_TO_RULE = {
 }
 
 #: Finest-grained first — used to pick the stored timeframe to read from.
-_SOURCE_TF_PRIORITY = ["1min", "5min", "15min", "1hour", "1day", "1week"]
+#: DERIVED from the canonical vocabulary, never hand-written: the previous
+#: literal omitted ``10min``/``30min``/``4hour``, so a symbol stored ONLY at
+#: 30min fell through the whole loop, fell back to ``return requested``, and
+#: produced a spurious "not found in database" for a timeframe it could have
+#: resampled perfectly well.
+_SOURCE_TF_PRIORITY = list(CANONICAL_TIMEFRAMES)
 
 
 class DbSource:
@@ -221,8 +232,25 @@ class DbSource:
         """
         Returns sorted list of distinct symbols available in DB. Pass a
         timeframe to restrict to it, or ``None`` for every timeframe present.
+
+        A timeframe filter means "which symbols can SERVE this timeframe", not
+        "which symbols have rows literally stamped with it". The old literal
+        filter reported **zero** symbols for a cache holding 48,750 one-minute
+        bars of RELIANCE, because there was no row with ``timeframe='1day'`` —
+        the app then logged "0 symbols available" for a symbol it could back-
+        test at all nine granularities. Resampling is the whole point of this
+        source; the listing has to agree with it.
         """
         engine = self._get_engine()
+        wanted = normalize_timeframe(timeframe) if timeframe is not None else None
+        if timeframe is not None and wanted is None:
+            log.warning(
+                "[db] list_symbols: %r is not a known timeframe (known: %s)",
+                timeframe,
+                ", ".join(CANONICAL_TIMEFRAMES),
+            )
+            return []
+
         if timeframe is None:
             query = text(
                 """
@@ -230,24 +258,46 @@ class DbSource:
                 ORDER BY symbol ASC
             """
             )
-            params: dict = {}
-        else:
-            query = text(
-                """
-                SELECT DISTINCT symbol FROM market_data_cache
-                WHERE timeframe = :timeframe
-                ORDER BY symbol ASC
+            with engine.connect() as conn:
+                rows = [str(row[0]) for row in conn.execute(query).fetchall()]
+            log.info("[db] list_symbols(timeframe=None) → %d symbols", len(rows))
+            return rows
+
+        # One grouped scan, then derive per symbol — the same rule the coverage
+        # endpoint uses, so the picker's list and its timeframe dropdown can
+        # never disagree about what a symbol supports.
+        query = text(
             """
-            )
-            params = {"timeframe": timeframe}
+            SELECT symbol, timeframe, COUNT(*) AS bars
+            FROM market_data_cache
+            GROUP BY symbol, timeframe
+        """
+        )
+        counts: dict[str, dict[str, int]] = {}
         with engine.connect() as conn:
-            result = conn.execute(query, params)
-            rows = [row[0] for row in result.fetchall()]
+            for row in conn.execute(query).mappings():
+                symbol = str(row["symbol"]).strip().upper()
+                if not symbol:
+                    continue
+                tf = str(row["timeframe"] or "").strip()
+                counts.setdefault(symbol, {})[tf] = int(row["bars"] or 0)
+
+        rows = []
+        for symbol, by_tf in counts.items():
+            finest = finest_timeframe(by_tf)
+            serviceable = derive_serviceable_timeframes(
+                by_tf,
+                finest_bars=by_tf.get(finest) if finest else None,
+            )
+            if wanted in serviceable:
+                rows.append(symbol)
+        rows.sort()
         log.info("[db] list_symbols(timeframe=%s) → %d symbols", timeframe, len(rows))
         if not rows:
             log.warning(
-                "[db] market_data_cache has no rows for timeframe=%r — check what was "
-                "ingested (SELECT DISTINCT timeframe FROM market_data_cache)",
+                "[db] no symbol in market_data_cache can serve timeframe=%r — check "
+                "what was ingested (SELECT symbol, timeframe, COUNT(*) FROM "
+                "market_data_cache GROUP BY symbol, timeframe)",
                 timeframe,
             )
         return rows

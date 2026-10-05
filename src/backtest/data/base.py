@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Protocol, runtime_checkable
 
 import pandas as pd
@@ -100,6 +101,22 @@ _TIMEFRAME_ALIASES: dict[str, str] = {
     "weekly": "1week",
 }
 
+#: Canonical timeframe -> minutes of MARKET time in one bar. ``1day`` is one NSE
+#: session (375 minutes), not 1440, and ``1week`` is five sessions (1875). Same
+#: convention as :data:`BARS_PER_TRADING_DAY` — and it is what turns "can daily
+#: bars be built from 1-minute bars?" into a division instead of a guess.
+TIMEFRAME_MINUTES: dict[str, int] = {
+    "1min": 1,
+    "5min": 5,
+    "10min": 10,
+    "15min": 15,
+    "30min": 30,
+    "1hour": 60,
+    "4hour": 240,
+    "1day": TRADING_MINUTES_PER_DAY,  # 375
+    "1week": TRADING_MINUTES_PER_DAY * 5,  # 1875
+}
+
 #: Weeks per year — used for every ``1week`` annualisation.
 WEEKS_PER_YEAR = 52
 
@@ -116,6 +133,76 @@ def normalize_timeframe(timeframe: str | None) -> str | None:
     if key in CANONICAL_TIMEFRAMES or key in BARS_PER_TRADING_DAY:
         return key
     return _TIMEFRAME_ALIASES.get(key)
+
+
+def canonical_rank(timeframe: str | None) -> int | None:
+    """Position of a timeframe in :data:`CANONICAL_TIMEFRAMES`, finest first.
+
+    ``None`` when the name is not a canonical timeframe. Rank arithmetic is how
+    the rest of this module asks "is this coarser than that?" without a second
+    hand-maintained ordering that can drift out of step with the vocabulary.
+    """
+    key = normalize_timeframe(timeframe)
+    if key is None:
+        return None
+    try:
+        return CANONICAL_TIMEFRAMES.index(key)
+    except ValueError:  # a BARS_PER_TRADING_DAY-only name (no canonical entry)
+        return None
+
+
+def finest_timeframe(stored: Iterable[str] | None) -> str | None:
+    """The finest canonical timeframe in a stored set (``None`` when empty)."""
+    ranks = [r for r in (canonical_rank(tf) for tf in (stored or [])) if r is not None]
+    return CANONICAL_TIMEFRAMES[min(ranks)] if ranks else None
+
+
+def derive_serviceable_timeframes(
+    stored: Iterable[str] | None,
+    *,
+    finest_bars: int | None = None,
+    min_bars: int = 2,
+) -> list[str]:
+    """Every canonical timeframe a stored set can actually serve, finest first.
+
+    Resampling only goes one way: fine bars aggregate up into coarse ones and
+    never the reverse. So a symbol stored at ``1min`` can answer a ``1day``
+    request — :class:`~backtest.data.db_source.DbSource` resamples it — while a
+    symbol stored at ``1day`` can never answer ``1min``, because that would be
+    inventing prices rather than aggregating them.
+
+    ``finest_bars`` (rows held at the finest stored granularity) caps the reach
+    upward: a week of 1-minute bars cannot become a year of weekly bars, and
+    advertising ``1week`` for a range that yields a single bar only sends the
+    user into a run that must fail. Omit it to apply no cap.
+
+    Stored timeframes are returned unconditionally — they are physically there,
+    so a picker must be able to choose them no matter what the cap says. Only
+    the *derived* entries are filtered.
+
+    This is computed rather than persisted on purpose: it repairs instruments
+    that were downloaded before the rule existed, with no re-fetch and no
+    backfill migration.
+    """
+    stored_canonical = {tf for tf in (normalize_timeframe(t) for t in (stored or [])) if tf}
+    if not stored_canonical:
+        return []
+
+    finest = min(canonical_rank(tf) for tf in stored_canonical)  # type: ignore[type-var]
+    finest_minutes = TIMEFRAME_MINUTES.get(CANONICAL_TIMEFRAMES[finest], 0)
+
+    out: list[str] = []
+    for rank in range(finest, len(CANONICAL_TIMEFRAMES)):
+        candidate = CANONICAL_TIMEFRAMES[rank]
+        if candidate in stored_canonical:
+            out.append(candidate)
+            continue
+        if finest_bars is not None and finest_minutes:
+            step = TIMEFRAME_MINUTES.get(candidate, 0)
+            if step > finest_minutes and (finest_bars * finest_minutes) / step < min_bars:
+                continue  # not enough base bars to fill even one window
+        out.append(candidate)
+    return out
 
 
 def periods_per_year(timeframe: str | None, default: int = TRADING_DAYS_PER_YEAR) -> int:
