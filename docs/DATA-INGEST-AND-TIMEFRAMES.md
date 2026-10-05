@@ -105,6 +105,66 @@ passes a real timestamp instead of a date still gets an exact instant:
 | `2026-09-30` | `2026-10-01 00:00` (exclusive) | 2026-09-30 |
 | `2026-09-30 12:00` | `2026-09-30 12:00` (inclusive) | 2026-09-30, up to noon |
 
+The rule reads only the caller's dates, never the stored timestamps, so it
+holds under both storage conventions and needs no change when the UTC write
+path is fixed. That is verified, not asserted:
+`tests/data/test_window_bounds.py` runs the rule against IST-stamped and
+UTC-stamped caches (NSE's session fits inside one UTC calendar day — 09:15 IST
+= 03:45 UTC, 15:29 IST = 09:59 UTC — so the end date keeps meaning "that
+trading day" either way).
+
+---
+
+## Two conventions are in play, and only one of them is this file's
+
+The export is naive **IST**: the Data fetch path stores UTC stamps, and this
+CSV was converted to IST when it was produced. So:
+
+* **This file** exercises the IST branch, and no offset problem appears in it;
+* **the live database** holds the UTC branch, where the offsets do appear.
+
+`scripts/diagnose_timeframe_alignment.py` is the check that separates them, and
+it is the acceptance test for the UTC write-path fix. Against a UTC-stored
+cache for the same data it reports:
+
+```
+1. STORAGE TIMEZONE
+   naive UTC (session starts ~03:45)
+
+2. BUCKET STARTS AS PRODUCED  (stored -> same instant in IST)
+   1min   ['03:45:00', ...]  ->  ['09:15:00', ...]
+   1hour  ['03:00:00', ...]  ->  ['08:30:00', ...]     <-- tz-sensitive
+   4hour  ['00:00:00', ...]  ->  ['05:30:00', ...]     <-- tz-sensitive
+   1day   ['00:00:00', ...]  ->  ['05:30:00', ...]
+
+VERDICT: storage is UTC and resampling does not convert to IST, ...
+```
+
+The two tz-sensitive rows are the whole story, and one is worse than it sounds:
+
+| timeframe | IST-stored | UTC-stored | what changes |
+|---|---|---|---|
+| 1min / 5min / 10min / 15min / 30min | 4817 / 975 / 494 / 325 / 169 | identical | clock-aligned either way; windows differ by up to 15 min at the open |
+| 1hour | 91 | 91 | first bar is a **15-minute stub** (03:45–03:59) labelled as an hour |
+| 4hour | 26 | **39** | **gains stub bars** — 13 extra "4-hour" bars built from 15-minute fragments |
+| 1day / 1week | 13 / 5 | 13 / 5 | unaffected; a session never crosses UTC midnight |
+
+So a `4hour` strategy is being fed 39 bars where 26 exist, and a `1hour`
+strategy's first bar of every session is a quarter of an hour long. Both are
+price-correct — no bar is invented or mispriced — which is exactly why nothing
+errored and the only symptom was a backtest that "looked wrong". The read path
+is not the place to fix this; converting on write (or storing UTC and
+converting on read, consistently) is.
+
+Anyone re-importing an export should note that `ingest_csv_to_mdc.py` will
+*warn* rather than proceed quietly if it sees this shape:
+
+```
+storage timezone  naive UTC (session starts 03:45)
+                  -> 1hour/4hour resampling will be offset. Run
+                     scripts/diagnose_timeframe_alignment.py after ingesting.
+```
+
 ---
 
 ## Worked example: RELIANCE, September 2026

@@ -282,6 +282,12 @@ def main() -> int:
     med = int(per_session.median())
     print(f"sessions          {len(per_session)}  (median {med} bars/session)")
     print(f"storage timezone  {tz_label}")
+    # Printed next to the verdict it belongs to, not after the gap block below.
+    if tz_verdict == "utc":
+        print("                  -> 1hour/4hour resampling will be offset. Run")
+        print("                     scripts/diagnose_timeframe_alignment.py after ingesting.")
+    elif tz_verdict == "unknown":
+        print("                  -> not an NSE session shape; check the export.")
 
     # Weekday holes. A broker export that drops whole sessions still ingests
     # cleanly — every bar it does contain is valid — and the backtest then runs
@@ -302,11 +308,6 @@ def main() -> int:
         print("                  -> check these against the NSE holiday list. A gap that")
         print("                     is NOT a holiday is missing data, and a backtest will")
         print("                     happily run on it.")
-    if tz_verdict == "utc":
-        print("                  -> 1hour/4hour resampling will be offset. Run")
-        print("                     scripts/diagnose_timeframe_alignment.py after ingesting.")
-    elif tz_verdict == "unknown":
-        print("                  -> not an NSE session shape; check the export.")
 
     if args.dry_run:
         print("\n--dry-run: nothing written.")
