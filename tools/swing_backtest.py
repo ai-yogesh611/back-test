@@ -176,9 +176,9 @@ def load_weekly(engine, symbol: str, start: str, end: str) -> pd.DataFrame:
 def load_hourly(engine, symbol: str, start: str, end: str) -> pd.DataFrame:
     """1-minute rows -> IST hourly bars anchored on the 09:15 session open.
 
-    Stored 1-min timestamps are the session's UTC wall-clock mislabelled as
-    IST (03:45+05:30 is really 09:15 IST); re-interpret the naive value as
-    UTC before converting back to IST.
+    Cached rows are repaired at the source (``bar_timestamp`` writers plus
+    ``scripts/migrate_cache_ts_to_session_clock.py``), so ``_read`` already
+    hands back bars on the real IST session clock — no re-tagging here.
     """
     df = _read(
         engine,
@@ -190,11 +190,7 @@ def load_hourly(engine, symbol: str, start: str, end: str) -> pd.DataFrame:
     )
     if df.empty:
         return df
-    # Stored 1-min wall-clock values are the session's UTC time wearing an IST
-    # label (03:45+05:30 really means 09:15 IST). Drop the label, re-tag as
-    # UTC, then convert to real IST.
-    naive = df["ts"].dt.tz_localize(None)
-    df.index = pd.DatetimeIndex(naive).tz_localize("utc").tz_convert(IST)
+    df.index = df["ts"]
     df.index.name = "ts"
     h = (df[["open", "high", "low", "close", "volume"]]
          .resample("1h", offset="15min", label="left", closed="left")
