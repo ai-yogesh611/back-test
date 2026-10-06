@@ -698,3 +698,135 @@ def test_validate_accepts_non_ascii_generated_code():
     )
     assert is_valid is True
     assert result["validation_status"] == "PASS"
+
+
+# ----------------------------------------------------------------------
+# Stateful path: strategy.order(..., when=) + strategy.exit(...) scripts
+# ----------------------------------------------------------------------
+
+#: Rob Booker — ADX breakout (Pine v5): broker-state references
+#: (strategy.position_size/position_avg_price/opentrades), user functions
+#: dirmov()/adx(), self-referencing box levels and order+exit pairs. This is
+#: the script shape that used to be rejected outright ("No strategy.entry()").
+PINE_ADX_BREAKOUT = """
+//@version=5
+strategy("Rob Booker — ADX breakout", shorttitle="RB ADX breakout", overlay=true)
+adxSmoothPeriod = input(14, title="ADX Smoothing Period")
+adxPeriod = input(14, title="ADX Period")
+adxLowerLevel = input(18, title="ADX Lower Level")
+profitTargetMultiple = input(1, title="Profit Target Box Width Multiple")
+stopLossMultiple = input(0.5, title="Stop Loss Box Width Multiple")
+boxLookBack = input(20, title="BreakoutBox Lookback Period")
+enableDirection = input(0, title="Both(0), Long(1), Short(-1)")
+
+dirmov(len) =>
+    up = change(high)
+    down = -change(low)
+    truerange = rma(tr, len)
+    plus = fixnan(100 * rma(up > down and up > 0 ? up : 0, len) / truerange)
+    minus = fixnan(100 * rma(down > up and down > 0 ? down : 0, len) / truerange)
+    [plus, minus]
+
+adx(dilen, adxlen) =>
+    [plus, minus] = dirmov(dilen)
+    sum = plus + minus
+    adx = 100 * rma(abs(plus - minus) / (sum == 0 ? 1 : sum), adxlen)
+
+sig = adx(adxSmoothPeriod, adxPeriod)
+isADXLow = sig < adxLowerLevel
+
+boxUpperLevel = strategy.position_size == 0 ? highest(high, boxLookBack)[1] : boxUpperLevel[1]
+boxLowerLevel = strategy.position_size == 0 ? lowest(low, boxLookBack)[1] : boxLowerLevel[1]
+boxWidth = boxUpperLevel - boxLowerLevel
+
+profitTarget = strategy.position_size > 0  ? strategy.position_avg_price + profitTargetMultiple*boxWidth : strategy.position_size < 0 ?  strategy.position_avg_price - profitTargetMultiple*boxWidth : na
+stopLoss = strategy.position_size > 0 ? strategy.position_avg_price - stopLossMultiple*boxWidth : strategy.position_size < 0 ? strategy.position_avg_price + stopLossMultiple*boxWidth : na
+
+isBuyValid = strategy.position_size == 0 and cross(close, boxUpperLevel) and isADXLow
+isSellValid = strategy.position_size == 0 and cross(close, boxLowerLevel) and isADXLow
+
+entry_long = isBuyValid and strategy.opentrades == 0 and (enableDirection == 1 or enableDirection == 0)
+strategy.order("open_long", true, when=entry_long)
+strategy.exit(id="close_long", from_entry="open_long", stop=stopLoss, limit=profitTarget)
+
+entryShort = isSellValid and strategy.opentrades == 0 and (enableDirection == -1 or enableDirection == 0)
+strategy.order("open_short", false, when=entryShort)
+strategy.exit(id="close_short", from_entry="open_short", stop=stopLoss, limit=profitTarget)
+"""
+
+
+def test_order_based_script_converts_via_stateful_path():
+    """strategy.order/when scripts convert instead of being rejected, with
+    the entry criteria, TP/SL formulas and direction flags extracted."""
+    converter = PineScriptConverter()
+    python_code, metadata = converter.convert(
+        PINE_ADX_BREAKOUT, strategy_name="RobBookerADXBreakout"
+    )
+
+    # Stateful path: the bar-by-bar generate_signals() loop, not entries().
+    assert "def generate_signals" in python_code
+    assert "long_entries" not in python_code
+    assert "pos = 0" in python_code
+    assert "_box_hist_hi_boxUpperLevel" in python_code
+
+    assert metadata["has_long"] is True
+    assert metadata["has_short"] is True
+    r = metadata["readable"]
+    assert "isBuyValid" in r["entry"]
+    assert "profitTarget" in r["take_profit"]
+    assert "stopLoss" in r["stop_loss"]
+    assert set(r["missing"]) == set()
+    assert metadata["warnings"] == []  # stops are enforced in-loop
+
+
+def test_order_based_strategy_trades_on_candles():
+    """The generated loop opens positions on box breaks and closes them via
+    the strategy.exit stop/limit levels; the engine consumes the series."""
+    import pandas as pd
+
+    from backtest.engine.backtester import Backtester
+    from backtest.plugins import _candles
+
+    python_code, _ = PineScriptConverter().convert(
+        PINE_ADX_BREAKOUT, strategy_name="RobBookerADXBreakout"
+    )
+    cls = _load_generated(python_code, "RobBookerADXBreakout")
+
+    # The smooth _candles series keeps ADX above 18 almost everywhere, so the
+    # entry gate is loosened through the script's own input params — this is
+    # what the param plumbing is for, and it must not need code changes.
+    strat = cls(adxLowerLevel=200, boxLookBack=10)
+    df = _candles(500)
+    sig = strat.generate_signals(df)
+
+    assert isinstance(sig, pd.Series)
+    assert sig.isin([-1, 0, 1]).all()
+    entries = int((sig != 0).sum())
+    assert entries > 0, "box breakouts must fire entries on the synthetic series"
+    assert int((sig == 1).sum()) > 0 and int((sig == -1).sum()) > 0
+
+    # Held bars repeat the side (the engine shifts by one), and every trade
+    # is followed by a flat bar — the in-loop stop/limit exits close it.
+    trades = int(((sig.shift(1) == 0) & (sig != 0)).sum())
+    assert trades >= 2
+    closed = int(((sig.shift(1) != 0) & (sig == 0)).sum())
+    assert closed >= trades - 1
+
+    result = Backtester().run(df, sig)
+    assert float(result.equity.iloc[-1]) != 100_000.0  # trades actually executed
+    assert int((result.position.abs() > 0).sum()) == entries - 1  # shift-by-one
+
+
+def test_order_based_direction_param_gates_entries():
+    """enableDirection == 1 must suppress the short order entirely."""
+    from backtest.plugins import _candles
+
+    python_code, _ = PineScriptConverter().convert(
+        PINE_ADX_BREAKOUT, strategy_name="RobBookerADXBreakout"
+    )
+    cls = _load_generated(python_code, "RobBookerADXBreakout")
+
+    strat = cls(adxLowerLevel=200, boxLookBack=10, enableDirection=1)
+    sig = strat.generate_signals(_candles(500))
+    assert int((sig == -1).sum()) == 0
+    assert int((sig == 1).sum()) > 0

@@ -78,8 +78,13 @@ class PineScriptConverter:
 
         # 5. An `indicator()` script plots but never trades — with no
         # `strategy.entry()` block nothing is wired into entries(), and the
-        # saved plugin would silently stay flat on every bar.
-        if not re.search(r"^\s+(?:long|short)_entries \|=", python_code, re.MULTILINE):
+        # saved plugin would silently stay flat on every bar. strategy.order
+        # scripts take the stateful generate_signals() path instead.
+        if not re.search(
+            r"^\s+(?:long|short)_entries \|=|^\s+def generate_signals\(",
+            python_code,
+            re.MULTILINE,
+        ):
             raise PineConversionError(
                 "No `strategy.entry()` call was found, so nothing can be "
                 "converted into entries. This looks like an `indicator()` "
@@ -298,9 +303,11 @@ import numpy as np
         stops and targets built on ``var`` state (``trailStop := ...``) are
         per-trade bookkeeping, so they never become an ``exits()`` — and the
         Save checklist still accepts them as typed criteria strings, which
-        otherwise leaves the impression the level is enforced in code.
+        otherwise leaves the impression the level is enforced in code. The
+        stateful path enforces strategy.exit() levels inside the loop, so it
+        has nothing to warn about.
         """
-        if re.search(r"^\s+def exits\(", python_code, re.MULTILINE):
+        if re.search(r"^\s+def (exits|generate_signals)\(", python_code, re.MULTILINE):
             return []
         return [
             "No exits() was generated: the strategy enters and then holds the "
@@ -403,6 +410,10 @@ import numpy as np
     def _has_long_trades(self, ast: Dict) -> bool:
         """Check if strategy has long entry signals."""
         for statement in ast.get("statements", []):
+            if statement.get("function") == "strategy.order":
+                if statement.get("is_long"):
+                    return True
+                continue
             if statement.get("type") == "if_statement":
                 for inner in statement.get("body", []):
                     if inner.get("type") == "strategy_call":
@@ -416,6 +427,10 @@ import numpy as np
     def _has_short_trades(self, ast: Dict) -> bool:
         """Check if strategy has short entry signals."""
         for statement in ast.get("statements", []):
+            if statement.get("function") == "strategy.order":
+                if not statement.get("is_long"):
+                    return True
+                continue
             if statement.get("type") == "if_statement":
                 for inner in statement.get("body", []):
                     if inner.get("type") == "strategy_call":
@@ -505,6 +520,17 @@ import numpy as np
         # 1. Entry criteria: the condition(s) feeding strategy.entry.
         for cond, call in all_calls("strategy.entry"):
             entry = entry or cond or call.get("direction", "")
+
+        # 1b. strategy.order(..., when=...) scripts: the when-condition is the
+        #     entry criteria (resolved one level so entry_long reads as its
+        #     isBuyValid/opentrades formula, not a bare variable name).
+        if entry is None:
+            for stmt in ast.get("statements", []):
+                if stmt.get("function") == "strategy.order":
+                    when = str(stmt.get("when", "")).strip()
+                    if when:
+                        entry = resolve(when)
+                        break  # first order is the primary direction
 
         # 2. Exit: strategy.close triggers a reversal/exits.
         for cond, call in all_calls("strategy.close"):
