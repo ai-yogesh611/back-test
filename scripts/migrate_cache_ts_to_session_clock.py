@@ -105,39 +105,51 @@ EARLY_CTE = """
     )
 """
 
+CACHE_COLS = ("data_id, symbol, exchange, timeframe, ts, open, high, low, "
+              "close, volume, bid, ask, source, ingested_at")
+
 
 def shift_symbol(conn, symbol: str, bak: str) -> dict:
-    """Shift one symbol's early-classified days. Returns counts."""
-    count_sql = text(
-        EARLY_CTE
-        + """SELECT count(*) FROM market_data_cache m
-             JOIN early e ON e.ist_day = (m.ts AT TIME ZONE 'Asia/Calcutta')::date
-             WHERE m.symbol = :s"""
-    )
-    before = conn.execute(count_sql, {"s": symbol}).scalar()
-    if not before:
-        return {"symbol": symbol, "rows": 0}
+    """Shift one symbol's early-classified days. Returns counts.
 
+    ``market_data_cache`` is a TimescaleDB hypertable partitioned on ``ts``,
+    so an UPDATE across chunk boundaries is rejected — rows are moved with a
+    delete + re-insert inside one per-symbol transaction.
+    """
+    conn.execute(text("SAVEPOINT shift"))
+    conn.execute(
+        text("DROP TABLE IF EXISTS shift_rows"),
+    )
     conn.execute(
         text(
-            EARLY_CTE
-            + f"""INSERT INTO {bak} (data_id, ts)
-                  SELECT m.data_id, m.ts FROM market_data_cache m
+            "CREATE TEMP TABLE shift_rows ON COMMIT DROP AS "
+            + EARLY_CTE
+            + f"""SELECT m.{CACHE_COLS.replace(', ', ', m.')}
+                  FROM market_data_cache m
                   JOIN early e ON e.ist_day = (m.ts AT TIME ZONE 'Asia/Calcutta')::date
                   WHERE m.symbol = :s"""
         ),
         {"s": symbol},
     )
+    rows = conn.execute(text("SELECT count(*) FROM shift_rows")).scalar()
+    if not rows:
+        conn.execute(text("RELEASE SAVEPOINT shift"))
+        return {"symbol": symbol, "rows": 0}
+
+    conn.execute(text(f"INSERT INTO {bak} ({CACHE_COLS}) SELECT {CACHE_COLS} FROM shift_rows"))
     conn.execute(
         text(
-            EARLY_CTE
-            + f"""UPDATE market_data_cache m
-                  SET ts = m.ts + {SHIFT}
-                  FROM early e
-                  WHERE e.ist_day = (m.ts AT TIME ZONE 'Asia/Calcutta')::date
-                    AND m.symbol = :s"""
-        ),
-        {"s": symbol},
+            "DELETE FROM market_data_cache m USING shift_rows s "
+            "WHERE s.data_id = m.data_id"
+        )
+    )
+    conn.execute(
+        text(
+            f"INSERT INTO market_data_cache ({CACHE_COLS}) "
+            f"SELECT data_id, symbol, exchange, timeframe, ts + {SHIFT}, "
+            "open, high, low, close, volume, bid, ask, source, ingested_at "
+            "FROM shift_rows"
+        )
     )
     still = conn.execute(
         text(
@@ -147,7 +159,10 @@ def shift_symbol(conn, symbol: str, bak: str) -> dict:
         ),
         {"s": symbol},
     ).scalar()
-    return {"symbol": symbol, "rows": before, "pre_open_left": still}
+    if still:
+        # Should be impossible: early days were the only pre-09:15 rows of this symbol.
+        raise RuntimeError(f"{symbol}: {still} pre-open rows left after shift; aborting")
+    return {"symbol": symbol, "rows": rows}
 
 
 def main() -> int:
@@ -165,10 +180,21 @@ def main() -> int:
         if args.rollback:
             if not args.bak_table or not args.bak_table.replace("_", "a").isalnum():
                 sys.exit("--rollback requires a valid --bak-table")
+            # Undo = drop the shifted copies, re-insert the originals. Hypertable,
+            # so no UPDATE of ts here either.
             conn.execute(
                 text(
-                    f"UPDATE market_data_cache m SET ts = b.ts "
-                    f"FROM {args.bak_table} b WHERE b.data_id = m.data_id"
+                    f"DELETE FROM market_data_cache m USING {args.bak_table} b "
+                    f"WHERE b.data_id = m.data_id "
+                    f"AND m.ts = b.ts + {SHIFT} AND m.symbol = b.symbol"
+                )
+            )
+            conn.execute(
+                text(
+                    f"INSERT INTO market_data_cache ({CACHE_COLS}) "
+                    f"SELECT {CACHE_COLS} FROM {args.bak_table} b "
+                    "WHERE NOT EXISTS (SELECT 1 FROM market_data_cache m "
+                    "WHERE m.data_id = b.data_id AND m.ts = b.ts)"
                 )
             )
             conn.commit()
@@ -214,7 +240,10 @@ def main() -> int:
             return 0
 
         bak = "bak_cache_ts_" + conn.execute(text("SELECT to_char(now(), 'YYYYMMDD_HH24MISS')")).scalar()
-        conn.execute(text(f"CREATE TABLE {bak} (data_id BIGINT PRIMARY KEY, ts TIMESTAMPTZ NOT NULL)"))
+        conn.execute(
+            text(f"CREATE TABLE {bak} AS SELECT * FROM market_data_cache WHERE false")
+        )
+        conn.execute(text(f"ALTER TABLE {bak} ADD PRIMARY KEY (data_id, ts)"))
         print(f"backup table: {bak}")
 
         shifted_total = 0
@@ -223,8 +252,7 @@ def main() -> int:
             if res["rows"]:
                 conn.commit()
                 shifted_total += res["rows"]
-            print(f"  [{i}/{len(symbols)}] {sym}: shifted {res.get('rows', 0)}, "
-                  f"pre-open left {res.get('pre_open_left', 0)}", flush=True)
+            print(f"  [{i}/{len(symbols)}] {sym}: shifted {res.get('rows', 0)}", flush=True)
 
         # Post-check: no pre-09:15 wall clocks left except the skipped MIXED days.
         left = conn.execute(
