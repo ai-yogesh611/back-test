@@ -148,10 +148,11 @@ Two bugs fixed while wiring this up, both silent:
 
 The plan: download **1-minute candles only** and derive every coarser timeframe
 by resampling. The read path already supports it
-(`derive_serviceable_timeframes`, one-way rule, 9 canonical timeframes) — but
-four things need handling, and the first one is silent.
+(`derive_serviceable_timeframes`, one-way rule, 9 canonical timeframes) — four
+things need handling; the first was silent and is now **resolved on main**
+(2026-10-06), the other three are still open calls.
 
-### 4.1 Storage timezone — decide IST vs UTC before the first bulk fetch
+### 4.1 Storage timezone — DECIDED: session clock (merged to main 2026-10-06)
 
 Derived timeframes **inherit the timestamp convention of whatever is stored**.
 Measured on the same 4,817 minutes of RELIANCE (2–30 Sep 2026), stored two ways:
@@ -171,16 +172,20 @@ PYTHONPATH=src python scripts/diagnose_timeframe_alignment.py --symbol RELIANCE
 ```
 
 It prints the storage timezone (`ist` / `utc` / `unknown` from the first minute
-of each session) and the actual bucket starts per timeframe. The fetch path
-stores **UTC** stamps today (documented in `docs/DATA-INGEST-AND-TIMEFRAMES.md`,
-"Two conventions are in play"). Either convert on write, or store UTC and
-convert on read consistently — but decide once, because fixing it later means
-re-fetching.
+of each session) and the actual bucket starts per timeframe.
+
+**This question is answered.** Main now writes every bar through
+`data.base.bar_timestamp()` (naive = exchange wall clock, bound as aware UTC)
+and a one-off migration shifted the whole existing cache (~45.6M rows) onto the
+session clock on 2026-10-06 — live one-day fetches verify 09:15→15:29 sessions
+with zero pre-open rows. `diagnose_timeframe_alignment.py` against the live DB
+must now report `ist`; if it ever prints `utc`, a writer regressed.
 
 **Acceptance tests to add** (they are what stops this regressing quietly):
 a 4hour-from-1min run whose buckets start at 09:15, and a 1day-from-1min run
 whose daily bar equals the trading date. Both must be asserted on **intraday**
-evidence, not on a daily match.
+evidence, not on a daily match. (The 1-minute storage itself is verified live;
+the derived-intraday assertions above are still open.)
 
 ### 4.2 The fetch dropdown still offers 5 timeframes that will all mean "1min"
 

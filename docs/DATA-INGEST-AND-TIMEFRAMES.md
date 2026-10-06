@@ -121,17 +121,21 @@ trading day" either way).
 
 ---
 
-## Two conventions are in play, and only one of them is this file's
+## Two conventions were in play — the write path is fixed (2026-10-06)
 
-The export is naive **IST**: the Data fetch path stores UTC stamps, and this
-CSV was converted to IST when it was produced. So:
+The export is naive **IST**. Until 2026-10-06 the Data fetch path stored UTC
+stamps wearing an IST label, so:
 
-* **This file** exercises the IST branch, and no offset problem appears in it;
-* **the live database** holds the UTC branch, where the offsets do appear.
+* **this file** exercised the IST branch, where no offset problem appears;
+* **the live database** held the broken branch, where the offsets did.
 
-`scripts/diagnose_timeframe_alignment.py` is the check that separates them, and
-it is the acceptance test for the UTC write-path fix. Against a UTC-stored
-cache for the same data it reports:
+Both writers now bind the exchange session clock (`data.base.bar_timestamp()`),
+and a one-off migration shifted every existing cache row onto it — the failure
+mode documented below is history, kept here as the evidence for *why* the
+storage convention matters. `scripts/diagnose_timeframe_alignment.py` is the
+regression check: against today's cache it must report the session clock
+(`ist`); a `utc` verdict means a writer regressed. Against the old UTC-stored
+cache for the same data it reported:
 
 ```
 1. STORAGE TIMEZONE
@@ -155,12 +159,13 @@ The two tz-sensitive rows are the whole story, and one is worse than it sounds:
 | 4hour | 26 | **39** | **gains stub bars** — 13 extra "4-hour" bars built from 15-minute fragments |
 | 1day / 1week | 13 / 5 | 13 / 5 | unaffected; a session never crosses UTC midnight |
 
-So a `4hour` strategy is being fed 39 bars where 26 exist, and a `1hour`
-strategy's first bar of every session is a quarter of an hour long. Both are
+So a `4hour` strategy was being fed 39 bars where 26 existed, and a `1hour`
+strategy's first bar of every session was a quarter of an hour long. Both are
 price-correct — no bar is invented or mispriced — which is exactly why nothing
 errored and the only symptom was a backtest that "looked wrong". The read path
-is not the place to fix this; converting on write (or storing UTC and
-converting on read, consistently) is.
+is not the place to fix this: the fix went to the writers (convert on write,
+session clock), with the existing rows repaired once at rest — no per-read
+compensation anywhere.
 
 Anyone re-importing an export should note that `ingest_csv_to_mdc.py` will
 *warn* rather than proceed quietly if it sees this shape:
