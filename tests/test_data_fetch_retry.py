@@ -107,7 +107,7 @@ def test_chunk_loop_counts_chunks_that_die_even_after_retries(monkeypatch):
         "key", "tok", "11703", "2026-06-01", "2026-06-07", "NSE", "minute", 2
     )
     assert errors == 1  # surfaced, not silent
-    assert len(bars) == 2  # the surviving chunk's bars still land
+    assert len(bars) == 4  # the two surviving chunks' bars still land
 
 
 def test_chunk_loop_recovers_transient_502_with_zero_errors(monkeypatch):
@@ -127,7 +127,7 @@ def test_chunk_loop_recovers_transient_502_with_zero_errors(monkeypatch):
         "key", "tok", "11703", "2026-06-01", "2026-06-07", "NSE", "minute", 2
     )
     assert errors == 0
-    assert len(bars) == 6  # both chunks fully collected after the retry
+    assert len(bars) == 9  # all three chunks fully collected after the retry
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +156,7 @@ def test_healthy_run_paces_at_base(monkeypatch):
     dm._fetch_bars_chunked(
         "key", "tok", "11703", "2026-06-01", "2026-06-10", "NSE", "minute", 2
     )
-    assert sleeps == [dm.CHUNK_SLEEP_BASE] * 3  # no widening when all is well
+    assert sleeps == [dm.CHUNK_SLEEP_BASE] * 4  # no widening when all is well
 
 
 def test_pace_widens_after_three_consecutive_failures_then_decays(monkeypatch):
@@ -181,7 +181,7 @@ def test_pace_widens_after_three_consecutive_failures_then_decays(monkeypatch):
 
 
 def test_chunks_are_fetched_in_parallel(monkeypatch):
-    # 8 windows (01,04,...,22-Jun) over 2026-06-01..25; with 4 workers
+    # 9 windows (01,04,...,22,25-Jun) over 2026-06-01..25; with 4 workers
     # several must be in flight at once — the old sequential loop can never
     # exceed 1.
     import threading
@@ -206,7 +206,7 @@ def test_chunks_are_fetched_in_parallel(monkeypatch):
         workers=4,
     )
     assert errors == 0
-    assert len(bars) == 8
+    assert len(bars) == 9
     assert state["max"] >= 2  # genuinely concurrent
 
 

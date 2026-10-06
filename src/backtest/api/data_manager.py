@@ -1144,9 +1144,9 @@ def _coverage_threshold(timeframe: str) -> int:
 
 
 def _build_windows(from_date: str, to_date: str, chunk_days: int) -> list:
-    """Split ``[from_date, to_date]`` into ``chunk_days``-wide (start, end)
-    datetimes — the exact stepping the chunk loop always used, extracted so the
-    job can decide *which* windows still need fetching before the loop runs.
+    """Split the INCLUSIVE range ``[from_date, to_date]`` into ``chunk_days``-wide
+    (start, end) datetimes — the windows the chunk loop fetches, decided before
+    the loop runs so coverage-aware skipping knows what still needs fetching.
     """
     from datetime import datetime, timedelta
 
@@ -1154,7 +1154,10 @@ def _build_windows(from_date: str, to_date: str, chunk_days: int) -> list:
     end = datetime.strptime(to_date, "%Y-%m-%d")
     windows = []
     chunk_start = start
-    while chunk_start < end:
+    # `<=`, not `<`: to_date is inclusive (the API defaults it to today, and a
+    # from==to one-day fetch must yield one window, not zero). `<` silently
+    # dropped the last day whenever it landed exactly on a chunk boundary.
+    while chunk_start <= end:
         chunk_end = min(chunk_start + timedelta(days=chunk_days), end)
         windows.append((chunk_start, chunk_end))
         chunk_start = chunk_end + timedelta(days=1)
