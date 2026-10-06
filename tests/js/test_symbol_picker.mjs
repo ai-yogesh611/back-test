@@ -3,8 +3,15 @@
  * (PRD backTest-enhance §1.3 + §1.4).
  *
  * What is pinned here:
+ *  - the picker asks for a NAMES-ONLY list (coverage_known:false) and never
+ *    for `available=1`; rows in that mode are all selectable, because
+ *    `data_available` is null and null is falsy — reading it as "no data"
+ *    would disable the entire dropdown
+ *  - `timeframesFor` answers [] on a names-only list, which is what lets the
+ *    timeframe dropdown fall back to the full canonical set
  *  - a symbol with no cached bars is LISTED, disabled, and carries the
- *    server's fetch hint as its title (the §1.3 bug: it silently vanished)
+ *    server's fetch hint as its title (the §1.3 bug: it silently vanished) —
+ *    this is the FULL-coverage mode, still used where coverage is known
  *  - the filter tabs exist and re-query with the right `types`
  *  - the timeframe dropdown only ever offers granularities the server says
  *    exist, and never empties
@@ -84,6 +91,59 @@ const COVERAGE = {
     hint: "No data loaded. Go to Data tab → fetch data for this symbol.",
     generated_at: "2026-09-29",
 };
+
+/** Server response for the NAMES-ONLY list (the picker's real request).
+ *
+ * No bars_count, no from/to, no timeframes — and `data_available` is null
+ * rather than false, because the server did not look. Consumers must key off
+ * `coverage_known`, not off the null.
+ */
+const NAMES_ONLY = {
+    instruments: [
+        { symbol: "RELIANCE", name: "Reliance Industries Ltd.", instrument_type: "equity",
+          curated: true, data_available: null, bars_count: null, from_date: null,
+          to_date: null, timeframes_stored: [], timeframes_available: [],
+          bars_by_timeframe: {}, coverage_known: false },
+        { symbol: "NIFTY", name: "NIFTY 50", instrument_type: "index", curated: true,
+          data_available: null, bars_count: null, from_date: null, to_date: null,
+          timeframes_stored: [], timeframes_available: [], bars_by_timeframe: {},
+          coverage_known: false },
+        { symbol: "TCS", name: "Tata Consultancy Services", instrument_type: "equity",
+          curated: true, data_available: null, bars_count: null, from_date: null,
+          to_date: null, timeframes_stored: [], timeframes_available: [],
+          bars_by_timeframe: {}, coverage_known: false },
+    ],
+    total: 3, returned: 3, known_total: 216,
+    available_total: null, hidden_total: 0,
+    // null = "not asked", because this path never touches the database. It
+    // must NOT render as "no data source connected" — that is a claim about
+    // the deployment, and we did not check.
+    db_available: null, catalogue_source: "builtin",
+    instrument_types: ["equity", "index", "futures", "options"],
+    hint: "No data loaded. Go to Data tab → fetch data for this symbol.",
+    generated_at: "2026-10-06",
+};
+
+/** A picker wired to one canned payload, with its request URLs captured. */
+function mountWith(payload, idPrefix) {
+    const seen = [];
+    const box = {
+        console,
+        document: { getElementById: el, createElement: () => makeOption(), addEventListener() {} },
+        fetch: (url) => {
+            seen.push(url);
+            return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(payload) });
+        },
+        URLSearchParams, Object, Array, JSON, Number, String, Promise, setTimeout, clearTimeout,
+    };
+    box.globalThis = box;
+    vm.createContext(box);
+    vm.runInContext(pickerCode, box, { filename: "symbol_picker.js" });
+    const picker = box.SymbolPicker.mount({
+        select: `${idPrefix}`, search: `${idPrefix}-s`, tabs: `${idPrefix}-t`, summary: `${idPrefix}-sum`,
+    });
+    return { picker, seen, settle: async () => { await tick(); await tick(); } };
+}
 
 const calls = [];
 const sandbox = {
@@ -384,6 +444,77 @@ await test("a failed load says so instead of showing an empty picker", async () 
     assert.match(el("p8sum").textContent, /Could not load symbols/);
     assert.match(el("p8sum").textContent, /no database/);
     assert.equal(picker.state.rows.length, 0);
+});
+
+// ------------------------------------------- names-only (static) list mode
+await test("the picker asks for names only — never for the coverage filter", async () => {
+    const { seen, settle } = mountWith(NAMES_ONLY, "n1");
+    await settle();
+    assert.equal(seen.length, 1);
+    assert.match(seen[0], /names_only=1/);
+    assert.ok(!seen[0].includes("available=1"),
+        "available=1 forces the server to measure every symbol's bars before drawing the list");
+    assert.match(seen[0], /limit=500/);
+});
+
+await test("every names-only row is SELECTABLE (data_available is null, not false)", async () => {
+    // The trap this exists for: `!row.data_available` is true for null, so an
+    // ordering mistake disables all 216 rows and the picker looks broken.
+    const { settle } = mountWith(NAMES_ONLY, "n2");
+    await settle();
+    const opts = el("n2").options;
+    assert.equal(opts.length, 3);
+    for (const o of opts) {
+        assert.equal(o.disabled, false, `${o.value} must stay selectable`);
+        assert.equal(o.className, "", `${o.value} must not wear the no-data class`);
+    }
+    assert.equal(el("n2").options.find((o) => o.value === "NIFTY").textContent, "NIFTY (NIFTY 50)");
+});
+
+await test("a names-only label carries no candle count and no timeframe", async () => {
+    const { settle } = mountWith(NAMES_ONLY, "n3");
+    await settle();
+    const rel = el("n3").options.find((o) => o.value === "RELIANCE");
+    assert.match(rel.textContent, /^RELIANCE \(Reliance Industries Ltd\.\)$/);
+    assert.doesNotMatch(rel.textContent, /bars/);
+    assert.doesNotMatch(rel.textContent, /min|hour|day/);
+    assert.doesNotMatch(rel.title || "", /bars/);
+});
+
+await test("the names-only summary counts instruments and defers availability", async () => {
+    const { settle } = mountWith(NAMES_ONLY, "n4");
+    await settle();
+    const sum = el("n4-sum");
+    assert.match(sum.textContent, /3 instruments/);
+    assert.match(sum.textContent, /data checked when you run/);
+    assert.doesNotMatch(sum.textContent, /with data/, "there is no 'with data' count to claim");
+    assert.doesNotMatch(sum.className, /sym-hidden-hint/);
+});
+
+await test("a names-only page longer than PAGE_SIZE says so", async () => {
+    const { settle } = mountWith(Object.assign({}, NAMES_ONLY, { total: 700 }), "n5");
+    await settle();
+    assert.match(el("n5-sum").textContent, /697 more — search to narrow/);
+});
+
+await test("names-only timeframes are UNKNOWN, so the dropdown keeps the full list", async () => {
+    const { picker, settle } = mountWith(NAMES_ONLY, "n6");
+    await settle();
+    eqList(picker.timeframesFor("RELIANCE"), []);
+    const sel = makeEl("tf-names-only");
+    const offered = Timeframes.applyTo(sel, picker.timeframesFor("RELIANCE"));
+    assert.equal(offered.length, Timeframes.TIMEFRAMES.length);
+    assert.ok(sel.innerHTML.includes("1day"));
+});
+
+await test("a names-only picker still injects an unseen symbol as selectable", async () => {
+    const { picker, settle } = mountWith(NAMES_ONLY, "n7");
+    await settle();
+    picker.setValue("SBIN");
+    const sbin = el("n7").options.find((o) => o.value === "SBIN");
+    assert.ok(sbin, "the injected symbol must be present");
+    assert.equal(sbin.disabled, false);
+    assert.equal(el("n7").value, "SBIN");
 });
 
 console.log(`\nsymbol picker + timeframes: ${passed} tests passed`);

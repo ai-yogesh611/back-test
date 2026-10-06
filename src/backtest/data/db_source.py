@@ -161,10 +161,9 @@ class DbSource:
                 symbol,
             )
             raise ValueError(
-                f"Symbol '{symbol}' not found in database for timeframe '{source_tf}' "
-                f"between {start} and {end} "
-                f"(stored {source_tf} bars matching {lo} <= ts < {hi_exclusive}). "
-                f"Run fetch_nifty500_historical.py --timeframe 1min to populate."
+                self._describe_stored(
+                    symbol, requested=interval, start=start, end=end, engine=engine
+                )
             )
 
         df["ts"] = pd.to_datetime(df["ts"])
@@ -195,6 +194,80 @@ class DbSource:
             source_tf,
         )
         return out
+
+    def _describe_stored(
+        self,
+        symbol: str,
+        requested: str,
+        start: str | None = None,
+        end: str | None = None,
+        engine=None,
+    ) -> str:
+        """Why the request failed, and what this symbol DOES hold.
+
+        The window the user asked for and the window the data covers are two
+        different facts, and only the second one tells them what to change. A
+        bare "no bars" sends them to check whether the symbol exists; "you
+        asked for October, this symbol holds 2–14 September" answers it. The
+        message this replaced printed the QUERY's bounds back at the user,
+        which they already knew because they had just typed them.
+
+        Reports the REQUESTED timeframe, never the stored one it resolved to:
+        asking for 1day and being told "no 1min data" describes our resampling
+        ladder, not their request. The stored granularities still appear in the
+        availability list, where they explain what could be served.
+
+        Deliberately never raises: this runs on the failure path, and a
+        reporting helper that throws would replace a useful error with a
+        useless one. Any query problem degrades to a generic sentence.
+        """
+        window = f" between {start} and {end}" if start and end else ""
+        try:
+            if engine is None:
+                engine = self._get_engine()
+            rows = pd.read_sql(
+                text(
+                    """
+                    SELECT timeframe, MIN(ts) AS first_ts, MAX(ts) AS last_ts,
+                           COUNT(*) AS bars
+                    FROM market_data_cache
+                    WHERE symbol = :symbol
+                    GROUP BY timeframe
+                    """
+                ),
+                engine,
+                params={"symbol": symbol},
+            )
+        except Exception as exc:  # noqa: BLE001 — reporting must not mask the error
+            log.debug("[db] could not describe stored data for %s: %s", symbol, exc)
+            return f"Symbol '{symbol}' has no {requested} data{window}."
+
+        if rows.empty:
+            return (
+                f"Symbol '{symbol}' has no {requested} data{window}, and no data "
+                f"of any timeframe is stored for it — fetch it from the Data tab first."
+            )
+
+        records = rows.to_dict("records")
+        parts = []
+        # CANONICAL_TIMEFRAMES is finest-first, so a symbol stored at several
+        # granularities reads "1min: …; 1day: …" rather than sorting 1day
+        # before 1min and burying the fine data the user probably wants.
+        for r in sorted(
+            records,
+            key=lambda r: CANONICAL_TIMEFRAMES.index(r["timeframe"])
+            if r["timeframe"] in CANONICAL_TIMEFRAMES
+            else len(CANONICAL_TIMEFRAMES),
+        ):
+            first = pd.to_datetime(r["first_ts"])
+            last = pd.to_datetime(r["last_ts"])
+            part = f"{r['timeframe']} {first:%d %b %Y} to {last:%d %b %Y} ({int(r['bars']):,} bars)"
+            if r["timeframe"] == requested:
+                # Distinguishes "the timeframe is missing entirely" from "it is
+                # there but the dates are wrong" — different things to do next.
+                part += " [the timeframe you asked for]"
+            parts.append(part)
+        return f"Symbol '{symbol}' has no {requested} data{window}. Available — {'; '.join(parts)}."
 
     def _find_best_source_tf(self, engine, symbol: str, requested: str) -> str:
         """Find the finest-grained timeframe available for this symbol.

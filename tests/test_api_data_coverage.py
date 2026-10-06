@@ -247,3 +247,177 @@ def test_fetch_job_invalidates_the_cached_report(client):
     assert data_manager._coverage_cache["report"] is not None
     data_manager.invalidate_coverage_cache()
     assert data_manager._coverage_cache["report"] is None
+
+
+# ---------------------------------------------------------------------------
+# names_only — the static instrument list (2026-10-06 re-architecture)
+# ---------------------------------------------------------------------------
+
+
+def test_names_only_lists_instruments_without_measuring_them(client):
+    body = get(client, names_only=1, limit=0).get_json()
+    rows = {r["symbol"]: r for r in body["instruments"]}
+    assert "RELIANCE" in rows and "NIFTY" in rows
+    row = rows["RELIANCE"]
+    assert row["data_available"] is None, "null = not asked; false would mean 'no bars'"
+    assert row["coverage_known"] is False
+    assert row["bars_count"] is None
+    assert row["from_date"] is None and row["to_date"] is None
+    assert row["timeframes_stored"] == [] and row["timeframes_available"] == []
+    assert "hint" not in row
+    assert row["name"], "the label still needs a readable name"
+
+
+def test_names_only_reports_availability_as_unknown_not_zero(client):
+    body = get(client, names_only=1, limit=0).get_json()
+    assert body["available_total"] is None, "0 would read as 'nothing has data'"
+    assert body["hidden_total"] == 0
+    assert body["known_total"] == body["total"]
+    # The database was opened — to ask which NAMES exist, not how much data
+    # they hold. So db_available is a yes, while availability stays unknown.
+    assert body["db_available"] is True
+
+
+def test_names_only_reports_an_unreachable_database_as_unknown_not_false(client, monkeypatch):
+    """"Not asked" must not be dressed up as "asked, and there is none": the
+    picker renders db_available=false as "no data source connected", which is a
+    claim about the deployment that this path never checked."""
+    monkeypatch.setattr(data_manager, "DB_URL", "sqlite:////nonexistent/nope.db")
+    data_manager.invalidate_coverage_cache()
+    body = get(client, names_only=1, limit=0).get_json()
+    assert body["total"] > 0
+    assert body["db_available"] is None
+    assert body["warnings"] == [], "an unreachable DB is not a warning for a names list"
+
+
+def test_names_only_wins_over_the_available_filter(client):
+    """`available=1&names_only=1` contradicts itself — one says look at the
+    bars, the other says do not. The cheap request wins, and the response must
+    not pretend it filtered."""
+    body = get(client, names_only=1, available=1, limit=0).get_json()
+    assert body["available_total"] is None
+    assert body["hidden_total"] == 0
+    assert all(r["data_available"] is None for r in body["instruments"])
+    # and it is not silently empty, which is what a literal reading would give
+    assert body["total"] > 0
+
+
+def test_names_only_does_not_query_the_bars_at_all(client, monkeypatch):
+    from backtest.data import coverage as coverage_mod
+
+    def explode(eng):
+        raise AssertionError("names_only must not read market_data_cache")
+
+    monkeypatch.setattr(coverage_mod, "load_bar_coverage", explode)
+    data_manager.invalidate_coverage_cache()
+    body = get(client, names_only=1, limit=0).get_json()
+    assert body["total"] > 0
+
+
+def test_names_only_never_touches_the_instruments_catalogue(client, monkeypatch):
+    """The expensive half on a real database (~1.4s of scriptmaster rows that
+    a name-only list can never show)."""
+    from backtest.data import coverage as coverage_mod
+
+    def explode(eng):
+        raise AssertionError("names_only has no use for the 140k-row catalogue")
+
+    monkeypatch.setattr(coverage_mod, "load_catalogue", explode)
+    data_manager.invalidate_coverage_cache()
+    body = get(client, names_only=1, limit=0).get_json()
+    assert body["total"] > 0
+
+
+def test_names_only_survives_a_missing_database(client, monkeypatch):
+    """It should not even need one — the shipped universe is enough."""
+    monkeypatch.setattr(data_manager, "DB_URL", "sqlite:////nonexistent/nope.db")
+    data_manager.invalidate_coverage_cache()
+    body = get(client, names_only=1, limit=0).get_json()
+    assert body["total"] > 0
+    assert body["warnings"] == []
+
+
+def test_names_only_does_not_read_bar_counts(client, monkeypatch):
+    """get_candles-loading must not run: the whole point is to skip the
+    aggregation while still listing the symbols that have bars."""
+    from backtest.data import coverage as coverage_mod
+
+    def explode(eng):
+        raise AssertionError("names_only must not aggregate bars")
+
+    monkeypatch.setattr(coverage_mod, "load_bar_coverage", explode)
+    data_manager.invalidate_coverage_cache()
+    body = get(client, names_only=1, limit=0).get_json()
+    assert body["returned"] > 0
+
+
+def test_curated_only_skips_the_catalogue_but_keeps_real_coverage(client, monkeypatch):
+    """The Data tab still shows per-symbol coverage — that is its job. It just
+    no longer pays for catalogue rows it filters away."""
+    from backtest.data import coverage as coverage_mod
+
+    def explode(eng):
+        raise AssertionError("a curated-only caller can never see a catalogue row")
+
+    data_manager.invalidate_coverage_cache()
+    full = get(client, curated=1, limit=0).get_json()
+    monkeypatch.setattr(coverage_mod, "load_catalogue", explode)
+    data_manager.invalidate_coverage_cache()
+    lean = get(client, curated=1, limit=0).get_json()
+    assert {r["symbol"] for r in lean["instruments"]} == {
+        r["symbol"] for r in full["instruments"]
+    }
+    rows = {r["symbol"]: r for r in lean["instruments"]}
+    assert rows["RELIANCE"]["bars_count"] == 3, "coverage is still measured"
+    assert rows["RELIANCE"]["data_available"] is True
+
+
+def test_the_narrow_path_still_tells_the_truth_about_what_it_did(client):
+    """A caller must be able to see which mode answered, without guessing."""
+    leaned = get(client, curated=1, limit=0).get_json()
+    named = get(client, names_only=1, limit=0).get_json()
+    full = get(client, limit=0).get_json()
+    for body in (leaned, named, full):
+        assert body["total"] > 0
+    assert named["instruments"][0]["coverage_known"] is False
+    assert full["instruments"][0]["coverage_known"] is True
+    assert leaned["instruments"][0]["coverage_known"] is True
+
+
+def test_names_only_includes_symbols_fetched_outside_the_shipped_universe(client):
+    """Fetch-then-pick must keep working.
+
+    A list built from the shipped universe alone (NIFTY 200 + indices) would
+    silently omit anything fetched outside it — the §1.3 disappearance bug in
+    new clothes. The endpoint fixture's cache holds NIFTY, which IS curated,
+    so add a symbol that is not.
+    """
+    from sqlalchemy import create_engine, text as sqltext
+
+    eng = create_engine(data_manager.DB_URL)
+    with eng.begin() as conn:
+        conn.execute(
+            sqltext(
+                "INSERT INTO market_data_cache (symbol, timeframe, ts) "
+                "VALUES ('OBSCUREMIDCAP', '1day', '2024-01-05')"
+            )
+        )
+    eng.dispose()
+    data_manager.invalidate_coverage_cache()
+
+    symbols = {r["symbol"] for r in get(client, names_only=1, limit=0).get_json()["instruments"]}
+    assert "OBSCUREMIDCAP" in symbols, "a fetched symbol must be pickable"
+    # ...and it is a NAME only, with no bar count smuggled in beside it.
+    row = next(
+        r for r in get(client, names_only=1, limit=0).get_json()["instruments"]
+        if r["symbol"] == "OBSCUREMIDCAP"
+    )
+    assert row["bars_count"] is None and row["coverage_known"] is False
+
+
+def test_names_only_lists_a_cached_symbol_exactly_once(client):
+    data_manager.invalidate_coverage_cache()
+    body = get(client, names_only=1, limit=0).get_json()
+    symbols = [r["symbol"] for r in body["instruments"]]
+    assert len(symbols) == len(set(symbols)), "a symbol in both sources must merge"
+    assert body["total"] == len(symbols)

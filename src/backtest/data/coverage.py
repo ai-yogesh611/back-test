@@ -171,6 +171,9 @@ class BarCoverage:
             # list above.
             "timeframes_stored": list(self.timeframes_stored),
             "bars_by_timeframe": dict(self.bars_by_timeframe),
+            # Present on every row so a consumer can tell "no bars" apart from
+            # "nobody looked" without inferring it from a null bar count.
+            "coverage_known": True,
         }
 
 
@@ -179,7 +182,10 @@ class CoverageReport:
     """The answer to "what can I pick, and what do I get if I do?"."""
 
     instruments: list[dict[str, Any]] = field(default_factory=list)
-    db_available: bool = False
+    #: ``None`` means UNKNOWN — nobody asked (the names-only list never touches
+    #: the database). False means asked and found missing. The UI must not read
+    #: unknown as "no data source connected".
+    db_available: bool | None = False
     catalogue_source: str = "builtin"
     sources: list[str] = field(default_factory=list)
     generated_at: str | None = None
@@ -351,6 +357,49 @@ def load_bar_coverage(engine: Any) -> dict[str, BarCoverage]:
     return out
 
 
+def load_cached_symbols(engine: Any) -> list[dict[str, Any]] | None:
+    """Symbols that have bars, as names only — no counts, no dates, no types.
+
+    Returns ``None`` when the symbol list could not be READ (no database, no
+    cache table); ``[]`` is reserved for "read it, and it is empty". The
+    distinction is what lets a caller report the database as unknown rather
+    than as connected — collapsing the two would turn "we could not look" into
+    "there is nothing there", which is the failure mode this whole change is
+    about.
+
+    The point of this function is what it does NOT read. ``load_bar_coverage``
+    answers "how much, over which dates, at which granularities" by grouping
+    every bar in the table and then deriving each symbol's serviceable
+    timeframes; that is the right question for the Data tab and the wrong one
+    for a dropdown, which only needs to know the symbol exists. Selecting the
+    distinct symbols still touches the same rows, but it neither aggregates
+    nor classifies, and the cost is a scan instead of a scan plus a merge.
+
+    It exists so that "fetch a symbol, then pick it" keeps working. A list
+    built from the shipped universe alone (NIFTY 200 + indices) would silently
+    omit anything fetched outside that list — the §1.3 disappearance bug in
+    new clothes.
+    """
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT DISTINCT symbol FROM market_data_cache")
+            ).fetchall()
+    except Exception as exc:  # noqa: BLE001 — absent cache table is survivable
+        log.info("[coverage] cached symbols unavailable: %s", exc.__class__.__name__)
+        return None
+
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        symbol = str(row[0] or "").strip().upper()
+        if symbol:
+            # The symbol is its own name: naming it properly would mean reading
+            # the 140k-row instruments catalogue, which is the cost this path
+            # exists to avoid. The picker already falls back to the symbol.
+            out.append({"symbol": symbol, "name": symbol})
+    return out
+
+
 def load_catalogue(engine: Any, *, limit: int | None = None) -> list[dict[str, Any]]:
     """Read the ``instruments`` table into catalogue rows.
 
@@ -431,7 +480,8 @@ def build_coverage(
     bars: dict[str, BarCoverage] | None = None,
     catalogue: Iterable[dict[str, Any]] | None = None,
     universe: Iterable[dict[str, Any]] | None = None,
-    db_available: bool = False,
+    db_available: bool | None = False,
+    coverage_known: bool = True,
 ) -> CoverageReport:
     """Merge every input into one picker-ready list.
 
@@ -439,6 +489,14 @@ def build_coverage(
     ``data_available`` then says whether choosing it will actually produce
     bars, and a row without them carries :data:`NO_DATA_HINT` so the UI can
     explain the gap instead of hiding the option.
+
+    ``coverage_known=False`` is the NAMES-ONLY mode: the caller wants a static
+    list of instruments and has not asked what is stored. Rows then carry
+    ``coverage_known: False`` and NO :data:`NO_DATA_HINT`, because an
+    unevaluated symbol is not a symbol without data — claiming otherwise would
+    grey out the entire list and tell the user to go fetch things that are
+    already on disk. Availability for these is answered when a backtest is
+    actually requested, where the error can name the dates that DO exist.
     """
     report = CoverageReport(
         db_available=db_available, generated_at=datetime.now().strftime("%Y-%m-%d")
@@ -517,8 +575,23 @@ def build_coverage(
             "exchange": row["exchange"],
             "curated": symbol in curated_symbols,
         }
-        entry.update(cov.as_dict() if cov else BarCoverage().as_dict())
-        if not entry["data_available"]:
+        if coverage_known:
+            entry.update(cov.as_dict() if cov else BarCoverage().as_dict())
+        else:
+            # Same KEYS, explicitly unknown. Shape stability matters: every
+            # consumer indexes these without checking, and a missing key would
+            # surface as `undefined` in the UI rather than as "not asked".
+            entry.update({
+                "data_available": None,
+                "bars_count": None,
+                "from_date": None,
+                "to_date": None,
+                "timeframes_stored": [],
+                "timeframes_available": [],
+                "bars_by_timeframe": {},
+                "coverage_known": False,
+            })
+        if coverage_known and not entry["data_available"]:
             entry["hint"] = NO_DATA_HINT
         kinds = derivatives.get(symbol)
         if kinds:

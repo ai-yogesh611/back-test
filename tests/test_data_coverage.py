@@ -337,6 +337,83 @@ def test_db_availability_is_reported_explicitly():
     assert build_coverage(bars={"X": BarCoverage(1)}, db_available=True).db_available is True
 
 
+def test_db_availability_can_be_unknown():
+    """None = "not asked", distinct from False = "asked, not there".
+
+    The names-only list never opens the database, and the picker renders
+    ``db_available === false`` as "no data source connected" — so reporting the
+    default False there would state something we never checked.
+    """
+    report = build_coverage(db_available=None, coverage_known=False)
+    assert report.db_available is None
+    assert report.db_available is not False
+
+
+# ---------------------------------------------------------------------------
+# Names-only mode — the static instrument list
+# ---------------------------------------------------------------------------
+
+
+def test_names_only_rows_are_not_claimed_to_lack_data():
+    """`data_available` is None, never False: nobody looked.
+
+    False would mean "has no bars" and would grey out the whole dropdown for a
+    catalogue whose bars were simply not counted.
+    """
+    report = build_coverage(universe=load_equity_universe(), coverage_known=False)
+    rows = _by_symbol(report)
+    assert "RELIANCE" in rows
+    assert rows["RELIANCE"]["data_available"] is None
+    assert rows["RELIANCE"]["coverage_known"] is False
+
+
+def test_names_only_rows_never_carry_the_fetch_prompt():
+    """NO_DATA_HINT sends the user to fetch data. Without a lookup we do not
+    know they need to, so the prompt must be absent."""
+    report = build_coverage(universe=load_equity_universe(), coverage_known=False)
+    for row in report.instruments:
+        assert "hint" not in row, row["symbol"]
+
+
+def test_names_only_rows_still_carry_every_key_consumers_index():
+    """Shape stability: consumers read these without checking, and a missing
+    key would surface as `undefined` instead of as "not asked"."""
+    report = build_coverage(universe=load_equity_universe(), coverage_known=False)
+    row = _by_symbol(report)["RELIANCE"]
+    for key in ("symbol", "name", "instrument_type", "exchange", "curated",
+                "data_available", "bars_count", "from_date", "to_date",
+                "timeframes_stored", "timeframes_available",
+                "bars_by_timeframe", "coverage_known"):
+        assert key in row, key
+    assert row["bars_count"] is None
+    assert row["from_date"] is None and row["to_date"] is None
+    assert row["timeframes_stored"] == [] and row["timeframes_available"] == []
+
+
+def test_names_only_ignores_bars_even_when_they_are_supplied():
+    """The flag is the contract, not the inputs: a caller that says "names
+    only" gets no coverage, so a stale cache of bars cannot leak counts into a
+    list that promised not to have them."""
+    report = build_coverage(
+        bars={"RELIANCE": BarCoverage(1247, "2020-01-01", "2024-12-31", ["1min"])},
+        universe=load_equity_universe(),
+        coverage_known=False,
+    )
+    row = _by_symbol(report)["RELIANCE"]
+    assert row["bars_count"] is None
+    assert row["data_available"] is None
+
+
+def test_full_mode_still_marks_known_coverage():
+    """The other side of the flag: coverage_known=True must keep saying so, or
+    a consumer cannot tell the two modes apart."""
+    report = build_coverage(bars={"RELIANCE": BarCoverage(1247)})
+    row = _by_symbol(report)["RELIANCE"]
+    assert row["coverage_known"] is True
+    assert row["data_available"] is True
+    assert row["bars_count"] == 1247
+
+
 # ---------------------------------------------------------------------------
 # Search / filter / page
 # ---------------------------------------------------------------------------

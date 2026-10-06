@@ -107,6 +107,12 @@ def test_symbol_picker_and_timeframes_behaviour():
     factor when they do). Also pins issues.txt B1 (2026-10-01): a data-only
     dropdown must count and explain what it hid, and a page capped by
     PAGE_SIZE must say so instead of looking complete.
+
+    And the names-only list (2026-10-06): the picker asks for symbols and
+    names without asking the server to measure the catalogue, so its rows
+    carry ``data_available: null`` — which is falsy, so a consumer that reads
+    the null as "no data" disables the entire dropdown. That trap is what the
+    last seven cases exist for.
     """
     result = subprocess.run(
         ["node", str(_REPO_ROOT / "tests" / "js" / "test_symbol_picker.mjs")],
@@ -118,7 +124,7 @@ def test_symbol_picker_and_timeframes_behaviour():
     assert (
         result.returncode == 0
     ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    assert "24 tests passed" in result.stdout
+    assert "31 tests passed" in result.stdout
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not available")

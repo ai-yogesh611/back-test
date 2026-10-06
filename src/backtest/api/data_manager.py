@@ -452,9 +452,25 @@ _coverage_lock = threading.Lock()
 _coverage_cache: dict[str, Any] = {"at": 0.0, "report": None}
 
 
+def _coverage_cache_key(names_only: bool, curate_only: bool) -> str:
+    """Which SHAPE of answer a cached report holds.
+
+    Keyed by mode, because the three modes return different things and one
+    report must not answer another's request. Serving a names-only report to a
+    caller that asked for coverage would tell the Data tab that nothing has
+    data; serving a curated-only report to an unfiltered caller would silently
+    drop every scriptmaster symbol; serving a full report to the picker would
+    work but re-introduce the seconds we just removed.
+    """
+    if names_only:
+        return "names"
+    return "curated" if curate_only else "full"
+
+
 def invalidate_coverage_cache() -> None:
     """Drop the cached report (a fetch job just wrote new bars)."""
     with _coverage_lock:
+        _coverage_cache.clear()
         _coverage_cache["at"] = 0.0
         _coverage_cache["report"] = None
     # Freshness watches the same MAX(ts::date) the fetch moves — refresh it
@@ -464,8 +480,26 @@ def invalidate_coverage_cache() -> None:
         _freshness_cache["payload"] = None
 
 
-def _coverage_report(refresh: bool = False):
+def _coverage_report(refresh: bool = False, names_only: bool = False, curate_only: bool = False):
     """Build (or reuse) the coverage report. Never raises.
+
+    ``names_only`` returns the static instrument list — symbols and names, no
+    question asked about what is stored. It exists because the caller that
+    needs only names was paying for the whole answer: on a cache holding 216
+    symbols against a 140k-row scriptmaster catalogue, the full report costs
+    ~3.4s, of which the catalogue read is ~1.4s and merging its rows into
+    216 usable ones is ~1.8s (280k regex calls to fold NFO contract ids back
+    to their underlying). A picker that lists names and asks nothing else was
+    therefore waiting three seconds for rows it discards.
+
+    ``curate_only`` skips the catalogue read but still reports real coverage:
+    a curated row can never come from the catalogue, so the rows are identical
+    and only the 1.4s is saved. Callers that filter to ``curated=1`` should set
+    it — otherwise they pay for 140k rows they are about to discard.
+
+    Availability is not lost by this — it moves to where it can be answered
+    with detail: the backtest request, which fails with the dates the symbol
+    really holds instead of a greyed-out option with no explanation.
 
     Degradation ladder: cached report -> database (bars + catalogue) ->
     shipped universe only. A picker with no database still lists the indices
@@ -473,14 +507,16 @@ def _coverage_report(refresh: bool = False):
     the honest answer rather than an empty dropdown.
     """
     now = time.time()
+    key = _coverage_cache_key(names_only, curate_only)
     with _coverage_lock:
-        cached = _coverage_cache["report"]
+        cached = _coverage_cache.get(key)
         fresh = cached is not None and (now - _coverage_cache["at"]) < _COVERAGE_TTL_SECONDS
     if fresh and not refresh:
         return cached
 
     from backtest.data.coverage import (
         build_coverage,
+        load_cached_symbols,
         load_bar_coverage,
         load_catalogue,
         load_equity_universe,
@@ -491,6 +527,53 @@ def _coverage_report(refresh: bool = False):
     db_available = False
     warnings: list[str] = []
     engine = None
+    if names_only:
+        # Names and nothing else. The shipped universe is already in memory
+        # (config); the DISTINCT symbols in the cache are added so that a
+        # symbol someone fetched outside the NIFTY 200 is still pickable —
+        # without them, "fetch it, then choose it" breaks, which is the §1.3
+        # disappearance bug in new clothes.
+        #
+        # What is NOT read: the 140k-row instruments catalogue (only needed for
+        # nicer names) and the bar aggregate (only needed for counts, dates and
+        # serviceable timeframes — answers nobody asked for here). On a 140k
+        # catalogue over a 1M-bar cache this is ~130ms against ~4.5s.
+        names = load_equity_universe()
+        db_available: bool | None = None
+        try:
+            engine = create_engine(DB_URL, echo=False)
+        except Exception as exc:  # noqa: BLE001 — no database at all
+            log.info("[coverage] names-only: no database (%s)", exc.__class__.__name__)
+        else:
+            try:
+                cached = load_cached_symbols(engine)
+                if cached is not None:
+                    names = names + cached
+                    # Asked and answered — but only about which names exist,
+                    # which is why available_total still reports "unknown".
+                    db_available = True
+            finally:
+                engine.dispose()
+        report = build_coverage(
+            bars={},
+            catalogue=None,
+            universe=names,
+            # None, not False: nothing here asked whether the database could
+            # answer a coverage question, and the picker renders
+            # `db_available === false` as "no data source connected" — a claim
+            # this path has not earned. Unknown is the truth.
+            db_available=db_available,
+            coverage_known=False,
+        )
+        report.catalogue_source = "builtin"
+        report.warnings = []
+        log.info("[coverage] names-only: %d instruments from the shipped universe",
+                 report.total)
+        with _coverage_lock:
+            _coverage_cache[key] = report
+            _coverage_cache["report"] = report
+            _coverage_cache["at"] = now
+        return report
     try:
         engine = create_engine(DB_URL, echo=False)
     except Exception as exc:  # noqa: BLE001 — no database at all
@@ -504,7 +587,15 @@ def _coverage_report(refresh: bool = False):
         except Exception as exc:  # noqa: BLE001 — no cache table is survivable
             warnings.append(f"no cached bars: {exc.__class__.__name__}")
             log.info("[coverage] market_data_cache unavailable: %s", exc.__class__.__name__)
-        catalogue = load_catalogue(engine)
+        # A curated-only caller can never see a catalogue row: `curated` is
+        # decided from the shipped universe, never from the 140k scriptmaster
+        # contracts, and catalogue rows only ADD symbols. Reading it to discard
+        # every row costs ~1.4s on a real database, and the Data tab's picker
+        # asked for curated rows on every load. The only thing given up is a
+        # nicer NAME for a curated symbol the universe listed bare — which the
+        # shipped CSVs already carry.
+        if not curate_only:
+            catalogue = load_catalogue(engine)
         engine.dispose()
 
     report = build_coverage(
@@ -527,6 +618,7 @@ def _coverage_report(refresh: bool = False):
         report.catalogue_source,
     )
     with _coverage_lock:
+        _coverage_cache[key] = report
         _coverage_cache["report"] = report
         _coverage_cache["at"] = now
     return report
@@ -544,6 +636,14 @@ def coverage() -> tuple:
       * ``curated``    - ``1`` to list only the built-in universe (NIFTY 200
                          + indices, human-readable names) — the Data tab's
                          fetch picker
+      * ``names_only`` - ``1`` for the STATIC instrument list: symbols and
+                         names from the shipped universe, with no question
+                         asked about stored bars. ``data_available`` is then
+                         ``null`` and every row carries ``coverage_known:
+                         false``, so a caller must not read the absence of
+                         coverage as absence of data. Availability is answered
+                         by the backtest request itself, which fails with the
+                         dates the symbol does hold.
       * ``limit``      - page size (default 500, ``0`` = no paging)
       * ``offset``     - page offset
       * ``refresh``    - ``1`` to bypass the short-lived cache
@@ -557,7 +657,6 @@ def coverage() -> tuple:
     """
     from backtest.data.coverage import filter_coverage
 
-    report = _coverage_report(refresh=request.args.get("refresh") in ("1", "true", "yes"))
     types = [t for t in (request.args.get("types") or "").split(",") if t.strip()]
     raw_limit = request.args.get("limit", "500")
     try:
@@ -570,13 +669,25 @@ def coverage() -> tuple:
         return jsonify({"error": "offset must be a number"}), 400
 
     query = request.args.get("q", "")
-    available_only = request.args.get("available") in ("1", "true", "yes")
+    names_only = request.args.get("names_only") in ("1", "true", "yes")
+    # `available` and `names_only` contradict each other: one says "filter on
+    # the bars", the other says "do not look at the bars". The cheaper request
+    # wins, and the response below reports the counts as unknown rather than
+    # as zero — a caller that asked not to know must not be told "none".
+    available_only = not names_only and request.args.get("available") in ("1", "true", "yes")
+
+    curate_only = request.args.get("curated") in ("1", "true", "yes")
+    report = _coverage_report(
+        refresh=request.args.get("refresh") in ("1", "true", "yes"),
+        names_only=names_only,
+        curate_only=curate_only,
+    )
     rows, total = filter_coverage(
         report,
         query=query,
         types=types or None,
         available_only=available_only,
-        curated_only=request.args.get("curated") in ("1", "true", "yes"),
+        curated_only=curate_only,
         limit=limit or None,
         offset=offset,
     )
@@ -584,11 +695,16 @@ def coverage() -> tuple:
     # left out — an unlisted symbol otherwise reads as a symbol that does not
     # exist, which is the §1.3 bug in new clothes. `total` is counted before
     # paging, so limit=1 keeps this second pass cheap and still true.
-    _, matching = filter_coverage(
-        report, query=query, types=types or None, available_only=False, limit=1, offset=0
+    hidden_total = 0
+    if available_only:
+        _, matching = filter_coverage(
+            report, query=query, types=types or None, available_only=False, limit=1, offset=0
+        )
+        hidden_total = max(0, matching - total)
+    available = (
+        None if names_only
+        else sum(1 for r in report.instruments if r["data_available"])
     )
-    hidden_total = max(0, matching - total) if available_only else 0
-    available = sum(1 for r in report.instruments if r["data_available"])
     return (
         jsonify(
             {
@@ -598,6 +714,8 @@ def coverage() -> tuple:
                 "offset": offset,
                 "limit": limit or None,
                 "known_total": report.total,
+                # None (not 0) when the caller asked for names only: "we did
+                # not look" and "there are none" are different answers.
                 "available_total": available,
                 "hidden_total": hidden_total,
                 "db_available": report.db_available,

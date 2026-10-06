@@ -4,17 +4,28 @@
  *
  *   const picker = SymbolPicker.mount({ select, search, tabs, summary, onChange });
  *
- * Reads GET /api/data/coverage and renders:
+ * Reads GET /api/data/coverage?names_only=1 and renders:
  *   - a search box
  *   - All / Equity / Index / F&O filter tabs
- *   - a <select> where a symbol with no cached bars is still LISTED, greyed
- *     out, with the server's hint as its title ("No data loaded. Go to Data
- *     tab → fetch data for this symbol.")
- *   - a one-line summary: how many symbols are known, how many can actually run
- *   - when the query asks for WITH-DATA rows only, the summary also says how
- *     many symbols that filter hid ("N symbols hidden — load data first"),
- *     so an unlisted symbol never reads as a symbol that does not exist
- *     (issues.txt 2026-10-01)
+ *   - a <select> of instrument NAMES — the static list, every row selectable
+ *   - a one-line summary: how many instruments, and that stored data is
+ *     checked when the backtest runs
+ *
+ * The list is deliberately name-only. It once asked `available=1`, which made
+ * the server answer "which symbols have bars, how many, over which dates, at
+ * which timeframes" for the entire catalogue before the dropdown could draw a
+ * single row: seconds of work per load on a real database, for numbers that
+ * only matter at the moment of running something. A row with no candles is
+ * not filtered out or greyed out any more, because whether a symbol can serve
+ * a request depends on the timeframe AND the dates asked for — a fact an
+ * option in a dropdown cannot express. The run is where that is decided, and
+ * it fails with the dates that DO exist:
+ *
+ *   data error: Symbol 'X' has no 1day data between 2026-10-01 and
+ *   2026-10-31. Available — 1min 02 Sep 2026 to 14 Sep 2026 (4,823 bars).
+ *
+ * Consumers must treat `coverage_known === false` as "not asked", never as
+ * "no data" — `data_available` is null in that mode, and null is falsy.
  *
  * Before this, each page kept its own hard-coded <option> list, so a symbol
  * silently vanished unless the page's author had remembered to add it. The
@@ -78,17 +89,21 @@
     function makeOption(row) {
         const opt = document.createElement("option");
         opt.value = row.symbol;
-        // Readable label: "RELIANCE — 1day · 1,247 bars" when a display name
-        // is absent; "RELIANCE (name) — …" when the catalogue has one. Raw
-        // broker tokens (ISINs, NFO contract ids like 011NSETEST36DECFUT)
-        // used to flood the dropdown; the default query now asks the server
-        // for symbols WITH DATA only, which is exactly the set the user can
-        // actually run — and after a fetch those are the readable names.
+        // Readable label: "RELIANCE" when the catalogue has a display name,
+        // falling back to the raw symbol. Broker tokens (ISINs, NFO contract
+        // ids like 011NSETEST36DECFUT) make poor labels, so a name that is
+        // just the symbol re-encoded is not used.
         const display = (row.name && row.name !== row.symbol && !/^[0-9A-Z]*[0-9][0-9A-Z]*$/.test(row.name))
             ? `${row.symbol} (${row.name})`
             : row.symbol;
         opt.textContent = display;
-        if (!row.data_available) {
+        // `coverage_known === false` means the server deliberately did not
+        // look at the stored bars (names-only list). This test must come
+        // FIRST: data_available is then null, and reading null as "no data"
+        // would disable every option in the list.
+        if (row.coverage_known === false) {
+            opt.title = row.name && row.name !== row.symbol ? `${row.symbol} — ${row.name}` : row.symbol;
+        } else if (!row.data_available) {
             // Listed, but not selectable: the user can see it exists and is told
             // where to get it, instead of it silently not being there.
             opt.disabled = true;
@@ -143,6 +158,20 @@
                 summary.textContent = `${state.known} known · no data source connected`;
                 return;
             }
+            // Names-only list: there is no "with data" count to report, and
+            // inventing one ("0 with data") would be a lie — the server was
+            // never asked. Say what the list IS instead, and where the
+            // availability question gets answered.
+            const namesOnly = state.rows.length > 0 && state.rows[0].coverage_known === false;
+            if (namesOnly) {
+                let text = `${state.rows.length} instruments`;
+                const paged = state.total - state.rows.length;
+                if (paged > 0) text += ` · ${paged} more — search to narrow`;
+                text += " · data checked when you run";
+                summary.title = "Which timeframes and dates are available is resolved at run time.";
+                summary.textContent = text;
+                return;
+            }
             const runnable = state.rows.filter((r) => r.data_available).length;
             let text = `${state.rows.length} shown · ${runnable} with data · ${state.known} known`;
             // issues.txt B1: the data-only list must SAY what it left out.
@@ -167,15 +196,21 @@
 
         async function load() {
             try {
-                // PRD change of direction (2026-09-30): the dropdown lists
-                // ONLY symbols that have data. 500 disabled no-data rows of
-                // broker catalogue noise made the readable symbols
-                // unfindable; "if data is not available we do not even let
-                // the user choose the symbol" is the requirement, and
-                // available=1 gives exactly that set. The Data tab's own
-                // coverage view remains the place to see what could be
-                // fetched.
-                const params = { limit: PAGE_SIZE, available: 1 };
+                // RE-ARCHITECTURE (2026-10-06): the dropdown is a STATIC list
+                // of instrument names and nothing else. It used to ask
+                // available=1, which made the server compute per-symbol bar
+                // counts, from/to dates and serviceable timeframes for the
+                // whole catalogue just to render labels — seconds of work on
+                // a real database, for numbers the user only needs once they
+                // are about to run something.
+                //
+                // Whether a symbol has candles for a given timeframe is now
+                // answered by the backtest itself, which fails with the dates
+                // that DO exist ("no 1day data between X and Y — Available:
+                // 1min 02 Sep to 14 Sep"). An option that is merely not
+                // selectable can say nothing at all; an error can name the
+                // dates.
+                const params = { limit: PAGE_SIZE, names_only: 1 };
                 if (search && search.value.trim()) params.q = search.value.trim();
                 if (state.tab) params.types = state.tab;
                 const data = await fetchCoverage(params);
@@ -223,11 +258,22 @@
             setValue(symbol) {
                 if (!symbol) return;
                 if (state.rows.some((r) => r.symbol === symbol)) { select.value = symbol; return; }
-                const row = { symbol, name: symbol, data_available: true, bars_count: 0 };
+                // Not on the page: add it as a plain, selectable name. A symbol
+                // the caller knows about must be pickable even when it is
+                // outside the current filter (and even though we have not asked
+                // whether it has bars — that is the run's job now).
+                const row = { symbol, name: symbol, coverage_known: false };
                 select.insertBefore(makeOption(row), select.firstChild);
                 select.value = symbol;
             },
-            /** Timeframes the server says this symbol really has. */
+            /**
+             * Timeframes this symbol is known to serve, or [] when unknown.
+             *
+             * Always [] on a names-only list, which is the intended outcome:
+             * the dropdown then offers the full canonical set (see
+             * Timeframes.applyTo) and the run rejects an unsupported
+             * timeframe with the dates that are stored.
+             */
             timeframesFor(symbol) {
                 const row = state.rows.find((r) => r.symbol === symbol);
                 return row && row.timeframes_available ? row.timeframes_available.slice() : [];
