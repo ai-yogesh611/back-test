@@ -567,3 +567,64 @@ def test_inventory_only_reports_symbols_that_have_bars(client):
     # NIFTY has bars in this fixture; a universe symbol with none must not appear.
     with_bars = {s for s, entries in inv["symbols"].items() if entries}
     assert inv["total_symbols"] == len(with_bars)
+
+
+# ---------------------------------------------------------------------------
+# The symbol listing cache must expire with the coverage cache
+# ---------------------------------------------------------------------------
+
+
+def test_the_symbol_listing_cache_is_dropped_with_the_coverage_cache():
+    """``symbols._CACHED_SYMBOLS`` was written once and cleared nowhere.
+
+    The fetch job clears the coverage cache when new bars land, so the symbol
+    listing outlived the fact it described: the Forward page kept showing the
+    symbol set from boot and a symbol fetched minutes ago stayed invisible until
+    the process restarted. Both caches describe the same rows, so they expire
+    together.
+    """
+    from backtest.api import symbols as symbols_api
+
+    symbols_api._CACHED_SYMBOLS["all:db"] = ["RELIANCE"]
+    data_manager.invalidate_coverage_cache()
+    assert symbols_api._CACHED_SYMBOLS == {}
+
+
+def test_a_symbol_fetched_while_a_listing_was_cached_becomes_visible(client, monkeypatch):
+    """The user-visible symptom, through the endpoint.
+
+    The app fixture runs source=synthetic, where /api/symbols deliberately
+    returns nothing — so the source is faked here to exercise the caching path
+    without needing a second database.
+    """
+    from backtest.api import symbols as symbols_api
+
+    stored = {"RELIANCE"}
+
+    class FakeSource:
+        def list_symbols(self, timeframe=None):
+            return sorted(stored)
+
+    monkeypatch.setattr(symbols_api, "DbSource", FakeSource)
+    client.application.config["BACKTEST_SOURCE"] = "db"
+    symbols_api._CACHED_SYMBOLS.clear()
+
+    assert client.get("/api/symbols").get_json()["symbols"] == ["RELIANCE"]
+
+    # A fetch finishes and writes a new symbol.
+    stored.add("LATEFETCH")
+    assert client.get("/api/symbols").get_json()["symbols"] == ["RELIANCE"], (
+        "the listing is cached — that is fine, as long as it can be invalidated"
+    )
+
+    # ...and the fetch job's completion path does exactly this one call.
+    data_manager.invalidate_coverage_cache()
+    assert client.get("/api/symbols").get_json()["symbols"] == ["LATEFETCH", "RELIANCE"]
+
+
+def test_invalidating_the_cache_never_raises(monkeypatch):
+    """Housekeeping must not be able to break a fetch job."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "backtest.api.symbols", None)
+    data_manager.invalidate_coverage_cache()  # must not raise
