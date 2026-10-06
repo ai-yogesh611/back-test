@@ -3,6 +3,16 @@
 ## Quick State
 Build offline backtesting engine + live mStock connectivity. 19/22 acceptance tests pass. Cards 0-6 complete. Card 07 Phase 1 done (CLI wired). Live polling + state persistence deferred.
 
+**Latest work (2026-10-06):** instrument lists re-architected — the run pages
+load a static name-only list (~96ms, was 3.4–5.6s), availability is answered by
+the backtest request with the dates that DO exist, a timeframe that cannot be
+built from the stored bars is now refused instead of silently returning daily
+bars as minutes, and the Data tab loads one payload for both its list and its
+table (1054ms → 271ms). **Start with
+`docs/HANDOFF-2026-10-06-instrument-list-and-ingest.md`** — §4 lists what the
+1-min-only ingest work must still handle, including a silent timezone trap a
+daily check cannot catch.
+
 ## Architecture
 ```
 src/backtest/
@@ -210,67 +220,123 @@ slice. Later PRD sections are still open.
 
 ## Symbol Coverage & Timeframes (PRD §1.3 + §1.4, 2026-09-29)
 The second "bugs first" slice. Part 1 §1 is now complete.
+**Re-architected 2026-10-06 — read this section first if you touch instrument
+lists.** The list no longer carries coverage; availability is answered when a
+backtest is requested. Full rationale, contracts and the hand-off list for the
+ingest work: `docs/HANDOFF-2026-10-06-instrument-list-and-ingest.md`.
 
-### `GET /api/data/coverage` — one instrument list for three pages
-- `data/coverage.py` merges three sources and returns the **union**: a symbol is
-  listed if ANY source knows it. This is the fix — a missing `<option>` reads as
-  "this does not exist", which was the reported bug.
-  1. `market_data_cache` — bars, coverage dates, and the timeframes really stored
-  2. the `instruments` catalogue (mStock scriptmaster, ~154k rows) — optional;
-     that table comes from a broker ingest, not a migration, so its absence is normal
-  3. `stock-list/nse_ind_nifty200list.csv` + the built-in index universe — a
-     version-controlled floor, so the picker is never empty with no database
-- **154k rows is not a payload.** The catalogue is reduced server-side to tradable
-  symbols: an F&O contract contributes its *underlying* (and creates it, since the
-  exchange listing a TCS future is itself the claim that TCS trades). Contracts keep
-  their own row only if they have their own cached bars.
-- `instrument_type` stays exactly `equity | index | futures | options`; the F&O tab is
-  a filter over `has_futures` / `has_options`, not a fifth type.
-- Rows carry `data_available`, `bars_count`, `from_date`, `to_date`,
-  `timeframes_available[]` and — when there are no bars — `hint`. Contract shapes are
-  matched conservatively (optional `\d{1,2}[A-Z]{3}` expiry token, strike,
-  `CE/PE/FUT` suffix); an unrecognised symbol falls back to `equity`, never to a guess.
-- Degrades rather than fails: unreachable DB -> shipped universe, every row marked
-  no-data, `warnings` populated. A 60s process cache keeps three pages mounting a
-  picker from costing three identical scans; a finished fetch job invalidates it.
-- Query params: `q`, `types` (incl. `fno`), `available`, `limit`, `offset`, `refresh`.
+### `GET /api/data/coverage` — one endpoint, three shapes
+`data/coverage.py` merges sources and returns the **union**: a symbol is listed
+if ANY source knows it. A missing `<option>` reads as "this does not exist",
+which was the original reported bug.
 
-### `periods_per_year` — the annualisation factor
-- `data/base.periods_per_year(timeframe)` is the single authority: `252 x bars per
-  NSE day` (375 minutes), weekly = **52**, not 252/5. `normalize_timeframe()` accepts
-  `1D`/`day`/`1day`/`60min` so three layers can speak three spellings.
-- Reaches `BacktestConfig.periods_per_year` via `run_backtest`/`run_quick_screen`
-  (`timeframe=` kwarg) -> `engine/metrics.py` (Sharpe, Sortino, CAGR, volatility) and
-  `optimization/evaluator.py::standardize_metrics` (imported there as
-  `annualisation_factor`, because the function's own parameter shadows the name).
-- UI mirrors it in `components/timeframes.js`; `applyTo()` replaces a `<select>`'s
-  options with only the granularities the chosen symbol has, keeps a still-valid
-  selection, and never empties the control. Unknown coverage leaves the full list —
-  absence of information is not evidence of absence.
-- `timeframes.js` is also where the UI's `1D/1H/4H/1W` -> canonical spelling lives;
-  Backtest and Compare slot dropdowns are now filled from real coverage instead of a
-  hard-coded list.
+| Shape | Request | Sources | Cost |
+|---|---|---|---|
+| **names** (run pages) | `names_only=1` | shipped universe ∪ `SELECT DISTINCT symbol FROM market_data_cache` | ~10ms local, ~100ms on a 1M-bar cache |
+| **universe** (Data tab) | `include_catalogue=0` | the above **+ the bar aggregate** (real coverage on each row) | ~280ms |
+| **full** (compat default) | *no flag* | the above + the `instruments` catalogue | 3.4–5.6s — no UI caller left |
+
+- The catalogue (mStock scriptmaster, ~140k rows) contributes ~140k contract
+  rows that no tab can fetch by symbol; an F&O contract contributes its
+  *underlying* (and creates it — the exchange listing a TCS future is itself the
+  claim that TCS trades). Reading it costs ~1.4s and merging it ~1.8s
+  (`_derivative_underlying` runs twice per row, 280k regex calls). **Absent
+  means "as before"**: only an explicit `0` skips it, so no existing caller
+  changed behaviour.
+- Other params: `q`, `types` (incl. `fno`), `available`, `curated`, `limit`,
+  `offset`, `refresh`. `names_only` wins over `available` (contradictory).
+- `instrument_type` stays exactly `equity | index | futures | options`; the F&O
+  tab is a filter, not a fifth type.
+- The response publishes `instrument_types` and `timeframes` (the canonical
+  vocabulary, finest first) so clients stop declaring their own copies.
+
+### `coverage_known` — "not asked" is not "no data"
+Names-only rows carry `data_available: null`, `bars_count: null`, empty
+timeframes and **no `hint`**, plus `coverage_known: false`. Null means *nobody
+looked*; `false` would mean *has no bars* and would grey out the entire list.
+**`data_available` is null in that mode and null is falsy** — a consumer that
+tests `!row.data_available` before `coverage_known === false` disables every
+option. `available_total` is likewise `null` (not 0) and `db_available` is
+`null` when the database was never consulted (the picker renders `false` as "no
+data source connected", which would be a claim we had not checked).
+
+### Availability is answered by the RUN, with dates
+`POST /api/backtest/run` returns **HTTP 400** naming the requested timeframe,
+the window that failed, and the dates the symbol DOES hold:
+
+```
+Symbol 'X' has no 1day data between 2026-10-01 and 2026-10-31.
+Available — 1min 02 Sep 2026 to 30 Sep 2026 (4,817 bars).
+```
+
+It used to print the query's own bounds back at the user and name the internal
+source timeframe ("no 1min data" when 1day was asked for). The reporter
+(`DbSource._describe_stored`) never raises — a reporting failure degrades to a
+generic sentence rather than replacing a useful error with a useless one. The
+message is shown twice in the UI: a toast, and a **persistent banner**
+(`#runError`, cleared at the start of the next run) because a 3s toast cannot
+carry dates the user has to type.
+
+### The one-way rule is enforced at read time
+Resampling aggregates fine→coarse only. `DbSource.get_candles` refuses a
+timeframe that cannot be BUILT from the stored bars (`_can_serve`, rank
+comparison) instead of returning daily bars labelled as minutes — which is what
+it did before, silently, and `list_symbols()` already refused the same request,
+so the two disagreed. The servable list it reports is computed with the same
+bars-cap the picker uses, so the message cannot promise a timeframe the dropdown
+would not offer. Unknown spellings answer "can serve": the guard stops a
+known-impossible request, and rejecting an unrankable one would break a working
+run.
+
+### The Data tab: ONE payload for the list and the table
+`data_manager.js` requests `include_catalogue=0` once and both views render from
+it. `/api/data/inventory` used to run its own `GROUP BY symbol, timeframe` — the
+same query `load_bar_coverage` runs — so one page load scanned the cache twice
+(1054ms → 271ms measured on a 1M-bar cache). It now reshapes the cached report
+and asks for the **same cache key** the list asks for (asking for the curated
+shape instead silently re-scans; a test pins this). Its response shape is
+unchanged — published contract.
+- Row labels gain the window (`1min · 4,817 bars · 02 Sep → 30 Sep`), formatted
+  by string-slicing, never `new Date()` (which parses `2026-09-02` as UTC
+  midnight and renders 01 Sep in a negative-offset browser).
+- The table is one row per symbol with a Stored column (per-timeframe dates ride
+  in the tooltip); per-timeframe dates come from `BarCoverage.dates_by_timeframe`,
+  which the aggregate was already reading and discarding.
+- A universe symbol with no bars is "not fetched yet" and stays listed — on this
+  page that row is a tickable instruction, not a defect.
+
+### Caches
+The coverage cache is **keyed by shape** (`names` / `curated` / `universe` /
+`full`, 60s TTL). One slot for several shapes meant a names-only request could
+serve a cached full report — and a curated-only report could answer an
+unfiltered request while silently dropping every scriptmaster symbol. A finished
+fetch calls `invalidate_coverage_cache()`, which also clears
+`symbols._CACHED_SYMBOLS`: that listing had **no expiry at all**, so the Forward
+page kept showing the symbol set from boot and a symbol fetched minutes ago
+stayed invisible until the process restarted.
 
 ### Shared picker
-- `components/symbol_picker.js` replaces the three hand-maintained `<option>` lists.
-  No-data symbols are rendered `disabled` with the server's hint as their `title`
-  rather than omitted. A failed load says so in the summary line instead of
-  presenting an empty picker as "no symbols exist".
-- Backtest, Compare (one picker; slot timeframes follow the shared symbol) and
-  Optimize all mount it. The Forward page still uses `/api/symbols` — out of scope.
+- `components/symbol_picker.js` replaces the three hand-maintained `<option>`
+  lists. Backtest, Compare (one picker; slot timeframes follow the shared
+  symbol), Optimize and the Portfolio spawn modal all mount it; all of them now
+  get the names-only list, so **every row is selectable** — the run is what
+  decides whether the data exists. `timeframesFor()` returns `[]` in that mode,
+  which makes the timeframe dropdown fall back to the full canonical set.
+- The Forward page still uses `/api/symbols` (out of scope) — now correctly
+  invalidated on fetch.
 - **2026-10-01 (issues.txt P1/S2, spawn form)**: the Portfolio Center's spawn
-  modal now mounts the shared picker for free equity strategies (`defaultTab:
-  "equity"`, tabs + data hint under the Instrument row) instead of a free-text
-  ticker; an unanswered picker blocks submit instead of silently spawning the
-  template default. Strategies carry a `default_segment` (registry +
-  `/api/strategies`; option strategies → `options_index`, else derived from
-  `signal_kind` → `equity_intraday`) that preselects the spawn segment until the
-  operator picks one themselves.
+  modal mounts the shared picker for free equity strategies (`defaultTab:
+  "equity"`) instead of a free-text ticker; an unanswered picker blocks submit.
+  Strategies carry a `default_segment` that preselects the spawn segment.
 
 ### Tests
-`tests/test_data_coverage.py` (46), `tests/test_api_data_coverage.py` (16),
-`tests/test_timeframe_periods.py` (31), `tests/js/test_symbol_picker.mjs` (21, via
-`tests/test_web_components.py`).
+`tests/test_data_coverage.py` (62), `tests/test_api_data_coverage.py` (41),
+`tests/data/test_db_source_missing_window.py` (12),
+`tests/data/test_timeframe_derivation.py` (15),
+`tests/data/test_window_bounds.py` (19), `tests/test_timeframe_periods.py` (31),
+`tests/js/test_symbol_picker.mjs` (31) and `tests/js/test_data_manager_labels.mjs`
+(16) — the two JS harnesses run via `tests/test_web_components.py`, which asserts
+their exact counts, so **bump those numbers when you add cases**.
 
 ---
 

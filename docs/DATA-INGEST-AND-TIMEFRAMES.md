@@ -16,6 +16,12 @@ are silent:
 
 The tooling below exists to make both of those loud.
 
+> **If you are moving to "download 1-minute candles only and derive everything
+> coarser", read `docs/HANDOFF-2026-10-06-instrument-list-and-ingest.md` §4
+> first.** The read path supports it already, but the storage timezone decision
+> (§4.1 below) must be made before the first bulk fetch, and a daily check
+> cannot detect it.
+
 ---
 
 ## 1. Load the CSV
@@ -254,3 +260,50 @@ warning for this. With a shorter pair the same `1day` request trades normally �
 of 1187.00. It enters on the *second* bar, not the first: signals are evaluated
 on a closed bar and executed on the next one, so the strategy does not get to
 buy at the first bar's open.
+
+---
+
+## 1-minute-only ingest: what it inherits, and what it costs
+
+**Direction (2026-10-06):** download 1-minute bars only and derive every coarser
+timeframe by resampling. This is already how the read path works, so the change
+is on the write side — but three things come with it.
+
+### It inherits the storage convention, exactly as measured above
+
+The tables earlier in this file are the acceptance criteria, not background: with
+UTC-stored minutes a `4hour` strategy is fed **39 bars where 26 exist** and every
+`1hour` session opens with a 15-minute stub. `1day` and `1week` are unaffected
+either way, so **a daily check does not test this** — check intraday bucket
+starts (`scripts/diagnose_timeframe_alignment.py`), and assert
+`4hour-from-1min` buckets starting at 09:15 plus a `1day-from-1min` bar equal to
+the trading date.
+
+Decide once, before bulk fetching: convert on write, or store UTC and convert on
+read consistently. Fixing it afterwards means re-fetching everything.
+
+### The fetch form's timeframe selector becomes a lie
+
+`data_manager.html` offers `1min / 5min / 15min / 1hour / 1day` (and is already
+missing 10min, 30min, 4hour, 1week). If ingest stores 1min regardless, picking
+"1day" stores 1min and derives 1day — correct, but invisible, and the four
+missing options are unreachable from the UI. Relabel it, or make it explicit
+that the selector describes what you *intend to run* rather than what is
+written.
+
+### Volume makes retention and read cost real
+
+One year of the 200-symbol universe at 1min is **~19 million rows** against
+~50,000 storing daily. The list and Data-tab endpoints are single grouped scans
+over that table — they are fast because they are one scan each, not because the
+table is small. At 19M rows expect those scans to grow; if a page load turns
+back into seconds, the answer is an index or a rollup table, **not** putting
+coverage back on the picker (see the hand-off doc §3). Decide retention (how far
+back, and what purges or archives) before the first bulk pull.
+
+### Do not persist the derived timeframes
+
+Derivation is read-time on purpose (`data/base.py:160`): it repairs instruments
+downloaded before the rule existed, with no re-fetch and no backfill migration,
+and it keeps the stored set from silently disagreeing with the resampler. A
+stored "1day" column would need a backfill every time a granularity is added.
