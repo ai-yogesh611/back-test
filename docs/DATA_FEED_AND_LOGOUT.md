@@ -33,6 +33,25 @@ The system has **two separate systems**:
 └─────────────────────────────────────┘
 ```
 
+## Broker Session Lifecycle (PR #41)
+
+The mStock session has behaviours beyond the logout button:
+
+- **Login is per-process.** The session token is cached per Flask process
+  (`.mstock_session_token`, see `src/backtest/live/auth.py`); a second process
+  or worker does not share the session.
+- **The mobile app can kill the API session.** Logging in on the mStock phone
+  app invalidates the web session without the server knowing — the next broker
+  call fails even though the UI still looks logged in.
+- **Expiry is detected, not assumed.** `src/backtest/brokers/session_manager.py`
+  runs a 5-minute monitor (`MONITOR_INTERVAL_SECONDS = 300.0`) that classifies
+  the session as expiring-soon or expired and publishes platform alerts
+  (`broker_session_expiring` / `broker_session_expired`).
+- **The operator is told three ways:** the in-app alert widget on every page,
+  Telegram (outbound alert channels), and a re-login popup —
+  `src/backtest/web/static/js/components/alert_widget.js` surfaces
+  `SESSION_ALERTS` and wires the "re-login" button.
+
 ## How to Stop a Running Data Fetch
 
 ### Method 1: Use the Stop Button (Already Exists!)

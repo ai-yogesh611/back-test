@@ -56,6 +56,11 @@ Notes:
   the current bar**. The engine acts on your signal at the **next** bar
   (no-lookahead invariant #1: `target.shift(1)`), so backward-looking logic
   only. There is nothing forward to peek at, by construction.
+* Stateful loop strategies (e.g. the Pine converter's `strategy.order`
+  output) must write the position at **bar end** on every bar — `1`/`-1`
+  for the whole time the position is held, `0` when flat — because the
+  engine reads the series one bar late. A one-bar entry *pulse* is read as
+  "enter and immediately exit"; never emit pulses.
 
 ---
 
@@ -144,10 +149,13 @@ half-valid strategy registered. A missing `plugins/` folder is a no-op.
 
 ## 6. The built-in catalog & engine guarantees
 
-Four equity strategies ship in `src/backtest/strategies/` — useful as reading
-examples and baselines: `buy_and_hold` (always-long benchmark),
-`sma_crossover` (fast/slow SMA), `rsi_reversion` (oversold entry, level exit),
-`donchian_breakout` (N-bar high/low breakout).
+The catalog in `src/backtest/strategies/` ships more than a dozen strategies
+— useful as reading examples and baselines. Equity examples: `buy_and_hold`
+(always-long benchmark), `sma_crossover` (fast/slow SMA), `rsi_reversion`
+(oversold entry, level exit), `donchian_breakout` (N-bar high/low breakout),
+`bollinger_reversion`, `macd_trend`, `momentum_roc`, `ema_pullback`,
+`price_move`, `nifty_scalper`. Option examples (override
+`generate_market_view`): `banknifty_straddle`, `option_directional`.
 
 Programmatic access goes through the registry (`backtest.strategy.registry`):
 

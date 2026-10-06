@@ -278,7 +278,10 @@ bars: only use buckets whose end ≤ the last bar's timestamp.
 **R-S1 (MUST) Return target positions:** `int` Series in `{-1, 0, 1}`,
 same index and length as `candles`. `1` held for 10 bars means "hold for 10
 bars", not "buy 10 times". A pulse (`1` then `0` next bar) means a one-bar
-trade.
+trade. The engine reads your series with `target.shift(1)` (one-bar lag), so
+a stateful loop must write the position at **bar end** on every bar it is
+held — `±1` while held, `0` when flat — never an entry-only pulse: the pulse
+would be consumed on the next bar as "enter, then immediately exit".
 
 **R-S2 (MUST) Assume long-only.** *Verified:* an always-`-1` strategy makes
 **zero trades** in the default backtest engine and in a forward runner even
@@ -721,6 +724,7 @@ these as constraints until the platform changes; each has a matching rule.
 | Option runners skip the 12-bar warmup | `warmup_ok = … or options_bridge is not None` | R-D3 |
 | Index may be a `RangeIndex` | `_bars_to_frame` fallback | R-T2 |
 | Backtest fills next open, paper fills this close | engine loop vs `PaperBroker` | R-D6 |
+| Equity signals act one bar late | `backtester.py`: `held = target.shift(1)` — write the held position at bar end, never an entry pulse | R-S1 |
 | Pool ranking is generic, favours laggards | `_entry_score = (SMA20 − close)/close` | R-S4 |
 | `entries/exits` conversion ≈ 25 ms / 500 bars | base-class `.loc` loop | R-P2 |
 

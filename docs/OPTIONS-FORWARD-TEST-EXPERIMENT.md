@@ -24,6 +24,10 @@
 5. **Honesty rule.** A run priced off synthetic chains is labelled as such
    (runner `quote_source`), and its absolute P&L is treated as machinery
    validation, **not** evidence of edge.
+6. **Source policy (added 2026-09-30).** Synthetic data is config-gated and
+   off by default: forward/paper experiments read from the broker feed
+   (mStock), historical runs read from the DB, and backtests are
+   equity-only. A synthetic run exists only under the `testing` profile.
 
 ---
 
@@ -125,6 +129,13 @@
   and (b) enough snapshots accrue for research pricing. Until then: report
   synthetic runs as plumbing checks with `quote_source` attached; make no
   edge claims from them.
+* **Status (updated 2026-09-30, data-source routing decision):** the
+  `synthetic:bs` fallback is now config-gated with **no fallback** — with
+  `config/data_sources.yaml` as shipped (synthetic off), a session-less
+  option runner refuses to start instead of pricing on Black-Scholes
+  (`feed_registry.option_quote_provider_for`). Forward/paper experiments
+  therefore read from the broker feed; backtests are equity-only (option
+  strategies are refused at the API).
 
 ## E-7 — Forward-test state is memory-only — CLOSED (P2.4, 2026-09-17)
 

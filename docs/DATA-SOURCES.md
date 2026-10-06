@@ -83,7 +83,10 @@ candles = source.get_candles("RELIANCE", "2024-01-01", "2024-12-31", "day")
 
 - Requires authentication (login + TOTP)
 - Token cached in `.mstock_session_token`
-- API limit: 1000 candles per request (auto-chunked)
+- API limit: 1000 candles per request — the Data tab fetch chunks the window
+  itself (`api/data_manager.py`) and retries intermittent 502/503/504s; the
+  historical endpoint's `to` date is **end-exclusive**, so fetches request one
+  day past the wanted window
 - Rate-limited by API
 
 ### 4. DbSource (`data/db_source.py`)
@@ -125,9 +128,22 @@ The single factory deciding where a run's bars come from:
 | `backtest` | — (fixed) | `DbSource` (historical DB), optionally wrapped in `AdjustedSource` for corporate-action back-adjustment at read time |
 | `live` | — (fixed) | `MStockLiveFeed` (real broker feed) |
 | `paper` | `mstock` | live broker data, paper risk |
-| `paper` | `synthetic` | generated bars replayed at `replay_speed` bars/second |
+| `paper` | `synthetic` | generated bars replayed at `replay_speed` bars/second — config-gated, off by default |
 
-Unknown modes / paper runs without a valid choice raise `ConfigError`.
+Unknown modes / paper runs without a valid choice raise `ConfigError`. The
+`synthetic` paper branch is gated by `config/data_sources.yaml` via
+`data/sources_policy.py`: when synthetic is disabled the run is refused
+(`ConfigError` carrying the policy's refusal) — there is **no fallback** to a
+real source. `compare` backtests run through the same `backtest` row above
+(`DbSource`), so everything on the DB-backed pages reads `market_data_cache`.
+
+**Options:** backtests and compare-backtests are **equity-only**.
+`CHAIN_SOURCES: tuple[str, ...] = ()` in `data/sources_policy.py` is
+deliberately empty — the DB holds bars, the broker holds live chains, and
+neither is historical option-chain storage. Option expiries always come from
+the broker's instrument master (`options/quote_providers.py` reads the chain
+returned by `broker.get_option_chain(...)`); they are never computed from a
+formula or fetched from the DB.
 
 ### Adding a new source (~30 minutes)
 
@@ -162,7 +178,7 @@ from backtest.runner import build_source
 source = build_source("synthetic")   # -> SyntheticSource()
 source = build_source("csv")         # -> CsvSource()
 source = build_source("mstock")      # -> MStockSource()
-# source = build_source("db")        # -> DbSource() (not built yet)
+source = build_source("db")          # -> DbSource() (runner.py L65-68)
 ```
 
 ### Web UI

@@ -31,7 +31,7 @@ A small panel fixed to the bottom-right corner of every page.
   *Dismiss*, and a deep link (*View in Risk Board →*) to the relevant Risk
   Board section. `Esc` closes it.
 
-The widget polls `/api/alerts/active` every 3 s (15 s while the browser tab
+The widget polls `/api/alerts/active` every 10 s (30 s while the browser tab
 is hidden) and only re-renders when the alert set actually changed.
 
 ---
@@ -139,6 +139,26 @@ flatten), equity, daily P&L and drawdown at trip time.
 `reset_circuit_breaker()` (scoped or master) from the Portfolio page once
 acknowledged · keep it halted — a halted bucket is a decision, not a failure.
 **Resolves** when the breaker is reset for that scope.
+
+### ⚠️ `broker_session_expiring` — Broker login expiring
+**Fires when** a broker session enters its last 30 minutes (raised by the
+session expiry monitor, one alert per broker).
+**Means** the live feeds, marks and order paths for that broker stop at the
+expiry unless someone re-authenticates.
+**Typical responses** click **Re-login** on the alert — it opens the broker
+auth popup (password → TOTP) without leaving the page; the alert
+auto-resolves when the re-login verifies.
+
+### 🔴 `broker_session_expired` — Broker session expired
+**Fires when** a broker session dies (the expiry monitor clears the token;
+the expiring alert, if still open, is superseded).
+**Means** live feeds, forward entries and portfolio marks for that broker
+are paused — re-login (password + TOTP) is required; the session never
+auto-renews.
+**Typical responses** use the alert's **Re-login** button (same auth popup)
+or the broker board; a verified re-login resolves the alert.
+Both session alerts are also fanned out through the outbound notifier
+(Telegram/email per `config/alerts.yaml` routing).
 
 ---
 

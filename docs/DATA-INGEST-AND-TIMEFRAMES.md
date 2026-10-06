@@ -18,9 +18,13 @@ The tooling below exists to make both of those loud.
 
 > **If you are moving to "download 1-minute candles only and derive everything
 > coarser", read `docs/HANDOFF-2026-10-06-instrument-list-and-ingest.md` §4
-> first.** The read path supports it already, but the storage timezone decision
-> (§4.1 below) must be made before the first bulk fetch, and a daily check
-> cannot detect it.
+> first.** The read path supports it already, and the storage timezone decision
+> (§4.1 below) was **made** before the first bulk fetch (2026-10-06): convert
+> on write, on the exchange session clock. Both writers bind
+> `data.base.bar_timestamp()` and a one-off migration
+> (`scripts/migrate_cache_ts_to_session_clock.py`) shifted the whole existing
+> cache onto it — no re-fetch. `scripts/diagnose_timeframe_alignment.py` is
+> the check that would have caught it, and remains the regression gate.
 
 ---
 
@@ -284,17 +288,22 @@ starts (`scripts/diagnose_timeframe_alignment.py`), and assert
 `4hour-from-1min` buckets starting at 09:15 plus a `1day-from-1min` bar equal to
 the trading date.
 
-Decide once, before bulk fetching: convert on write, or store UTC and convert on
-read consistently. Fixing it afterwards means re-fetching everything.
+Decided (2026-10-06), before bulk fetching: convert on write. The fetch path
+and `ingest_csv_to_mdc.py` both bind the exchange session clock
+(`data.base.bar_timestamp()`), and the one-off migration
+(`scripts/migrate_cache_ts_to_session_clock.py`) repaired the rows the broken
+writers had already stored — so nothing was re-fetched. The acceptance tables
+above are what `scripts/diagnose_timeframe_alignment.py` re-checks on today's
+cache.
 
-### The fetch form's timeframe selector becomes a lie
+### The fetch form's timeframe selector still says five things
 
-`data_manager.html` offers `1min / 5min / 15min / 1hour / 1day` (and is already
-missing 10min, 30min, 4hour, 1week). If ingest stores 1min regardless, picking
+`data_manager.html` offers `1min / 5min / 15min / 1hour / 1day` (and is
+missing 10min, 30min, 4hour, 1week). Ingest stores 1min regardless, so picking
 "1day" stores 1min and derives 1day — correct, but invisible, and the four
-missing options are unreachable from the UI. Relabel it, or make it explicit
-that the selector describes what you *intend to run* rather than what is
-written.
+missing options are unreachable from the UI. The selector was left as-is: it
+describes what you *intend to run* rather than what is written. Relabelling it
+(or dropping the selector entirely) remains open if that confuses operators.
 
 ### Volume makes retention and read cost real
 

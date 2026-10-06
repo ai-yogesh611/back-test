@@ -8,7 +8,7 @@ deliberately, live) runner with a full audit trail and one-click rollback.
 - **UI:** `🎯 Optimize` in the nav → `/optimize` (setup) → `/optimize/runs/<id>` (progress + results)
 - **API:** `/api/optimize/*` (`src/backtest/api/optimize.py`)
 - **Engine:** `src/backtest/optimization/`
-- **Schema:** migrations 009–013 (PostgreSQL + SQLite mirror). See [`db/DB-IMPLEMENTATION-GUIDE.md`](../db/DB-IMPLEMENTATION-GUIDE.md) §11.
+- **Schema:** migrations 009–015 (PostgreSQL + SQLite mirror). See [`db/DB-IMPLEMENTATION-GUIDE.md`](../db/DB-IMPLEMENTATION-GUIDE.md) §11.
 
 ---
 
@@ -17,8 +17,8 @@ deliberately, live) runner with a full audit trail and one-click rollback.
 ```bash
 # PostgreSQL (production). Apply the schema once:
 export FORWARD_TEST_DB_URL=postgresql+psycopg2://user:pass@host:5432/forward_test
-alembic upgrade head                      # 001 … 009
-# or: psql -f db/migrations/005_optimization_core.sql … 009_optimization_seed_presets.sql
+alembic upgrade head                      # 001 … 015
+# or: psql -f db/migrations/009_optimization_core.sql … 013_optimization_seed_presets.sql
 
 python -m backtest.web.app --port 5000    # then open /optimize
 ```
@@ -214,15 +214,17 @@ The acting user comes from the `X-User` / `X-Forwarded-User` header.
 
 ---
 
-## 7. Schema (migrations 009–013)
+## 7. Schema (migrations 009–015)
 
 | Rev | Content |
 |---|---|
-| 005 | `optimization_runs` and `optimization_results` (FK **CASCADE**), plus an `updated_at` trigger via the shared `set_updated_at()` |
-| 006 | `parameter_presets` and `optimization_audit` (FKs to runs are **SET NULL**, so history outlives a deleted run) |
-| 007 | indexes, including partial ones (top-ranked results, active presets) |
-| 008 | PostgreSQL views: `v_latest_optimization`, `v_top_results`, `v_optimization_summary`, `v_parameter_history`, `v_active_presets`. SQLite skips these |
-| 009 | seeds three default presets (Conservative / Moderate / Aggressive, `strategy_id='default'`) with fixed UUIDs, idempotently |
+| 009 | `optimization_runs` and `optimization_results` (FK **CASCADE**), plus an `updated_at` trigger via the shared `set_updated_at()` |
+| 010 | `parameter_presets` and `optimization_audit` (FKs to runs are **SET NULL**, so history outlives a deleted run) |
+| 011 | indexes, including partial ones (top-ranked results, active presets) |
+| 012 | PostgreSQL views: `v_latest_optimization`, `v_top_results`, `v_optimization_summary`, `v_parameter_history`, `v_active_presets`. SQLite skips these |
+| 013 | seeds three default presets (Conservative / Moderate / Aggressive, `strategy_id='default'`) with fixed UUIDs, idempotently |
+| 014 | `optimization_runs` gains the deflated-Sharpe column (walk-forward verdict; `optimization/deflation.py`) |
+| 015 | `optimization_runs` gains the data-attestation columns (written at run time; `optimization/attestation.py`) |
 
 Beyond the PRD draft, the runs table also stores `baseline_params`,
 `baseline_metrics`, `baseline_score`, `analysis`, `robustness_score` and

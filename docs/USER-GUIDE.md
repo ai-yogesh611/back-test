@@ -4,7 +4,9 @@
 step-by-step instructions; this page holds the start-up path, the global chrome,
 end-to-end workflows and troubleshooting.
 
-Written from the code on 2026-10-04 (branch `main`).
+Written from the code on 2026-10-04 (branch `main`); re-verified 2026-10-06 for
+the data-tab rework and the broker session alerts (branch
+`feature/strategy-builder-improvements`).
 
 - Developer reference (templates, JS, endpoints): [WEB-UI.md](WEB-UI.md)
 - Why the platform behaves the way it does: [project-overview.md](project-overview.md)
@@ -97,9 +99,11 @@ for whether it is one bad day or a dying edge.
 
 ### 2.3 Get a brand-new instrument working
 
-Header broker chip → `Login` → [Market data](how-to/market-data.md) → pick tab +
-instruments → `Start fetch` → `Refresh` on inventory to confirm the bars landed →
-the symbol now appears in Backtest/Compare/Optimize dropdowns.
+Header broker chip → `Login` → [Market data](how-to/market-data.md) → pick the
+All/Equity/Index tab and tick instruments (tick none and the active tab's
+curated universe is fetched — 200 NSE stocks, the indices, or both) →
+`Start fetch` → `Refresh` on inventory to confirm the bars landed → the symbol
+now appears in Backtest/Compare/Optimize dropdowns.
 
 ### 2.4 Prepare to go live (deliberately)
 
@@ -118,7 +122,8 @@ bucket → `Add instance` → keep **Risk & intelligence** open, and remember
 | Toast ends with `[req …]` | Server-side error | Grep that id in `logs/app.log` — [global chrome](how-to/global-chrome.md) |
 | `0 trades` / empty results | Window too short, or params never fire | Check From/To and the strategy's parameters; `--log-level DEBUG` |
 | Win rate shows `—` | Nothing has closed yet | Correct behaviour — the Trades card says how many are open |
-| Forward start refused (403) | Risk/gate state | See LOGGING.md's symptom table and the risk strip |
+| Forward start refused (403) | No broker session (live mode requires auth) | Re-login via the broker chip; the web replay only paper-trades — live mode is refused by design |
+| Broker login expiring / session expired alert | Broker session has < 30 min left, or is dead (feeds and entries pause fail-closed) | Click `Re-login` on the alert (password + TOTP); it closes itself once the session is verified |
 | Fetch keeps failing | Broker outage / no session | Re-login via the broker chip; the fetch circuit breaker stops it grinding |
 | A live close says `placed` | Venue acknowledgment is asynchronous | Expected — the UI refuses to claim the position is closed |
 | Alerts not appearing | Intelligence disabled at boot | Check `PORTFOLIO_INTELLIGENCE_ENABLED` |

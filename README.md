@@ -2,13 +2,17 @@
 
 An algorithmic trading platform for Indian markets: backtest, compare, forward-test (paper), and trade strategies across equity and NIFTY/BANKNIFTY options — with portfolio-level risk, order management, and portfolio intelligence watching the combined book.
 
-## Current Status (2026-09-29)
+## Current Status (2026-10-06)
 
 | Area | Status |
 |------|--------|
-| Backtest / Compare engine | ✅ Production — deterministic, request-id logging, 3,418+ tests |
+| Backtest / Compare engine | ✅ Production — deterministic, request-id logging, 4,849 tests collected |
+| Backtest run ledger | ✅ Live — every completed run/compare persists full payload + provenance (`api/backtest_run_store.py`, migration 018, merged 2026-10-03) |
+| Data tab & instrument lists | ✅ Live — names-only picker, curated NIFTY 200 + NSE index universes, dedupe + 502-retry + holiday-aware fetch, per-symbol coverage (PRs #39/#40/#42); 1-min ingest in progress |
+| Broker session-expiry alerts | ✅ Live — in-app widget + Telegram + re-login popup when an mStock/Dhan session expires (PR #41) |
+| Market-data cache clock | ✅ Repaired — naive bars bound to IST and stored as aware UTC (`data/base.bar_timestamp`), 45.6M rows migrated (f2eb7e3); NSE holiday table seeded 2022–2026, fetches skip closures |
 | Forward testing (paper) | ✅ Production — server-side replay clock, equity + options, persistence across restarts |
-| Options (paper, live, backtest) | ✅ Complete — 9/9 PRD phases; atomic multi-leg execution, Greeks, full statutory fee stack, expiry handling |
+| Options (paper, live, backtest) | ✅ Paper + live complete — 9/9 PRD phases; atomic multi-leg execution, Greeks, full statutory fee stack, expiry handling. Backtest frozen (see below) |
 | Playbooks (unified trading) | ✅ Live — declarative option-strategy configs spawn runners; risk envelope with "estimated" badge |
 | Live Order Management | ✅ Live — position actions (SL/TP/Close) + Orders ledger tab with cancel, amend-at-venue, aging alerts, bounded auto-retry |
 | Risk management | ✅ Live — 3 tiers: global breakers, independent per-bucket breakers, `/risk` monitoring page |
@@ -16,12 +20,12 @@ An algorithmic trading platform for Indian markets: backtest, compare, forward-t
 | Strategy Analytics | ✅ Live — `/analytics` per-strategy performance suite + extended `/compare` |
 | Parameter Optimization | ✅ Live — grid/random/Bayesian/genetic search with walk-forward validation, sensitivity analysis, robustness scoring |
 | **Consolidated P&L & Tax Reporting** | **✅ Live — single statement across all brokers/books, correct Indian tax classification, estimated tax, exports (PDF/xlsx/csv), contract-note reconciliation, monthly email reports** |
-| Multi-broker sessions | ✅ mStock + Dhan — registry-based, per-broker login via auth modal, one *active session* at a time |
+| Multi-broker sessions | ✅ mStock + Dhan — registry-based, per-broker login via auth modal, **concurrent per-broker sessions** (session manager v2); one broker is *UI-active* at a time |
 | Feed-quality monitoring | ✅ Live — staleness/gaps/repeats/error-rate per (broker, symbol), durable JSONL log, restart-proof |
-| Data sources | ✅ Synthetic, CSV, mStock, Dhan; PostgreSQL/TimescaleDB cache (467K+ bars, 201 stocks) |
-| Multi-broker *concurrent* sessions + segmented trading | 📝 PRD drafted (`docs/MULTI-BROKER-PRD.md`) — not yet implemented |
-| Live broker fill polling (F-12) | ⚠️ Open — live orders return `placed`; fill confirmation from the venue not yet polled |
-| Live Dhan order contract (`BrokerOrderBase`) | ⚠️ Open — Dhan has auth + data today; order book/place/cancel pending |
+| Data sources | ✅ Synthetic, CSV, mStock, Dhan; PostgreSQL/TimescaleDB cache — curated NIFTY 200 + NSE index universes at 1-min (coarser timeframes resampled at read time) |
+| Multi-broker *concurrent* sessions + segmented trading | ✅ Shipped — Phases A–D (`docs/MULTI-BROKER-PRD.md`): concurrent sessions, segments & routing, per-broker execution, cross-broker risk; real-credential smoke test remains |
+| Live broker fill polling (F-12) | ✅ Shipped — `forward/live_gateway.py` + `poll_fill` wired: working live orders are polled, only the not-yet-booked fill delta is applied (live orders still report `placed`) |
+| Live Dhan order contract (`BrokerOrderBase`) | ✅ Shipped — `brokers/dhan.py` implements place/modify/cancel/order-book/poll_fill (Phase C) |
 
 ## What It Does
 
@@ -62,9 +66,9 @@ Market Data (OHLCV candles)
 | **Portfolio (Live)** | Live-scoped command center — only real-money positions |
 | **Portfolio (Paper)** | Paper sandbox — simulated fills, no risk |
 | **Options** | Trade multi-leg NIFTY option structures (long call/put, bull call spread, bear put spread) with Greeks, fees, and expiry handling — paper or live |
-| **Options Backtest** | *(Python API)* Model-driven options backtesting: the same expression layer (view → selector → structure → intent) run bar-by-bar over a candle frame with synthetic Black-Scholes pricing — no UI tab yet |
+| **Options Backtest** | *(Python API)* Model-driven options backtesting: the same expression layer (view → selector → structure → intent) run bar-by-bar over a candle frame with synthetic Black-Scholes pricing — **frozen** (data-source routing decision 2026-10: backtests are equity-only, see below) |
 | **Order Management** | Manual steering wheel on the Command Center — per-position actions (Modify SL / Target / Close 50% / Close All) + an Orders ledger tab with cancel, amend-at-venue, aging alerts, slippage and bounded auto-retry (see below) |
-| **Multi-Broker** | Switchable broker sessions — mStock and Dhan behind one auth contract; feed-quality monitoring on every live bar (see Data Sources). Concurrent per-broker sessions + segment-based capital allocation: PRD drafted, see [docs/MULTI-BROKER-PRD.md](docs/MULTI-BROKER-PRD.md) |
+| **Multi-Broker** | Concurrent per-broker sessions (mStock and Dhan behind one auth contract) with segments & routing, per-broker execution and cross-broker risk (Phases A–D shipped) — see [docs/MULTI-BROKER-PRD.md](docs/MULTI-BROKER-PRD.md); feed-quality monitoring on every live bar (see Data Sources) |
 | **Portfolio Intelligence** | Risk layer above individual strategies: portfolio Greeks in ₹ with scenario revaluation, concentration (underlying / group / strike clusters), strategy P&L correlation, volatility-regime fit, and a pub/sub alert system strategies can subscribe to — see [docs/PORTFOLIO-INTELLIGENCE.md](docs/PORTFOLIO-INTELLIGENCE.md), [docs/ALERTS-GUIDE.md](docs/ALERTS-GUIDE.md) |
 | **Risk** | 3-tiered risk management & monitoring — global circuit breakers (daily loss, drawdown, leverage), per-bucket breakers with independent halts, and a live `/risk` page + dashboard risk strip |
 | **Analytics** | `/analytics` — per-strategy performance suite (P&L attribution, trade stats, equity behaviour, risk ratios, edge degradation detection) plus an extended `/compare` — see [docs/STRATEGY-PERFORMANCE-ANALYTICS.md](docs/STRATEGY-PERFORMANCE-ANALYTICS.md) |
@@ -81,7 +85,7 @@ Market Data (OHLCV candles)
 | **Donchian Breakout** | Buy on new highs, sell on new lows (momentum) |
 | **Price Move** | Buy/sell based on price movement threshold (e.g. ₹5) |
 | **Directional Options** | EMA momentum → bullish/bearish `MarketView` — feeds the options expression layer (long call/put, spreads) |
-| **Plugins** | Drop-in strategies in `plugins/strategies/` (e.g. `ema_reversion_pob`, `atm_instant_buy`) — loaded automatically, each entry publishes its `eligible_instruments` for the UI dropdown |
+| **Plugins** | Drop-in strategies in `plugins/strategies/` (e.g. `ema_reversion_pob`, `atm_instant_buy`) — loaded automatically, each entry publishes its `eligible_instruments` for the UI dropdown. The 2026-10 swing battery (`swing_*` plugins) failed its gates — nothing from it was deployed |
 
 ## Options Trading (Paper, Live & Backtest)
 
@@ -152,7 +156,13 @@ Endpoints, semantics, the plain-English "why" and the two tabs: [docs/PORTFOLIO-
 
 ### Options Backtesting (model-driven)
 
-The options expression layer now has a production backtest driver — the
+**Status (2026-10): frozen.** The data-source routing decision made backtests
+equity-only — `CHAIN_SOURCES = ()` in `src/backtest/data/sources_policy.py`
+means `option_backtest_allowed()` is always false, and option expiries come
+only from the broker chain. The Phase-A driver below was built and tested but
+is not reachable from the UI or the API.
+
+The options expression layer has a backtest driver — the
 same view → selector → structure path the paper/live books use, run
 bar-by-bar over historical candles with deterministic synthetic pricing:
 
@@ -212,11 +222,11 @@ the Backtest/Optimize/Compare dropdowns; fetch it on the Data tab first.
 | **CSV** | Read from local `data/*.csv` files |
 | **mStock** | Real market data from mStock API (requires auth + TOTP) |
 | **Dhan** | Real market data from Dhan HQ — `POST /marketfeed/ohlc` latest bars (minute-floor IST) + `/charts/intraday` candles; requires an active Dhan session (`DHAN_API_KEY`, `DHAN_CLIENT_ID`) |
-| **PostgreSQL** | *(in progress)* DB-first cache of real market data |
+| **PostgreSQL** | DB-first cache of real market data — 1-min bars (coarser timeframes resampled at read time), deduped, 502-retried, holiday-aware fetches |
 
 ### Multi-Broker Sessions
 
-The broker layer is **registry-based and switchable** — mStock and Dhan implement the same `BrokerAuthBase` contract (login → verify TOTP → session status → logout), one active session at a time:
+The broker layer is **registry-based and switchable** — mStock and Dhan implement the same `BrokerAuthBase` contract (login → verify TOTP → session status → logout). Sessions are **per-broker and concurrent** (session manager v2, Phases A–D of the multi-broker PRD); one broker is UI-active at a time:
 
 - `POST /api/broker/list` → available brokers; `POST /api/broker/select` → switch (drops the prior session)
 - The auth modal renders per-broker field labels (mStock: User ID/Password/PIN/TOTP · Dhan: Client ID/PIN/TOTP)
@@ -228,7 +238,7 @@ Every bar delivered by a live feed (mStock **or** Dhan) is observed by a per-`(b
 
 ## Database (PostgreSQL + TimescaleDB)
 
-Real market data for **201 NIFTY 200 stocks** (467K+ daily bars, Jan 2020 – Aug 2026) stored in a TimescaleDB hypertable for fast time-range queries.
+Real market data for the **curated NIFTY 200 universe + NSE indices** (`stock-list/nse_ind_nifty200list.csv` + the built-in index list) is stored in a TimescaleDB hypertable as **1-minute bars**; coarser timeframes are resampled at read time. The earlier daily cache was purged 2026-10-03 in favour of the 1-min base (see `docs/BACKTEST-RUN-PERSISTENCE-PRD.md`).
 
 ### Key Tables
 
@@ -288,6 +298,10 @@ Outside `src/`: `plugins/strategies/` (drop-in strategy plugins) and `reference-
 # Install dependencies
 pip install -r requirements.txt
 
+# One-time setup: copy .env.example to .env and set FORWARD_TEST_DB_URL
+# (PostgreSQL) + broker credentials — loaded automatically at import.
+cp .env.example .env
+
 # Run with synthetic data (no API needed)
 PYTHONPATH=src python -m backtest.web.app --host 0.0.0.0 --port 5000 --source synthetic
 
@@ -323,7 +337,7 @@ Open `http://localhost:5000` → Backtest tab → Pick a strategy → Hit **Run 
 | [docs/STRATEGY-PERFORMANCE-ANALYTICS.md](docs/STRATEGY-PERFORMANCE-ANALYTICS.md) | **Live/paper performance analytics + parameter optimization** (new) |
 | [docs/OPTIMIZATION-ENGINE.md](docs/OPTIMIZATION-ENGINE.md) | Optimization engine technical details |
 | [docs/WEB-UI.md](docs/WEB-UI.md) §4 | **Consolidated P&L & tax reporting page** (PRD-002) |
-| [docs/STRATEGY-TEMPLATE-GUIDE.md](docs/STRATEGY-TEMPLATE-GUIDE.md) | Strategy template + Pine Script converter (new) |
+| [docs/STRATEGY-TEMPLATE-GUIDE.md](docs/STRATEGY-TEMPLATE-GUIDE.md) | Strategy template + Pine Script converter (v5 — `strategy.entry`/`close` and stateful `strategy.order(... when=)` scripts convert via `generate_signals`) |
 | [docs/STRATEGY-GUIDELINES.md](docs/STRATEGY-GUIDELINES.md) | Rules & review checklist for new strategies (+ `templates/strategy_test_template.py`) |
 | [docs/LOGGING.md](docs/LOGGING.md) | Logging levels, request ids, debugging table |
 | [docs/PORTFOLIO-INTELLIGENCE.md](docs/PORTFOLIO-INTELLIGENCE.md) / [docs/ALERTS-GUIDE.md](docs/ALERTS-GUIDE.md) / [docs/STRATEGY-ALERTS.md](docs/STRATEGY-ALERTS.md) | Portfolio Intelligence: Greeks, concentration, regime; alert system + strategy subscription hooks |
@@ -365,7 +379,7 @@ A single consolidated statement across every broker and both books (live + paper
 ## Tests
 
 ```bash
-cd src && python -m pytest ../tests/ -q          # full suite (3,418+ tests)
+cd src && python -m pytest ../tests/ -q          # full suite (4,800+ collected)
 cd src && python -m pytest ../tests/ -q -k options   # options slice only
 cd src && python -m pytest ../tests/test_position_management.py -q   # order management (67 tests)
 cd src && python -m pytest ../tests/intelligence ../tests/alerts ../tests/db ../tests/reporting_*.py -q   # intelligence + alerts + migrations + reporting (500+ tests)

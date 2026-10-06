@@ -7,6 +7,13 @@ paper book, then (when you choose to) through the live mStock order path.
 > NSE/NFO segment, up to 4 legs per structure. Stock options, American
 > exercise and physical settlement are rejected by `OptionContract.validate()`.
 
+> **Status note (2026-10).** All paper-trade data was **wiped 2026-09-30**
+> (the synthetic data it was built on was misleading); the `bak_*` backup
+> tables and the pre-wipe JSON were kept. A fresh paper run on mStock broker
+> data was planned but has **not yet been restarted** — the paper book below
+> starts empty. Forward/paper trading reads from the broker feed; synthetic
+> data is config-gated with no fallback (`config/data_sources.yaml`).
+
 ---
 
 ## 1. The pipeline
@@ -387,14 +394,15 @@ settlement price is not wired.
 
 ## 8. Dashboard
 
-`/options` in the web app shows the live paper book (5-second polling):
+The manual `/options` page was **removed 2026-09-22** (GAP-3, owner
+decision) — see the module docstring in `web/options_api.py`. What remains:
 
-- Summary cards — equity, cash, realized P&L, margin used, open counts
-- Portfolio Greeks grid — net delta/gamma/theta/vega with red/green colouring
-- Positions and structures tables — Close button per structure
-- Expiry alerts panel
+- the book singleton (portfolio merge + emergency flatten) and the JSON
+  endpoints listed below;
+- the manual option trade UI, which now lives in **Portfolio → Playbooks**
+  via option runner instances (see OPTIONS-FORWARD-TESTING.md).
 
-JSON API:
+The JSON API:
 
 | Method | Endpoint | Purpose |
 |---|---|---|

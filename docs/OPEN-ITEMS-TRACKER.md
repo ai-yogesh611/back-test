@@ -2,7 +2,24 @@
 
 **How to use:** tick `[x]` when done. "Who: You" = needs your action (credentials/money/account). "Who: Agent" = I can do it on request. Everything stays on this page — nothing held in your head.
 
-**Last updated:** 2026-09-29 · full suite 3,418 passed / 0 failed / 28 skipped / 4 xfailed / 3 xpassed · multi-broker Phases A–D shipped (`docs/MULTI-BROKER-PRD.md`) · date-rot test repairs landed (pricing-clock pins + replay-anchored expiry) · doc sweep: item 7 marked done, item 12 half-done note · **Consolidated P&L & Tax Reporting (PRD-002) merged and pushed to remote**
+**Last updated:** 2026-10-06 · full suite 4,849 collected · multi-broker Phases A–D shipped (`docs/MULTI-BROKER-PRD.md`) · date-rot test repairs landed (pricing-clock pins + replay-anchored expiry) · doc sweep: item 7 marked done, item 12 half-done note · **Consolidated P&L & Tax Reporting (PRD-002) merged and pushed to remote**
+
+> **2026-10-06 update — shipped since the last sweep:**
+> - Backtest run-ledger persistence merged 2026-10-03 (migration 018, `api/backtest_run_store.py`) — every completed run/compare persists payload + provenance.
+> - Data tab rework + instrument-list availability slice (PRs #39/#40/#42): names-only picker, curated NIFTY 200 + NSE index universes, dedupe + 502-retry + holiday-aware fetch; timeframes derived by resampling.
+> - Broker session-expiry alerts (PR #41): in-app widget + Telegram + re-login popup.
+> - `market_data_cache` UTC→IST clock repair (writer fixes + 45.6M-row migration, commit f2eb7e3).
+> - NSE holiday table seeded 2022–2026 (`tools/seed_market_holidays.py`, migration 017); fetches skip closures.
+> - Swing battery (2026-10): **all 8 strategy combos failed their gates — nothing was deployed** (`plugins/strategies/swing_*` stay as unadopted plugins).
+>
+> **2026-10-06 open items — verified against code / observed on the live box:**
+> - [ ] **13. DB connection exhaustion** — Flask `:5000` hoards ~99/100 PostgreSQL connections over ~9h. Known, untraced — needs a pool-leak hunt (`FORWARD_TEST_DB_POOL_*`, per-request session handling). *Who: Agent*
+> - [ ] **14. Equity 1-min backfill interrupted at 77/200 symbols** (2026-10-04 broker 502 storm) — resume the remaining symbols. *Who: Agent*
+> - [ ] **15. Index 1-min backfill** — NIFTY done; BANKNIFTY + FINNIFTY + MIDCPNIFTY **paused awaiting go-ahead**; SENSEX + INDIAVIX **deferred**. *Who: You*
+> - [ ] **16. Daily-loss breaker UTC-window blind spot** — the day anchor is keyed on the UTC date, so 00:00–05:30 IST can be blind to the IST trading day's losses. *Who: Agent*
+> - [ ] **17. `/reporting` 500 on paper trades** — timezone mix between paper-trade stamps and the consolidation path. *Who: Agent*
+> - [ ] **18. Live page leaks paper positions** — `/portfolio/live` rows are not fully filtered to the live bucket. *Who: Agent*
+> - [ ] **19. Data-refresh chip built but not live until restart** — the topbar freshness chip (`components/freshness_chip.js`, `GET /api/data/freshness`) only appears after the next server restart. *Who: Agent*
 
 > **Expiry-day pricing fix (2026-09-24):** `SyntheticChainGenerator.MIN_PRICING_YEARS`
 > (half a trading day) in `price_contract` — near/post-expiry synthetic options keep a

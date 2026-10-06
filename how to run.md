@@ -4,6 +4,14 @@
 
 - Python 3.10+
 - Project dependencies installed
+- A fresh checkout needs two files the repo expects but does not ship:
+  - `pyproject.toml` — pins `[tool.pytest.ini_options] pythonpath = ["src"]`
+    (tests run without a manual PYTHONPATH) plus the core dependencies.
+  - `.env` — copy from `.env.example`. The app auto-loads it
+    (`src/backtest/__init__.py` → `load_dotenv`); real-data runs need
+    `FORWARD_TEST_DB_URL` pointing at PostgreSQL
+    (`postgresql+psycopg2://...`), not a YAML file — `config/*.yaml` only
+    carries engine/reporting/alert settings.
 
 ## 1) Open a terminal in the project root
 
@@ -26,10 +34,11 @@ $env:PYTHONPATH = "C:\learning\back-test\src"
 python -m backtest.web.app --host 0.0.0.0 --port 5000
 ```
 
-Alternative if you want the project helper script:
+Alternative if you want the project helper scripts:
 
 ```powershell
-.\start_dashboard.bat
+.\run.bat                # kills whatever holds :5000, then starts fresh (real sources)
+.\start_dashboard.bat    # same, but forces --source synthetic
 ```
 
 ## 4) Open the UI
@@ -73,6 +82,11 @@ gunicorn -c gunicorn.conf.py backtest.web.wsgi:app
 ## Notes
 
 - The app binds to `0.0.0.0`, which is intended for preview access.
+- The broker (mStock/Dhan) session is **per-process**: after every restart,
+  log in again from the UI (broker popup) before live feeds and runners
+  resume. `run.bat` prints the same reminder at boot.
+- Market data is served from the PostgreSQL cache (`FORWARD_TEST_DB_URL`),
+  filled via the Data tab; nothing is read from YAML at runtime.
 - If port 5000 is already in use, run a different port:
 
 ```powershell

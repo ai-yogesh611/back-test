@@ -63,16 +63,19 @@ Phases: **A** makes the numbers move, **B** makes the runner able to leave a
 trade, **C** makes it reachable from the browser, **D** makes the numbers
 honest, **E** keeps the gate green.
 
-**Progress: A1, A2, B1, B2, B3, C1, C2, D1 and E1 are done** — an option runner
+**Progress: all phases are done** — A1, A2, B1, B2, B3, C1, C2, D1 and E1
+landed as tracked below; **D2** shipped 2026-09-17 via the P1.1 live-options
+wiring (live chains/LTP behind the generator duck type), **D3** shipped
+2026-09-17 via the P2.4 state persistence (option books ride the manager
+state snapshot), and **E2** was verified green 2026-09-28. An option runner
 prices every bar, is counted by the equity/bucket/breaker maths, opens *and
-closes* on its own rules, settles at expiry and rolls, reports what it did in the
-trade log, the metrics and the equity curve, can be **spawned** from the browser
-with a structure / strike selection / exit plan, is **read back** in the matrix
-and the deep-dive drawer with option-shaped columns, and now runs on an
-**index-scale** synthetic spot (NIFTY ~24,500, 50-point strikes, 75-lot
-contracts) instead of a ₹392 small-cap. What remains is **D2/D3** — an injectable
-live quote provider, and option books that survive a restart — plus **E2**, which
-is waiting on D3's persistence work.
+closes* on its own rules, settles at expiry and rolls, reports what it did in
+the trade log, the metrics and the equity curve, can be **spawned** from the
+browser with a structure / strike selection / exit plan, is **read back** in
+the matrix and the deep-dive drawer with option-shaped columns, and runs on
+an **index-scale** synthetic spot (NIFTY ~24,500, 50-point strikes, 75-lot
+contracts) instead of a ₹392 small-cap. One 2026-09-30 caveat applies to D2:
+the synthetic fallback it described is now config-gated — see the D2 section.
 
 ---
 
@@ -686,6 +689,15 @@ behind the generator duck type when `source=mstock` && authenticated, with a
 surfaced on the bridge summary/runner state (`options_bridge.py`) so nobody
 reads synthetic percentages as real fills. 31 tests:
 `tests/test_live_options_wiring.py`.
+
+**Gate change (2026-09-30) — the fallback is no longer unconditional.** The
+data-source routing decision made `config/data_sources.yaml` the single
+control: with synthetic off (the shipped default), a session-less option
+runner no longer falls back to `synthetic:bs` — it **refuses to build a
+bridge** (`SourceDisabledError` in
+`feed_registry.option_quote_provider_for` / `options_bridge`). Only the
+`testing` profile (`BACKTEST_DATA_PROFILE=testing`) restores the labelled
+fallback. Routing still keys off the runner's `source` field.
 
 **Original sketch (superseded).** `expression["quotes"] = "synthetic" | "live"`
 resolved through the `web/options_api.get_quote_provider()` chain.

@@ -40,7 +40,9 @@
 [Execution Engine]  HOW to trade (NEW)
    |  Input: Signal + Playbook + RunnerConfig + mode + source
    |  Checks: mode paper→simulator / live→broker+margin
-   |          source synthetic→BS / live→mStock LTP
+   |          source synthetic→BS / live→mStock LTP (synthetic chains are
+   |          config-gated in config/data_sources.yaml, with NO fallback —
+   |          see src/backtest/data/sources_policy.py)
    |  Resolves: strikes (engine-fed chain), lot_size (instrument master,
    |            never hardcoded in the playbook), risk envelope
    |  Output: Fill | OrderRejected | RiskHalted
@@ -174,7 +176,7 @@ The Add Instance form owns **routing only** — six fields, nothing else:
 | Target type | Single Symbol \| Pool | **Auto-set and locked by the strategy's `signal_kind`**: option strategy → Single Symbol only, index-whitelisted symbols; equity → either |
 | Symbol | NIFTY, BANKNIFTY (options V1) / any (equity) | Options limited to indices |
 | Bucket mode | paper \| live | Routes execution |
-| Data source | synthetic \| replay \| mStock | Feeds the shared bus |
+| Data source | synthetic \| replay \| mStock \| dhan | Feeds the shared bus (dhan added 2026-10-01, migration 016) |
 | Allocation (₹) | number | Capital assigned |
 
 Everything previously on the form (instrument, structure, strikes, stops, exits) is **Playbook territory** — removed from the modal. One Playbooks tab action ("New Playbook") is where trading logic is configured. Noise = configuration in the wrong layer.
@@ -221,7 +223,7 @@ Motivation: today each runner builds its own feed (N runners = N polling loops);
 
 1. ~~**Synthetic feed wiring**~~ **CLOSED (Gap #1, this merge).** `MStockBarFeed` (in `feed_registry.py`) is the live poll thread — ONE per manager for all mstock symbols, riding the same `on_bar`/`on_tick_end` fan-out as synthetic bars. `add_runner` routes by `config.source`; the thread auto-runs only while an mstock runner is live; market-closed it seeds once per symbol then idles. Runner code unchanged (C2). Remaining live-work is operational: credentials/session in `backtest.live.auth`, and option-chain live pricing (still synthetic via the ChainBus). (Ref: `docs/OPTIONS-FORWARD-TEST-EXPERIMENT.md`)
 2. **Chain-shape refactor** — straddle/strangle/iron-condor/calendar unpriceable; blocks richer option playbooks. Phase B.
-3. **Runner-state persistence** — portfolio manager is in-memory V1; restart loses the book.
+3. **Runner-state persistence** — portfolio manager persistence landed after sign-off: an optional atomic JSON snapshot (`PORTFOLIO_STATE_PATH`, rehydrated on restart with runners restored PAUSED and breakers still tripped) plus permanent trade history in PostgreSQL (`LiveTradePersister`, GAP-4 — fail-soft to the JSON snapshot when the DB is unreachable). See `src/backtest/forward/portfolio_manager.py`.
 4. **Per-runner vs per-bucket accounting** — separate decision; do not bundle into this rollout.
 
 ## 9. Strategy Template Contract (plug-and-play, D7)

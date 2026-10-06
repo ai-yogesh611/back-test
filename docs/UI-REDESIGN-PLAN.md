@@ -8,6 +8,13 @@
 
 **Progress:** Shared foundation, application shell and detailed Backtest redesign implemented and validated. Supporting screen compositions are implemented. Populated operational workflows remain a separate follow-up pass; see the remaining checklist below.
 
+**Status (2026-10-06):** the redesign is implemented in the shipped templates —
+the sidebar shell, token system, self-hosted fonts and pinned Chart.js are all
+in `src/backtest/web/` (`templates/base.html`, `static/css/tokens.css`,
+`static/fonts/`, `static/vendor/chart.umd-4.4.1.js`). Post-audit UI work (data
+tab rework, Pine builder convert flow, broker-session alerts) is documented in
+WEB-UI.md and UI-PENDING-TASKS.md.
+
 ## 1. What exists today
 
 The application has 14 primary page views, a shared application shell, two stylesheets, and a substantial set of framework-free JavaScript components. Its workflows already cover:
@@ -20,6 +27,8 @@ The application has 14 primary page views, a shared application shell, two style
 - Broker connections, cost models, segments, and historical data management.
 
 The frontend is **Flask + Jinja + vanilla JavaScript + Chart.js**. A framework migration is unnecessary and would increase risk. The knowledge graph mentioned in `AGENTS.md` is absent in this checkout, so this audit uses the current UI documentation, templates, styles and controllers.
+
+*Status: still accurate today; the knowledge graph (`graphify-out/`) is still absent from this worktree.*
 
 ### Findings
 
@@ -47,6 +56,11 @@ The frontend is **Flask + Jinja + vanilla JavaScript + Chart.js**. A framework m
 
 ## 3. Design system specification
 
+*Status: implemented — `static/css/tokens.css` (dark/light tokens), self-hosted
+Inter + JetBrains Mono in `static/fonts/`, the ~224px sidebar and ~64px top bar
+in `templates/base.html`, and the theme toggle persisting to
+`localStorage["trading-workspace.theme"]`.*
+
 ### Color
 
 - Default: low-glare graphite canvas, layered charcoal surfaces, subtle cool-gray borders.
@@ -73,6 +87,10 @@ The frontend is **Flask + Jinja + vanilla JavaScript + Chart.js**. A framework m
 - Respect `[hidden]`, disabled controls, high-contrast focus and reduced-motion preferences.
 
 ## 4. Implementation passes & checklist
+
+*Status (2026-10-06): Passes 0–6 are complete as ticked below. The two unticked
+items — populated paper-fixture validation of orders/positions/options and the
+expanded editors / nested-auth review — remain open; see UI-PENDING-TASKS.md.*
 
 ### Pass 0 — Audit and plan
 - [x] Inventory templates, assets, page routes and frontend contracts.
@@ -128,6 +146,9 @@ The frontend is **Flask + Jinja + vanilla JavaScript + Chart.js**. A framework m
 
 ## 5. Screen priorities
 
+*Status: all P0/P1/P2 screens ship the redesign; the priorities below were the
+ordering used, not a list of outstanding work.*
+
 | Priority | Screens | Main objective |
 | --- | --- | --- |
 | P0 | Shared shell, Backtest (`/` and `/backtest`) | Establish coherent product language and improve the first impression |
@@ -137,6 +158,9 @@ The frontend is **Flask + Jinja + vanilla JavaScript + Chart.js**. A framework m
 | P2 | Settings, Data, Strategy Builder | Normalize utility screens and responsive layouts |
 
 ## 6. Acceptance criteria
+
+*Status: verified by the 2026-10-01 preview runs in §7 (90 layout checks, axe
+scans, keyboard checks, 172 Python + 29 Node harnesses).*
 
 - Every existing page and destination remains reachable.
 - Trading modes, data provenance, broker status and risk information stay explicit.
@@ -204,6 +228,10 @@ for test in tests/js/test_*.mjs; do node "$test" || exit 1; done
 ```
 
 ### Next passes — deliberately not claimed complete
+
+*Status (2026-10-06): items 1–4 are still open; none of the UI changes since
+this plan (data tab rework, builder convert flow, broker-session alerts)
+claims to have closed them.*
 
 1. Populate an isolated safe paper book and verify orders/positions, option workflows and action dialogs without any live broker session.
 2. Review expanded settings editors, nested auth and detailed result states for Compare/Optimize/Strategy Builder; continue reducing local inconsistencies.

@@ -1,6 +1,6 @@
 # PRD — Backtest & Compare / Optimize Enhancements
 
-> **Implementation status** (updated 2026-09-30). Implemented one section at a
+> **Implementation status** (updated 2026-10-06). Implemented one section at a
 > time, "bugs first" as §1 asks.
 >
 > | Section | Status |
@@ -69,7 +69,7 @@ Reading the Optimize doc carefully:
 
 It pulls candles the same way Backtest does — from whichever source the app was started with (`--source synthetic|csv|db|mstock`). So:
 
-- If the app is running with `--source db` → it uses the real PostgreSQL cached data (467K+ daily bars) ✅
+- If the app is running with `--source db` → it uses the real PostgreSQL cached data ✅ (today that cache is the curated NIFTY 200 + NSE index universes at 1-minute bars — coarser timeframes resampled at read time; the old daily cache was purged 2026-10-03)
 - If running with `--source synthetic` → it uses random-walk generated candles ❌ (and critically, **the user probably doesn't know this**)
 - If running with `--source mstock` → it pulls live from broker ✅
 

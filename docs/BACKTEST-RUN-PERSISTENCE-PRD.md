@@ -1,6 +1,6 @@
 # Backtest Run Persistence — Product Requirements Document
 
-- **Status:** APPROVED (v3) — final; incorporates architect polish (v2→v3) + wireframes
+- **Status:** BUILT / MERGED — shipped to main 2026-10-03 (commit `c0ce76b`). Implemented as specified: migration 018 (`db/alembic/versions/20261003_1200_018_backtest_run_ledger.py`), store `src/backtest/api/backtest_run_store.py` (`save_run` / `save_compare` / `save_optimizer_baseline` / `list_runs` / `get_run` / `stats`, R7 retention `SERIES_CAP_PER_GROUP = 500`), endpoints `GET /api/backtest/runs[/stats|/<id>]` + `persisted` flag in `src/backtest/api/backtest.py`. PRD text below is the approved (v3) spec.
 - **Date:** 2026-10-03 (v1 2026-10-03; v2 2026-10-03; v3 2026-10-03)
 - **Severity:** Medium (no data-loss risk; audit-trail gap — completed backtests leave no server-side trace)
 - **Related:** `docs/MTM-STALENESS-OBSERVABILITY-PRD.md` (same "attest at the moment of truth" philosophy), `docs/OPTIMIZATION-ENGINE.md`, PRD §1.1/§1.2 (provenance), PRD §5 (readiness), `db/alembic/versions` (this work is **migration 018**, single revision, see §9 — numbered 018 because the alembic head was 017 `market_holidays` after the strategy-builder merge)

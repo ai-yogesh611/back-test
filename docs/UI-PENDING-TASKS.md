@@ -201,6 +201,33 @@ Paths below are relative to `src/backtest/web/`. Start with the current file/DOM
 
 Copy one entry per issue. Leave private data out of the evidence.
 
+**Reconciled against code 2026-10-06:** the two functional findings from the
+2026-10-02 QA walkthrough ([UI-WALKTHROUGH-AND-QA-2026-10-02.md](UI-WALKTHROUGH-AND-QA-2026-10-02.md))
+are **fixed in source on this branch** — recorded below for live retest, not
+listed as open bugs.
+
+```text
+Issue ID / task ID: QA finding #1 → UI-16 (/reporting)
+Priority: P0 (page unusable with paper trades on)
+Environment: observed live (QA 2026-10-02)
+Fix: src/backtest/reporting/consolidator.py — the trade sort now uses an aware
+     datetime.min.replace(tzinfo=timezone.utc) sentinel and coerces naive
+     exit_time values to UTC, so naive and aware timestamps no longer mix.
+Result: code-verified 2026-10-06; needs a live retest with include_paper=true.
+Update decision: Fixed in code — pending live retest
+
+Issue ID / task ID: QA finding #2 → UI-02 (bucket isolation)
+Priority: P0 (paper position shown on the live page)
+Environment: observed live (QA 2026-10-02)
+Fix: src/backtest/web/static/js/portfolio.js render() now filters p.positions
+     by (pos.mode || "paper") === PAGE_MODE next to the existing p.runners
+     filter, so scoped pages drop other buckets' positions.
+Result: code-verified 2026-10-06; needs a live retest with paper + live books.
+Update decision: Fixed in code — pending live retest
+```
+
+Blank template for new issues:
+
 ```text
 Issue ID / task ID:
 Priority: P0 (safety/data/scope) / P1 (workflow) / P2 (visual polish)

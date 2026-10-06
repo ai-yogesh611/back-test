@@ -13,22 +13,22 @@ Your backtesting system now supports **16 NSE indices** including major broad-ma
 | BANKNIFTY | NIFTY BANK | 26009 | 30 |
 | FINNIFTY | NIFTY NEXT 50 | 26037 | 60 |
 | MIDCPNIFTY | NIFTY MIDCAP 150 | 26051 | 120 |
-| SENSEX | S&P BSE SENSEX | 1 | 20 |
-| INDIAVIX | INDIA VIX | 26038 | - |
+| SENSEX | S&P BSE SENSEX | 51 | 20 |
+| INDIAVIX | INDIA VIX | 26017 | - |
 
 ### Sectoral Indices
 | Symbol | Name | mStock Token | Lot Size |
 |--------|------|--------------|----------|
-| NIFTYIT | NIFTY IT | 26013 | 60 |
-| NIFTYAUTO | NIFTY AUTO | 26012 | 50 |
-| NIFTYPHARMA | NIFTY PHARMA | 26018 | 60 |
-| NIFTYMETAL | NIFTY METAL | 26016 | 50 |
-| NIFTYREALTY | NIFTY REALTY | 26019 | 50 |
-| NIFTYFMCG | NIFTY FMCG | 26014 | 40 |
-| NIFTYENERGY | NIFTY ENERGY | 26011 | 50 |
-| NIFTYMEDIA | NIFTY MEDIA | 26017 | 50 |
-| NIFTYPSUBANK | NIFTY PSU BANK | 26021 | 60 |
-| NIFTYINFRA | NIFTY INFRA | 26015 | 50 |
+| NIFTYIT | NIFTY IT | 26008 | 60 |
+| NIFTYAUTO | NIFTY AUTO | 26029 | 50 |
+| NIFTYPHARMA | NIFTY PHARMA | 26023 | 60 |
+| NIFTYMETAL | NIFTY METAL | 26030 | 50 |
+| NIFTYREALTY | NIFTY REALTY | 26018 | 50 |
+| NIFTYFMCG | NIFTY FMCG | 26021 | 40 |
+| NIFTYENERGY | NIFTY ENERGY | 26020 | 50 |
+| NIFTYMEDIA | NIFTY MEDIA | 26031 | 50 |
+| NIFTYPSUBANK | NIFTY PSU BANK | 26025 | 60 |
+| NIFTYINFRA | NIFTY INFRA | 26019 | 50 |
 
 ## Configuration Changes Made
 
@@ -114,13 +114,29 @@ class BankingPair(Strategy):
 
 ## Important Notes
 
+### API Endpoints
+- **Historical candles:** `instruments/historical/{segment}/{token}/{interval}`
+  — T+1 (today's session is not in the history until it settles); the `to`
+  date is **end-exclusive**, so a one-day fetch must request `to + 1 day`.
+- **Live quotes:** `instruments/quote/ohlc` is **index-only**; equities have no
+  quote/ohlc symbol entry.
+- **Equity intraday (today):** `instruments/intraday/{segment_id}/{instrument_token}/minute`
+  — keyed by scriptmaster instrument token, not tradingsymbol (NSE segment
+  id 1). Indices never appear in scriptmaster, so they use the fixed token map
+  below.
+
 ### Data Availability
-- **Historical data**: Must be fetched first using the script or DATA tab
+- **Historical data**: Must be fetched first using the script or DATA tab.
+  Current 1-min backfill status: NIFTY complete; BANKNIFTY / FINNIFTY /
+  MIDCPNIFTY paused; SENSEX / INDIAVIX deferred (see `docs/DATABASE.md`).
 - **Live data**: Requires valid mStock API credentials
 - **Update frequency**: Daily bars are T+1 (next day), live quotes are real-time
 
 ### Token Accuracy
-The mStock security tokens provided are based on standard NSE conventions. If you encounter errors fetching data for a specific index:
+The mStock security tokens come from the fixed, value-verified map
+`INDEX_SECURITY_TOKENS` in `src/backtest/data/mstock_live_feed.py` — indexes
+never appear in scriptmaster, so this map is the only token source for them.
+If you encounter errors fetching data for a specific index:
 
 1. Check the mStock documentation for the correct token
 2. Update `INDEX_SECURITY_TOKENS` in `mstock_live_feed.py`

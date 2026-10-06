@@ -65,7 +65,10 @@ Analytics are computed on-demand from live/paper portfolio managers and historic
 - **Current Drawdown:** Active underwater period
 - **Underwater Curve:** Time series showing all drawdown periods
 
-**Alert Threshold:** Drawdown > 2× historical max triggers a warning in the Risk Board.
+**Alert Threshold:** The overview alerts flag a strategy with drawdown
+(`max_drawdown_pct`) above 15% as critical, and one with Sharpe < 1.0 (across
+at least 5 trades) as a warning; a losing streak of 4+ trades raises an info
+alert. These appear in the Risk Board.
 
 #### Trade Statistics
 
@@ -104,13 +107,16 @@ Memory rows win on natural-key collisions (same symbol, entry time, exit time). 
 
 ### Edge Degradation Detection
 
-The analytics engine flags potential edge decay when:
-- Recent 30-day Sharpe < 50% of all-time Sharpe
-- Win rate drops >10 percentage points vs baseline
-- Max drawdown exceeds 1.5× historical max
-- Trade frequency changes >50% (market regime shift?)
+The analytics engine flags potential edge decay when (rolling metrics,
+compared window-over-window):
+
+- Rolling Sharpe drops ≥ 20% from its earlier window, or falls below 1.0
+- Rolling Sharpe is **negative** — the absolute floor: a strategy that was
+  always bad has nothing to "degrade" from, so this fires on its own
 
 These warnings appear in the **Risk Board** under "Strategy Health."
+(Overview alerts additionally fire on low Sharpe < 1.0 with ≥ 5 trades,
+drawdown > 15%, and losing streaks of 4+.)
 
 ### Option Strategy Adjustments
 
@@ -122,14 +128,18 @@ Option strategies have special handling:
 
 ### API Endpoints
 
+Analytics are served by two endpoints (equity curve, drawdown, trade
+distribution and monthly breakdown are computed inside the service and
+returned in these responses, not as separate routes):
+
 ```http
-GET /api/analytics/strategies/<name>?period=30d
-GET /api/analytics/portfolio?period=90d
-GET /api/analytics/equity-curve/<portfolio_id>
-GET /api/analytics/drawdown/<portfolio_id>
-GET /api/analytics/trade-distribution/<strategy_name>
-GET /api/analytics/monthly-breakdown/<strategy_name>
+GET /api/analytics/overview?period=30d&mode=paper
+GET /api/analytics/strategy/<instance_id>?period=90d
+GET /api/analytics/cross-broker/summary|execution|compare|migration-impact|recommend
 ```
+
+The strategy detail endpoint is keyed by **runner instance id**, not strategy
+name; its period default is `90d` (the overview's is `30d`).
 
 **Response Example:**
 ```json
@@ -208,17 +218,22 @@ An optimization run requires:
     "timeframe": "1day",
     "initial_capital": 100000
   },
-  "walk_forward": {
+  "walkForward": {
     "enabled": true,
-    "num_splits": 4,
-    "train_pct": 0.7
+    "trainPeriodDays": 60,
+    "testPeriodDays": 30,
+    "stepDays": 30,
+    "maxEvalsPerSplit": 150,
+    "overfitThreshold": 0.3
   }
 }
 ```
 
-**Limits:**
-- Max optimized parameters: **5** (beyond this, curse of dimensionality makes results unreliable)
-- Max combinations: **10,000** (grid), **500** (random/Bayesian/genetic default)
+**Limits** (enforced in `backtest/optimization/config.py`):
+- Max optimized parameters: **8** (`MAX_OPTIMIZED_PARAMS`) — beyond this, curse of dimensionality makes results unreliable
+- Max grid combinations: **50,000** (`MAX_GRID_COMBINATIONS`)
+- Random search default: **20% of the grid size** (`default_random_samples`)
+- Bayesian search default: **60 evaluations** (`n_calls`)
 
 ### Search Methods
 
@@ -238,50 +253,63 @@ Uses Gaussian Process regression with Expected Improvement acquisition:
 
 #### Genetic Algorithm Details
 
-- Population size: 50
-- Generations: 20
-- Crossover: blend parents' params
-- Mutation: 10% chance per param, ±1 step
-- Selection: top 20% survive, rest replaced
+- Population size: 20 (`population`)
+- Generations: 10 (`generations`) — budget is population × generations, capped by the space size
+- Selection: tournament
+- Crossover: uniform
+- Mutation: `mutation_rate` 0.2 per param, ±1 step
+- Elitism: best solutions survive unchanged
 
 ### Walk-Forward Validation
 
 Walk-forward (WF) tests whether the optimizer found a **robust** strategy or just overfit the training data:
 
-1. Split data into N rolling windows (e.g., 4 splits, 70% train / 30% test)
+1. Split data into **calendar-based rolling windows** — by default 60-day
+   train, 30-day test, stepping 30 days (`trainPeriodDays`/`testPeriodDays`/
+   `stepDays`; any number of splits that fit inside the date range)
 2. For each split:
    - Run optimization on **train** window
    - Test winner on **next, unseen test** window
    - Indicators warm up on bars *before* scored window (no lookahead)
 3. Compare average train score vs average test score
 
-**Overfitting Criteria:**
-- Test score < 70% of train score → **overfitted**
-- Test Sharpe < 0.5 → **unreliable**
-- WF pass rate < 50% → **caution**
+**Overfitting Criteria** (computed from the scored splits in
+`backtest/optimization/walk_forward.py`):
+- Average train→test score **degradation** > `overfit_threshold`
+  (default **0.3**) → **overfitted**
+- **Efficiency** (`avg_test_score / avg_train_score`) < **0.5** → **overfitted**
 
-The UI shows a **degradation ratio**: `avg_test_score / avg_train_score`. Values near 1.0 indicate robustness; <0.7 signals overfitting.
+The UI shows the efficiency ratio (`avg_test / avg_train`). Values near 1.0
+indicate robustness; <0.5 signals overfitting.
 
 ### Sensitivity Analysis
 
-After finding the best parameters, the engine sweeps each parameter ±3 steps while holding others constant:
+The engine sweeps each optimized parameter one-dimensionally around the
+chosen value (`sensitivity_curve` in `backtest/optimization/analysis.py`),
+evenly thinning the swept grid to at most 25 points:
 
-- **Plateau Detection:** If nearby points have similar scores (within 10%), the optimum is on a plateau → more robust
-- **Sharp Peak Warning:** If score drops >30% within 1 step → fragile, likely overfit
-- **Re-centering:** If sweep finds better point, re-centers and sweeps again (up to 3 rounds)
+- **Plateau Detection:** a value is "on the plateau" when its score is within
+  10% (`PLATEAU_TOLERANCE`) of the best — broad flat regions are preferred
+  over peaks. Stability = plateau width / swept range.
+- **Sharp Peak Warning:** a curve is labelled *sensitive* when stability
+  < 0.12 or the best neighbour's score drops > 40% (`neighbor_drop > 0.4`) —
+  fragile, likely overfit.
 
-The result is a **local optimum** on every axis, not just the best point the sampler happened to hit.
+The result is a per-parameter **local** classification (plateau / sensitive),
+not just the best point the sampler happened to hit.
 
 ### Robustness Scoring
 
-The engine computes a 0-10 robustness score based on:
+The engine computes a 0-10 robustness score from the evidence available
+(`robustness_score` in `backtest/optimization/analysis.py`); missing evidence
+is dropped and the remaining weights are re-normalized:
 
 | Factor | Weight | Calculation |
 |--------|--------|-------------|
-| **WF Degradation** | 40% | `(test_score / train_score)` mapped to 0-10 |
-| **Sensitivity Plateau** | 30% | % of swept points within 10% of best |
-| **Trade Count Stability** | 20% | Std dev of trades across WF splits |
-| **Constraint Margin** | 10% | How far from constraint boundaries |
+| **Parameter plateaus** | 4 | mean stability from the 1-D sensitivity sweeps |
+| **Walk-forward efficiency** | 3 | `avg_test/avg_train` capped at 0.8 |
+| **Top-result clustering** | 2 | `1 − dispersion` (spread of results within 5% of best) |
+| **Trade-count sufficiency** | 1 | `min(1, total_trades / 30)` |
 
 **Interpretation:**
 - **8-10:** Very robust, safe to deploy
@@ -302,17 +330,26 @@ Missing cells are `null` (random/Bayesian runs are sparse).
 
 #### Top Result Clustering
 
-Results within 5% of best score are grouped into clusters by parameter similarity. This helps identify:
+The top-10 constraint-compliant results (`top_cluster`) are analysed for how
+tightly they cluster in parameter space — dispersion per parameter is the
+std of the top-10 values divided by the swept range. This helps identify:
 - **Multiple optima:** Different param sets achieving similar performance
-- **Stable regions:** Broad areas of good performance (preferred over sharp peaks)
+- **Stable regions:** A tight cluster means the good region is a *region*,
+  not a lucky isolated point (preferred over sharp peaks)
 
 #### Warning Signs
 
-Plain-English warnings generated by the analysis:
-- "Score drops 45% when fast_period moves from 15 to 20 → very sensitive"
-- "Only 12% of walk-forward splits beat the baseline → likely overfit"
-- "Best Sharpe is 2.8 but occurs with only 8 trades → insufficient sample"
-- "Parameters at boundary (slow=200, max=200) → expand range"
+Plain-English warnings generated by the analysis (`warning_signs` in
+`backtest/optimization/analysis.py`) carry a `level` (info / warning /
+danger) and a code. Examples of what the engine actually emits:
+
+- `high_sharpe` — "Sharpe 3.4 > 3 — unusually high; verify it is not fitted noise."
+- `few_trades` — "Only 8 trades — results are statistically weak (aim for 30+)."
+- `trades_per_param` — fewer than 10 trades per optimized parameter
+- `edge_<param>` — "Best slow=200 is at the maximum of the searched range — consider extending the range."
+- `sharp_peak_<name>` — a parameter's 1-D curve is a peak, not a plateau
+- `wf_overfit` (danger) — walk-forward flagged significant out-of-sample degradation
+- `no_wf` — "Walk-forward validation was off — out-of-sample behaviour is unknown."
 
 ### Apply to Runner
 
@@ -320,9 +357,9 @@ Once a result is selected, users can apply it to a running strategy:
 
 1. **Paper Mode (Default):** Applies immediately, no confirmation needed
 2. **Live Mode:** Requires explicit `confirm_live: true` flag AND:
-   - Walk-forward validation passed
-   - Not flagged as overfitted
-   - Robustness score ≥ 6
+   - Walk-forward validation enabled (`walk_forward_enabled`, unless
+     `allow_unvalidated=true`)
+   - Run not flagged as overfitted
 
 The system records:
 - **Audit log entry** in `optimization_audit` table
@@ -414,14 +451,16 @@ POST /api/optimize/audit/<id>/rollback
 3. **Run Optimization**
    - Start with `quick_screen` engine for wide search
    - Use Bayesian method (efficient for expensive backtests)
-   - Enable walk-forward (4 splits, 70/30 train/test)
+   - Enable walk-forward (calendar splits; defaults 60d train / 30d test,
+     30d step)
    - Monitor progress (live ETA, best-so-far)
 
 4. **Analyze Results**
    - Check robustness score (<6 → be cautious)
    - Review heatmaps (look for plateaus, not peaks)
    - Read warning signs (address any red flags)
-   - Verify walk-forward degradation (<30% drop acceptable)
+   - Verify walk-forward: degradation under the overfit threshold and
+     efficiency ≥ 0.5
 
 5. **Validate Out-of-Sample**
    - If WF failed, try different time periods or narrower ranges
@@ -460,20 +499,20 @@ POST /api/optimize/audit/<id>/rollback
 
 ### Analytics Endpoints
 
-#### GET `/api/analytics/strategies/<name>`
+#### GET `/api/analytics/strategy/<instance_id>`
 
-Get performance metrics for a specific strategy.
+Get performance metrics for a specific strategy **runner**, keyed by its
+instance id (the id shown on the portfolio page), not by strategy name.
 
 **Query Parameters:**
-- `period` (optional): `7d`, `30d`, `90d`, `1y`, `all_time` (default: `30d`)
-- `include_trades` (optional): Include full trade list (default: `false`)
+- `period` (optional): `7d`, `30d`, `90d`, `1y`, `all_time` (default: `90d`)
 
 **Response:**
 ```json
 {
   "success": true,
-  "strategy_name": "ema_crossover",
-  "period": "30d",
+  "instance_id": "<instance_id>",
+  "period": "90d",
   "metrics": {...},
   "equity_curve": [...],
   "drawdown_series": [...],
@@ -481,13 +520,13 @@ Get performance metrics for a specific strategy.
 }
 ```
 
-#### GET `/api/analytics/portfolio`
+#### GET `/api/analytics/overview`
 
-Aggregate metrics across all active strategies.
+Aggregate metrics across all active strategy runners.
 
 **Query Parameters:**
-- `period` (optional): Same as above
-- `group_by` (optional): `strategy`, `segment`, `instrument`
+- `period` (optional): Same as above (default: `30d`)
+- `mode` (optional): `paper`, `live`, `ab_test` — filter by runner mode
 
 **Response:**
 ```json
@@ -501,9 +540,15 @@ Aggregate metrics across all active strategies.
     "active_strategies": 5,
     "total_trades": 234
   },
-  "by_strategy": [...]
+  "strategies": [...],
+  "alerts": [...]
 }
 ```
+
+#### Cross-broker endpoints
+
+`GET /api/analytics/cross-broker/summary|execution|compare|migration-impact|recommend`
+— broker execution-quality analytics (also `period`/`mode` filtered).
 
 ### Optimization Endpoints
 
@@ -590,7 +635,7 @@ Apply selected parameters to a running strategy.
 - `target` must be `paper`, `live`, `ab_test`, or `none`
 - `confirm_live: true` required for `target: "live"`
 - Run must not be flagged as overfitted
-- Walk-forward must have passed (unless overridden)
+- Walk-forward must be enabled (unless overridden with `allow_unvalidated`)
 
 **Response:**
 ```json
@@ -766,8 +811,10 @@ No dedicated analytics tables — everything is computed on-demand from transact
 
 4. **Always Use Walk-Forward**
    - Never trust in-sample results alone
-   - 4 splits with 70/30 train/test is standard
-   - WF degradation < 30% is acceptable
+   - Calendar splits with 60-day train / 30-day test (30-day step) are the
+     default
+   - Average train→test degradation under `overfitThreshold` (default 0.3)
+     is the bar; efficiency below 0.5 is flagged
    - If WF fails repeatedly, strategy may be unoptimizable
 
 5. **Prefer Plateaus Over Peaks**

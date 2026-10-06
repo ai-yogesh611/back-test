@@ -77,15 +77,20 @@ class NiftyScalper(Strategy):
 
 **Add Debug Logging:**
 ```python
-# In your strategy's next() method
-def next(self):
-    # Add these lines
-    print(f"Close: {self.data.close[-1]:.2f}")
-    print(f"SMA Fast: {self.sma_fast[0]:.2f}, SMA Slow: {self.sma_slow[0]:.2f}")
-    print(f"RSI: {self.rsi[0]:.2f}")
-    
+# In your strategy's signal hook (src/backtest/strategies/... or plugins/strategies/...)
+def generate_signals(self, candles: pd.DataFrame) -> pd.Series:
+    close = candles["close"]
+    print(f"Last close: {close.iloc[-1]:.2f}")
+    # ... your indicators ...
+    print(f"SMA Fast: {fast.iloc[-1]:.2f}, SMA Slow: {slow.iloc[-1]:.2f}")
+    print(f"RSI: {rsi.iloc[-1]:.2f}")
+
     # Then your existing logic...
 ```
+
+Note: strategies on this platform implement `generate_signals(candles)` or
+`entries(candles)` — there is no `next()` method, and a strategy must never
+fetch its own data (the engine hands it the `candles` frame).
 
 ---
 
@@ -249,7 +254,7 @@ If you've checked everything above and strategies still don't trade:
    - Look for calculation errors
 
 2. **Verify Strategy is Actually Running**
-   - Check if `next()` method is being called
+   - Check if `generate_signals()` (or `entries()`) is being called
    - Add a simple `print("Strategy running")` to confirm
 
 3. **Test with Simple Strategy**

@@ -209,6 +209,63 @@ and an **Edit / validate** button.
 `GET/PUT/DELETE /api/settings/segments[/<id>]`, the kill-switch endpoints and the
 segment live-arming checklist (see `docs/WEB-UI.md` §Reporting for the P&L side).
 
+### 6. Strategy builder (`/strategy-builder`)
+**Template:** `templates/strategy_builder.html` (inline JS)
+
+Pine v5 → Python plugin converter. Convert → criteria gate → validate → save:
+
+- **Convert** (`POST /api/pine/convert`) runs the whole server pipeline:
+  parse → codegen → generated-code validation → entry check → **conformance
+  preflight** (the generated plugin is imported and run through the plugin
+  conformance battery, so a script that would only die at load dies here with
+  the reason) → metadata. `strategy.order(...)` scripts with `when=` conditions
+  convert through a **stateful `generate_signals()` path**
+  (`src/backtest/pine/converter.py`); `indicator()`-style scripts with no
+  `strategy.entry` are refused with an explanation.
+- **Readable translation** — the convert response carries a server-computed
+  `metadata.readable` summary: entry criteria, entry strike (options:
+  moneyness + type + expiry selects), take profit, stop loss and an optional
+  signal exit. Anything the script left out is flagged MISSING and must be
+  typed in; **Save stays hidden until every required criterion has a value**
+  (segment selection included).
+- **Validate** (`POST /api/pine/validate`) runs a quick 30-day backtest of the
+  generated code and prints the metrics or the rejection reason.
+- **Save** (`POST /api/pine/save`) re-checks criteria + segment server-side,
+  writes the plugin and loads it into the registry (no restart needed).
+- **Copy LLM prompt** (`GET /api/pine/prompt`) for scripts too complex to
+  auto-convert.
+
+### 7. Market data (`/data`)
+**Template:** `templates/data_manager.html`
+**JS:** `static/js/data_manager.js`
+
+The instrument picker is **names-only**: a checkbox list (symbol, name and
+coverage label) behind All / Equity / Index tabs plus search — there is no
+per-instrument date-range selection; one From/To pair governs the fetch.
+Fetching **with nothing ticked** fetches the active tab's curated universe —
+All = NIFTY 200 stocks + NSE indices, Equity = the 200 stocks, Index = the
+indices — sent as `scope`; the server rejects unknown scopes (400) and the old
+"no list = every NSE/BSE stock" whole-catalogue fallback is gone. One payload
+(`GET /api/data/coverage`, `include_catalogue=0`) renders both the picker and
+the inventory table, so they can never disagree about what is on disk.
+
+The fetch job (`POST /api/data/fetch`, background thread in
+`backtest/api/data_manager.py`) dedupes catalogue aliases, retries mStock's
+intermittent 502s with pacing plus a per-job circuit breaker, and skips
+coverage-aware: days already stored, and windows that touch only **market
+holidays**, are not re-probed (`skipped` is reported back and shown in the
+completion toast).
+
+The topbar **data-freshness chip** (`#data-freshness-chip` in `base.html`,
+server-rendered from `GET /api/data/freshness`, live-updated by
+`components/freshness_chip.js` + `data_fetch_indicator.js`) shows how stale
+the price library is. It appears only after a server restart when the running
+process predates it.
+
+**Endpoints:** `POST /api/data/fetch` · `/api/data/stop` · `/api/data/clear`,
+`GET /api/data/status` · `/api/data/coverage` · `/api/data/inventory` ·
+`/api/data/freshness`.
+
 ### Global: Alert widget (every page)
 **Template:** `templates/base.html` (`#alert-widget`, rendered only when
 `PORTFOLIO_INTELLIGENCE_ENABLED`) **JS:** `static/js/components/alert_widget.js`
@@ -217,9 +274,14 @@ Bottom-right portfolio alert panel: minimized pill with count and severity
 breakdown, expanded list (View Details / Dismiss), toast for new critical and
 warning alerts, and a detail modal (`#alert-detail-modal`, created on demand)
 with current state, what it means, contributing strategies, typical responses
-and subscribed strategies — no position-changing buttons. Polls
-`/api/alerts/active` every 3 s (15 s when the page is hidden) and re-renders
-only when the broker `version` changes; expanded state in
+and subscribed strategies — no position-changing buttons. Broker-session alerts
+(`broker_session_expiring` / `broker_session_expired`, raised by the session
+manager and also pushed to the outbound notifier channels — Telegram etc. per
+`config/alerts.yaml`) additionally carry a **Re-login** button that opens the
+same broker auth popup the nav chip uses (password → TOTP); the alert
+auto-resolves on verified re-login. Live on the next server restart. Polls
+`/api/alerts/active` every 10 s (30 s when the page is hidden) and re-renders
+only when the payload `version` changes; expanded state in
 `localStorage["pi.alertWidget.expanded"]`. Adds `body.has-alert-widget` so
 page content can keep clear of it. Pinned by `tests/js/test_alert_widget.mjs`.
 See `docs/ALERTS-GUIDE.md`.
@@ -318,6 +380,7 @@ reference: `docs/PORTFOLIO-INTELLIGENCE.md`.
 - `loader.js` — Loading spinner
 - `toast.js` — Notification toasts
 - `alert_widget.js` — Global portfolio alert widget + detail modal (every page)
+- `freshness_chip.js` — Topbar data-freshness chip (`data_fetch_indicator.js` re-renders it when a fetch finishes)
 - `portfolio_intelligence.js` — Risk Board intelligence sections (Greeks, concentration, correlation, regime)
 
 ### Charts (`static/js/charts/`)
@@ -337,13 +400,14 @@ reference: `docs/PORTFOLIO-INTELLIGENCE.md`.
 ## Static Assets
 ```
 static/
-├── css/           # Stylesheets
-├── js/
-│   ├── components/    # Reusable UI components
-│   ├── charts/        # Chart.js chart wrappers
-│   ├── compare/       # Compare-specific charts
-│   ├── backtest.js    # Backtest page controller
-│   ├── compare.js     # Compare page controller
-│   └── forward.js     # Forward test page controller
-└── img/           # Images
+├── css/           # tokens.css + app/workspace/theme stylesheets
+├── fonts/         # Self-hosted Inter + JetBrains Mono (woff2, licenses)
+├── vendor/        # Pinned Chart.js 4.4.1 (+ licenses)
+└── js/
+    ├── components/    # Reusable UI components
+    ├── charts/        # Chart.js chart wrappers
+    ├── compare/       # Compare-specific charts
+    ├── backtest.js    # Backtest page controller
+    ├── compare.js     # Compare page controller
+    └── forward.js     # Forward test page controller
 ```

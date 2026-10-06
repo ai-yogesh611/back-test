@@ -73,6 +73,32 @@ The system already had these endpoints:
 
 ---
 
+## Later Improvements to the Fetch Pipeline (PRs #39, #40, #42)
+
+After the logout/stop work, the Data tab fetch itself was hardened
+(`src/backtest/api/data_manager.py`):
+
+- **Names-only curated picker** — `FETCH_SCOPES = ("equity,index", "equity",
+  "index")`: the form picks from curated universes (NIFTY 200 stock list,
+  16 indices, or both), not free-form symbols.
+- **Dedupe on persist** — bars are upserted (last occurrence wins), so
+  re-fetching a window cannot double-store it.
+- **502/503/504 retry ladder** — `_get_historical_with_retry()` retries
+  mStock's intermittent gateway 502s with backoff, and a circuit breaker
+  (`BREAKER_MIN_FAILURES = 8` post-retry chunk failures within
+  `BREAKER_STALL_SECONDS = 180.0` seconds, `CHUNK_FETCH_WORKERS = 4`) aborts
+  the job instead of crawling through all 200 symbols collecting errors.
+- **Coverage-aware, holiday-aware skip** — `_windows_needing_fetch()` probes
+  `_probe_covered_days` first and only fetches missing windows;
+  `_load_market_holidays()` reads the `market_holidays` table (seeded
+  2022–2026 from the NSE holiday-master API) so holiday-only windows are
+  dropped on the first pass instead of re-probed forever.
+- **End-exclusive `to` fix** — mStock's historical `to` date is END-EXCLUSIVE,
+  so fetches request one day past the wanted window; a single-day fetch used
+  to come back empty.
+
+---
+
 ## How to Use
 
 ### Stopping a Data Fetch

@@ -4,7 +4,9 @@
 pieces fit together. Written from the code, not from the specs, so where the
 docs and the source disagree this file follows the source.*
 
-Last verified against commit `c9df92f` (2026-09-29) — includes Consolidated P&L & Tax Reporting (PRD-002).
+Last verified against the 2026-10-06 tree — includes the backtest run ledger
+(migration 018), the Data tab rework, broker session-expiry alerts, and the
+`market_data_cache` UTC→IST clock repair.
 
 ---
 
@@ -46,14 +48,15 @@ sits — this is the single most important thing to understand before using it.
 
 | Mode | What it does | Where it lives |
 |---|---|---|
-| **Backtest** | Run one strategy over a historical date range, get results | `POST /api/backtest/run` |
-| **Compare** | Run several strategies over the same data, side by side | `POST /api/backtest/run-many` |
+| **Backtest** | Run one strategy over a historical date range, get results — every completed run now persists to the run ledger (`backtest_runs`, migration 018) | `POST /api/backtest/run` |
+| **Compare** | Run several strategies over the same data, side by side — slots persist to the ledger too | `POST /api/backtest/run-many` |
 | **Forward test** | Paper-trade a replay — bars are revealed gradually, as if live | `POST /api/forward/start` |
 | **Portfolio** | Run many strategies at once under shared risk limits | `POST /api/portfolio/runner/create` |
 | **Portfolio (Live)** | Live-scoped command center — real money only | `GET /portfolio/live` |
 | **Portfolio (Paper)** | Paper sandbox — simulated fills only | `GET /portfolio/paper` |
 | **Portfolio (Overview)** | Combined view — Live prominent, Paper secondary | `GET /portfolio` |
-| **Options** | Multi-leg option structures (long call/put, spreads) — paper or live | `GET /options` |
+| **Options** | Multi-leg option structures (long call/put, spreads) — paper or live, inside the Command Center (the old standalone `/options` page was removed) | `GET /portfolio` Positions/Playbooks tabs |
+| **Data** | Fetch and inspect the market-data cache — curated NIFTY 200 + NSE index universes, holiday-aware, deduped fetches | `GET /data` |
 | **Reporting** | Consolidated P&L across all brokers/books, tax estimation, exports, reconciliation | `GET /reporting` |
 
 The distinction between **backtest** and **forward test** is the interesting
@@ -63,8 +66,10 @@ market unfold the way it would in real trading, and you can watch it work.
 Crucially the replay clock runs **on the server** in a background thread, so it
 keeps advancing whether or not a browser tab is open.
 
-**Forward testing here is still a replay of historical data, not a live market
-feed.** The name is aspirational.
+**The `/forward` page is a replay of historical data.** The Command Center's
+portfolio runners are the live path: they consume real broker feeds
+(`MStockBarFeed` / `DhanBarFeed` via `forward/feed_registry.py`) bar by bar,
+still paper-filled unless armed live.
 
 ---
 
@@ -85,6 +90,10 @@ Data source            Strategy              Engine                 Results
 3. **Engine** (`engine/backtester.py`) turns signals into positions, applies
    commission and slippage, and produces an equity curve.
 4. **Metrics** (`engine/metrics.py`) reduce the equity curve to numbers.
+5. **The run is persisted** — every completed single/compare run lands in the
+   run ledger (`backtest_runs` / `backtest_compare_runs` / `backtest_run_series`,
+   migration 018, `api/backtest_run_store.py`): full payload, provenance,
+   config hash — so a result can be re-opened, not just re-run.
 
 ### The no-lookahead rule
 
@@ -134,8 +143,9 @@ Two subtleties worth knowing, both deliberate:
 
 ## 4. Built-in strategies
 
-Five, all in `src/backtest/strategies/`, all self-registering into a registry
-via a `@register` decorator so the UI and CLI discover them automatically.
+Thirteen built-ins, all in `src/backtest/strategies/`, all self-registering
+into a registry via a `@register` decorator so the UI and CLI discover them
+automatically. The core five:
 
 | Name | Logic | Type |
 |---|---|---|
@@ -144,6 +154,13 @@ via a `@register` decorator so the UI and CLI discover them automatically.
 | `rsi_reversion` | Buy oversold, sell overbought | Mean-reversion |
 | `donchian_breakout` | Buy on new N-day highs, sell on new lows | Momentum |
 | `price_move` | Buy/sell based on price movement threshold (e.g. ₹5) | Threshold-based |
+
+Plus `nifty_scalper`, `banknifty_straddle`, `bollinger_reversion`,
+`ema_pullback`, `macd_trend`, `momentum_roc`, `atm_instant_buy`, and the
+`option_directional` market-view strategy — and any drop-in plugin in
+`plugins/strategies/`, loaded by discovery at boot (that includes the
+2026-10 `swing_*` battery, which failed its gates — nothing from it was
+deployed).
 
 `buy_and_hold` exists to be beaten. If a clever strategy can't outperform
 "buy it and do nothing", the cleverness isn't paying for itself.
@@ -169,12 +186,18 @@ four structures (long call, long put, bull call spread, bear put spread).
 | **CSV** | Local `data/*.csv` files | No |
 | **PostgreSQL** | Cached real market data | DB only |
 | **mStock** | Live API (Indian broker) | Yes — API key + password + OTP/TOTP |
+| **Dhan** | Live API (DhanHQ v2) | Yes — Client ID + PIN + TOTP |
 
 Selected at launch with `--source synthetic|csv|db|mstock`.
 
-The database holds real NIFTY 200 data: **201 stocks, 467K+ daily bars,
-Jan 2020 – Aug 2026**, plus **154K instruments** from mStock across NSE, BSE,
-NFO and CDS.
+The database holds real NSE data fetched through the **Data tab**: the curated
+**NIFTY 200** list (`stock-list/nse_ind_nifty200list.csv`) plus a built-in NSE
+**index universe** (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX, INDIAVIX
+and the sectoral indices), stored as **1-minute bars** — coarser timeframes are
+resampled at read time. Fetching is deduplicated, retries mStock's intermittent
+502s, and skips exchange holidays from the `market_holidays` table (seeded
+2022–2026). The earlier daily cache was purged 2026-10-03; the 1-min base is
+still being backfilled (see `docs/OPEN-ITEMS-TRACKER.md`).
 
 **Known gap:** timeframe selection is cosmetic on synthetic and CSV sources —
 they produce daily bars regardless of what you ask for (gap G6).
@@ -469,15 +492,20 @@ state of the mStock broker integration:
 
 ### What still does not exist
 
-- **No equity order path.** The forward engine, portfolio runners and the
-  strategy loop never call the order client — they trade against
-  `OrderLedger`/`PaperBroker` simulated fills.
+- **No equity order path on the replay engine.** The `/forward` replay and the
+  single-run loop trade against `OrderLedger`/`PaperBroker` simulated fills.
+  (The Command Center *does* have a live seam now: `forward/live_gateway.py`
+  routes `mode='live'` runner orders to the broker and polls their fills.)
 - **No live-credentials exercise.** The order client and `LiveOptionTrader`
   are tested against mocks (20 live-trading tests); the documented live
   dry-run against a real mStock session (PRD task T9.5) is still pending.
-- **No persistence for the options book.** The `/options` dashboard serves the
-  in-process paper broker; option positions and structures are not written to
-  DB tables yet (deliberate V1 scope).
+
+### Options book persistence
+
+The earlier claim "no persistence for the options book" is obsolete: option
+structures persist in the `trade_structures` DB table and in the portfolio
+state file (`PORTFOLIO_STATE_PATH` — `forward/state_store.py` snapshots
+structures and the forward bridge's book), and are rehydrated on startup.
 
 ### How the live path is gated
 
@@ -499,11 +527,11 @@ unchanged and still backs every simulated run.
 
 ### One more trap
 
-`src/backtest/forward/live_engine.py` — 697 lines implementing
-`LiveForwardEngine` with a real mStock polling loop, state persistence and a
-module-level engine registry — is **orphaned**. `grep live_engine` across `src/`
-returns zero importers. It is the only code resembling a live feed, and nothing
-calls it. Don't assume it runs.
+The old `forward/live_engine.py` (a standalone `LiveForwardEngine` with zero
+importers) is **gone** — the live seam today is `forward/live_gateway.py`
+(`LiveEquityGateway`), which *is* wired: `portfolio_manager.py` builds a
+gateway per broker, submits live orders through it and runs `poll_pending()`
+on every tick. Paper runners never see it.
 
 ---
 
@@ -513,30 +541,31 @@ calls it. Don't assume it runs.
 src/backtest/
 ├── data/            Data sources: synthetic, CSV, DB, mStock + universes
 ├── strategy/        Base class, registry, adapter
-├── strategies/      The four built-in strategies
+├── strategies/      13 built-in strategies + plugin discovery
 ├── engine/          Backtester, metrics, trade walk, plotting
 ├── simulator/       Costs, fills, sizing, risk, portfolio accounting (18 files)
 ├── options/         Options: selectors, structures, paper/live execution,
 │                    Greeks, margin, fees, expiry (11 files)
 ├── instruments/     Instrument model: equity, option, expiry calendar (6 files)
 ├── forward/         Forward testing: engine, runners, portfolio manager,
-│                    risk supervisor, order ledger, feeds
+│                    risk supervisor, order ledger, feeds, live gateway
 ├── live/            mStock auth, API client, preflight, time & data validation
-├── brokers/         Broker auth + order contract + mStock + session manager
+├── brokers/         Broker auth + order contract + mStock + Dhan + session manager
 ├── marketdata/      Tick→bar aggregation, quality checks, time sync
 ├── db/              SQLAlchemy models, connection manager, config
-├── api/             Flask blueprints (the REST surface)
+├── api/             Flask blueprints (the REST surface) + run ledger
 ├── web/             Flask app: pages + static + templates
-├── dashboard/       Legacy standalone dashboard (slated for retirement)
 ├── adapters/        BacktestAdapter — one result shape for every UI
 ├── analysis/        Strategy comparison
-├── alerts/          Alert manager
+├── alerts/          Alert manager + outbound notifier
+├── pine/            Pine Script v5 converter (parser → codegen, stateful path)
 ├── config_manager/  Layered YAML + env + profile config loader
 ├── cli.py           Command-line interface
 └── runner.py        Orchestrates data → strategy → engine → results
 ```
 
-**Scale:** 105 Python modules, ~39,900 lines in `src/`; 82 test modules, 2,000+ tests.
+**Scale:** 215 Python modules, ~95,000 lines in `src/backtest/`; 204 test
+files, 4,849 tests collected.
 
 ### One-result-shape rule
 
@@ -591,7 +620,10 @@ Two gotchas:
 
 ### Environment variables — for the Flask app
 
-The web app reads no YAML at all. It is env + CLI flags only:
+The Flask app's core config is env + CLI flags only (auto-loaded from `.env`
+by `backtest/__init__.py`). Its *subsystems* read their own YAML
+(`config/database.yaml`, `config/reporting.yaml`, `config/alerts.yaml`,
+`config/pine_converter.yaml`), each layered over the env vars:
 
 | Variable | Purpose |
 |---|---|
@@ -622,6 +654,8 @@ SQLAlchemy 2.0 models with Alembic migrations.
 | `trades` | Matched round trips |
 | `equity_curve` | Mark-to-market snapshots |
 | `market_data_cache` | OHLCV candles — TimescaleDB hypertable |
+| `market_holidays` | NSE exchange closures 2022–2026 (fetch skip + market-status) |
+| `backtest_runs` / `backtest_compare_runs` / `backtest_run_series` | Run ledger — every completed backtest/compare, migration 018 |
 | `performance_metrics` | Computed metrics |
 | `strategy_signals` | Audit log of every signal generated |
 | `system_logs` | Application logs |
@@ -644,6 +678,10 @@ portfolios→positions→orders→fills atomically to satisfy foreign keys.
 ```bash
 pip install -r requirements.txt
 
+# One-time: copy .env.example to .env (Postgres FORWARD_TEST_DB_URL + broker
+# credentials); the package auto-loads it. pyproject.toml pins
+# pytest pythonpath=src.
+
 # Web UI with synthetic data — no credentials, no DB needed
 PYTHONPATH=src python -m backtest.web.app --host 0.0.0.0 --port 5000 --source synthetic
 
@@ -653,7 +691,10 @@ PYTHONPATH=src python -m backtest.web.app --host 0.0.0.0 --port 5000 --source db
 
 Then open `http://localhost:5000` → Backtest → pick a strategy → **Run Backtest**.
 
-`PYTHONPATH=src` is required — the package is not pip-installed.
+`PYTHONPATH=src` is required for a plain checkout — the package is not
+pip-installed (pyproject.toml exists mainly for pytest's `pythonpath`). The
+broker (mStock) session is **per-process**: log in from the UI after every
+restart or the live feeds/runners pause.
 
 ### CLI
 
@@ -701,9 +742,11 @@ exposed, with a healthcheck that just verifies the module imports.
 `forward_testing.service` runs the same module under systemd with
 `MemoryMax=2G`, `CPUQuota=200%`, `Restart=on-failure` and security hardening.
 
-**Web app** — currently the **Flask development server** (`app.run(...)`).
-Gunicorn appears only in archived docs and as open item #10 in the task tracker.
-It is not in `requirements.txt`.
+**Web app** — production runs **gunicorn** (in `requirements.txt`,
+`gunicorn -c gunicorn.conf.py backtest.web.wsgi:app` — one worker, 8 threads,
+`preload_app` deliberately off because per-process daemon threads start at
+import). The Flask dev server (`python -m backtest.web.app`) remains the
+Windows/dev path.
 
 ### The trap
 
@@ -718,19 +761,21 @@ broker auth lands in one worker only, so the other rejects authenticated
 requests. If you move to a production WSGI server, either use
 `--workers 1` (threads only), or externalise session state to the DB first.
 
-State also does not survive a restart — it survives a page refresh, nothing
-more. Persistence is tracked as V2 item #3.
+State survives a restart better than it used to: command-center config/books
+persist via `PORTFOLIO_STATE_PATH` (runners restore PAUSED) and options
+structures via `trade_structures`; broker sessions, forward replay sessions
+and the feed registry are still in-process and lost on restart.
 
 ---
 
 ## 14. Testing and quality
 
-- **2,000+ tests passing**, 4 skipped (need real mStock credentials).
-  Portfolio-specific: 116 tests covering bucket state, breaker independence,
-  flow semantics, scoped API endpoints, and UI views. Options-specific: 226
-  tests across 8 modules (expression, paper, live, Greeks, fees, expiry, web,
-  integration) plus 52 instrument-model tests.
-- 36 JavaScript behaviour assertions across 4 Node harnesses (`tests/js/*.mjs`).
+- **~4,800 tests collected** (204 test files), 4 skipped needing real mStock
+  credentials. Portfolio-specific: 116 tests covering bucket state, breaker
+  independence, flow semantics, scoped API endpoints, and UI views.
+  Options-specific: 226 tests across 8 modules (expression, paper, live,
+  Greeks, fees, expiry, web, integration) plus 52 instrument-model tests.
+- 91 JavaScript behaviour assertions across 8 Node harnesses (`tests/js/*.mjs`).
 - Coverage gate: **80% minimum**, enforced in `tox.ini`.
 - `tests/` splits into `unit/`, `integration/`, `e2e/`, `js/`, `manual/`,
   `fixtures/`.
@@ -773,21 +818,25 @@ happened.
 
 Straight from the code and trackers, not aspirational:
 
-1. **Decision engines are paper-only.** Forward testing and portfolio runners
-   never place real orders. The one live path — multi-leg options via
-   `LiveOptionTrader` — needs real mStock credentials and defaults to dry-run;
-   it has not yet been exercised against the live API (pending task T9.5).
-2. **Forward testing is a replay** of historical data, not a live market feed.
-3. **In-memory state** — forward sessions and broker auth are lost on restart.
+1. **Decision engines are paper-first.** The `/forward` replay and single-run
+   loop never place real orders. Live seams exist (multi-leg options via
+   `LiveOptionTrader`, equity via `forward/live_gateway.py`) but have not been
+   exercised against the live mStock API (pending task T9.5).
+2. **`/forward` is a replay** of historical data, not a live feed — the
+   Command Center's portfolio runners are the live-feed path.
+3. **In-memory state** — forward replay sessions, broker sessions and the feed
+   registry are lost on restart (portfolio state and option structures do
+   persist — see §13).
 4. **Single-worker only** — see §13.
-5. **Flask dev server** in production; Gunicorn still an open task.
+5. **Flask dev server** for Windows/dev; gunicorn (one worker) for production.
 6. **Timeframe is cosmetic** on synthetic and CSV sources (daily bars only).
-7. **`live_engine.py` is orphaned** — 697 lines, zero importers.
-8. **Two dead config files** — `market_data.yaml`, `time_sync.yaml`.
-9. **Money is inexact on SQLite** — `NUMERIC` degrades to float. Use PostgreSQL
-   for reported numbers.
-10. **Legacy `dashboard/app.py`** duplicates `/forward` and is slated for
-    retirement (tracker item #11).
+7. **DB connection hoarding** — the Flask `:5000` process accumulates ~99/100
+   PostgreSQL connections over ~9h; known, untraced (tracker).
+8. **Daily-loss breaker UTC window** — the day anchor is keyed on the UTC
+   date, so 00:00–05:30 IST can be blind to the IST trading day's losses.
+9. **Two dead config files** — `market_data.yaml`, `time_sync.yaml`.
+10. **Money is inexact on SQLite** — `NUMERIC` degrades to float. Use PostgreSQL
+    for reported numbers.
 11. **Broker cost rates drift** — point-in-time figures, re-verified
     2026-09-28 (equity FY 2024-25; F&O STT per Budget 2026, effective
     2026-04-01). India changes rates regularly — `config/brokers.yaml` warns to

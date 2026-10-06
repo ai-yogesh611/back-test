@@ -13,11 +13,23 @@ table (1054ms → 271ms). **Start with
 1-min-only ingest work must still handle, including a silent timezone trap a
 daily check cannot catch.
 
+**Also shipped (Sep–Oct 2026):** backtest run-ledger persistence (migration 018,
+merged 2026-10-03 — every completed run/compare persists payload + provenance,
+`api/backtest_run_store.py`); the Data tab rework (curated
+`stock-list/nse_ind_nifty200list.csv` + NSE index universe, dedupe + 502-retry
++ holiday-aware fetch — PRs #39/#40/#42); broker session-expiry alerts (in-app
+widget + Telegram + re-login popup, PR #41, `brokers/session_manager.py`);
+`market_data_cache` UTC→IST clock repair (`data/base.bar_timestamp` + a
+45.6M-row migration, commit f2eb7e3); the NSE holiday table seeded 2022–2026
+(`tools/seed_market_holidays.py`, migration 017) with holiday-aware fetch skip.
+The 2026-10 swing battery (`plugins/strategies/swing_*`) failed all its gates —
+nothing was deployed.
+
 ## Architecture
 ```
 src/backtest/
 ├── data/       # Data sources (synthetic, CSV, mStock API)
-├── strategy/   # Strategy base + registry (4 strategies included)
+├── strategy/   # Strategy base + registry (13 built-ins + plugin discovery)
 ├── engine/     # Backtester (vectorized + risk-aware paths), metrics, plotting
 ├── forward/    # Walk-forward + paper trading runner
 ├── live/       # mStock auth (TOTP/OTP), API client, preflight checks
@@ -42,7 +54,7 @@ Canonical OHLCV frame: lowercase cols (open, high, low, close, volume), tz-naive
 
 ## CLI Commands
 ```
-backtest list                           # List 4 strategies
+backtest list                           # List all registered strategies (built-ins + plugins)
 backtest run --strategy X --from D1 --to D2   # Single backtest
 backtest compare --strategies X,Y,Z --from D1 --to D2  # Multi-strategy
 backtest preflight                      # DNS/HTTPS/auth checks
@@ -96,6 +108,9 @@ backtest papertrade --mode walkforward --strategies X --from D1 --to D2  # Paper
 | web/static/js/components/timeframes.js | UI timeframe vocabulary + "only what this symbol has" dropdown | ✅ New (PRD §1.4) |
 | web/static/js/components/position_actions.js | Positions-table action buttons + their modals | ✅ LOM (2026-09-23) |
 | web/static/js/components/orders_tab.js | Orders tab: ledger rows, slippage, cancel, badge, amend + aging (Phase 3) | ✅ LOM (2026-09-23) |
+| api/backtest_run_store.py | Backtest run ledger — `backtest_runs`/`backtest_compare_runs`/`backtest_run_series` (migration 018) | ✅ New (2026-10-03) |
+| data/base.bar_timestamp() | Naive bars = IST exchange wall clock, bound as aware UTC (45.6M-row repair, f2eb7e3) | ✅ Fixed (2026-10-06) |
+| brokers/session_manager.py | Concurrent per-broker sessions (v2) + expiry monitor → alerts + re-login (PR #41) | ✅ New (2026-09/10) |
 
 ## Known Limitations
 - Timeframe is cosmetic on synthetic/CSV sources (daily bars only) — see gap G6 / U2
@@ -107,6 +122,13 @@ backtest papertrade --mode walkforward --strategies X --from D1 --to D2  # Paper
   (P4.1), but `BrokerFillProvider` + `MStockLiveFeed` wiring, `poll_fill` in the broker
   ABC, and bucket-level risk anchors remain
 - Auth tests require mStock credentials (skipped)
+- Flask `:5000` hoards ~99/100 PostgreSQL connections over ~9h — known, untraced
+  (see `docs/OPEN-ITEMS-TRACKER.md`)
+- Daily-loss breaker day-anchor is keyed on the UTC date, so the 00:00–05:30 IST
+  window can be blind to the IST trading day's losses (tracker)
+- Equity 1-min backfill interrupted at 77/200 symbols (2026-10-04 broker 502
+  storm); index 1-min backfill: NIFTY done, BANKNIFTY/FINNIFTY/MIDCPNIFTY paused
+  pending go-ahead, SENSEX/INDIAVIX deferred (tracker)
 
 ## Next Steps (If Continuing)
 1. Wire `mode='live'` command-center runners through `BrokerFillProvider` + `MStockLiveFeed` (F-12)

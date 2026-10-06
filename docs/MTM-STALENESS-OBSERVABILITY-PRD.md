@@ -1,6 +1,6 @@
 # MTM Staleness Observability — Design Draft
 
-- **Status:** DRAFT — for architecture review
+- **Status:** BUILT — implemented in code (verified 2026-10-06): R1/R3/R4 in `src/backtest/forward/options_bridge.py` + `src/backtest/options/paper_trading.py` (`mark_stale`, `quote_error`, `STALE_AFTER_BARS`, throttled logging, stale-mark alerts); R2/R7 UI badge + Refresh marks in `web/static/js/`; R6 watchdog endpoint `POST /api/portfolio/runner/<id>/refresh-marks` in `src/backtest/api/portfolio.py`
 - **Date:** 2026-10-01
 - **Severity:** High (silent wrong data on the Open Positions tab; risk exits operate on frozen marks)
 - **Related:** `docs/DATA-FEED-IMPROVEMENTS.md`, `docs/MULTI-BROKER-PRD.md` §8.4 (deployed-view honesty), fail-closed marking guard (2026-09-23)

@@ -19,10 +19,12 @@
        │                                                     │  tables)     │
        │                                                     └──────────────┘
        │
-       ├── SyntheticSource (fake random walk)
+       ├── SyntheticSource (fake random walk; config-gated, off by default)
        ├── CsvSource (local CSV files)
        ├── MStockSource / MStockLiveFeed (live API, needs TOTP)
-       └── DbSource (PostgreSQL market_data_cache)
+       ├── DhanLiveFeed (Dhan HQ live feed)
+       └── DbSource (PostgreSQL market_data_cache — TimescaleDB hypertable,
+                    NSE 1-minute bars only; coarser timeframes resampled)
 ```
 
 ## Directory Structure
@@ -146,7 +148,9 @@ src/backtest/
 ```bash
 PYTHONPATH=src python -m backtest.web.app --host 0.0.0.0 --port 5000 --source synthetic
 ```
-Opens browser to `http://localhost:5000` with 4 tabs: Dashboard, Backtest, Compare, Forward.
+Opens browser to `http://localhost:5000` with pages: Backtest, Compare,
+Analytics, Optimize, Strategy Builder, Forward, Portfolio (paper/live), Risk,
+Settings, Data, Reporting (`src/backtest/web/app.py` routes).
 
 ### 2. CLI
 ```bash

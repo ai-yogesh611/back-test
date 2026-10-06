@@ -44,6 +44,14 @@ From `.env`:
 FORWARD_TEST_DB_URL=postgresql+psycopg2://postgres:postgres@localhost:5432/forward_test
 ```
 
+**Known issue — connection hoarding:** the Flask server on `:5000` can hold
+~99 of 100 Postgres connections over ~9 hours of uptime. The pool itself is
+bounded (min 5 / max 20 in `db/config.py`), but long-lived requests and pooled
+idle sessions accumulate; one-off scripts that need a slot (e.g.
+`scripts/migrate_cache_ts_to_session_clock.py`) say so explicitly — "the Flask
+server hoards the pool". If connections run out, restart the Flask process
+rather than raising `max_connections`.
+
 ## Databases
 
 | Database | Purpose |
@@ -62,22 +70,35 @@ CREATE TABLE market_data_cache (
     symbol      VARCHAR(64) NOT NULL,
     exchange    VARCHAR(16) NOT NULL DEFAULT 'NSE',
     timeframe   VARCHAR(8) NOT NULL,
-    ts          TIMESTAMPTZ NOT NULL,
+    ts          TIMESTAMPTZ NOT NULL,  -- bar OPEN time, bound to the exchange session clock
     open        NUMERIC(20,8) NOT NULL,
     high        NUMERIC(20,8) NOT NULL,
     low         NUMERIC(20,8) NOT NULL,
     close       NUMERIC(20,8) NOT NULL,
     volume      NUMERIC(20,4) NOT NULL DEFAULT 0,
+    bid         NUMERIC(20,8),
+    ask         NUMERIC(20,8),
     source      VARCHAR(32) NOT NULL DEFAULT 'mstock',
     ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    
-    UNIQUE (symbol, exchange, timeframe, ts)
+
+    UNIQUE (symbol, exchange, timeframe, ts),
+    CONSTRAINT ck_mdc_timeframe CHECK (timeframe IN ('1min','5min','15min','1hour','4hour','1day','1week')),
+    CONSTRAINT ck_mdc_ohlc CHECK (high >= low AND high >= open AND high >= close AND low <= open AND low <= close)
 );
 CREATE INDEX ix_mdc_symbol_tf_ts ON market_data_cache (symbol, timeframe, ts DESC);
 -- Converted to hypertable: SELECT create_hypertable('market_data_cache', 'ts');
 ```
 
-**Current data:** 467,151 bars across 201 NIFTY 200 stocks (Jan 2020 – Aug 2026).
+Writers stamp `ts` with the exchange session clock (`data/base.py:bar_timestamp()` —
+naive broker stamps are read as Asia/Kolkata wall time), so a 1-min bar's `ts`
+is its **open** time and every resampled timeframe is clock-aligned.
+
+**Current data:** NSE **1-minute** bars only — every coarser timeframe is
+derived at read time by `DbSource` resampling, nothing coarser is stored. The
+equity 1-min backfill (NIFTY 200 list, `scripts/fetch_all_1min.ps1`) was
+interrupted 2026-10-04 by a broker 502 storm at 77/200 symbols; index 1-min is
+complete for NIFTY, paused for BANKNIFTY/FINNIFTY/MIDCPNIFTY, and deferred for
+SENSEX/INDIAVIX.
 
 #### `equity_curve` — Mark-to-Market Snapshots
 ```sql
@@ -130,6 +151,15 @@ CREATE INDEX ix_mdc_symbol_tf_ts ON market_data_cache (symbol, timeframe, ts DES
 #### `trades` — Matched Round-Trip
 ```sql
 -- Columns: trade_id, portfolio_id (FK), symbol, side, entry_price, exit_price, quantity, pnl, entry_time, exit_time
+```
+
+#### `market_holidays` — Exchange Closures
+```sql
+-- Columns: holiday_date, is_trading_holiday
+-- Seeded 2022–2026 from the NSE holiday-master API
+-- (tools/seed_market_holidays.py); the Data fetch reads it to skip
+-- holiday-only windows instead of re-probing them forever.
+-- Model: src/backtest/db/models.py MarketHoliday.
 ```
 
 #### `market_data_cache` — Local OHLCV Cache

@@ -161,6 +161,11 @@ decide for themselves ([STRATEGY-ALERTS.md](STRATEGY-ALERTS.md)).
   options/multi-broker fills through `ExecutionRouter.poll_fill(order_id,
   broker)` incl. the Dhan order contract (Phase C, 2026-09-28). F-12 is
   **CLOSED**.
+- **Live-position routing (2026-10):** the portfolio pages render positions
+  from each runner's in-memory book; for live runners that book is built from
+  mStock broker-API fills (polled by the gateways above), not from the
+  forward-test DB tables (`equity_curve` / `performance_metrics` / `trades`,
+  which key on `portfolio_id` and serve the paper ledger).
 
 ## Tests & benchmark
 

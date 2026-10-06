@@ -1,5 +1,14 @@
 # PRD: Options Backtesting Engine — Phase A (MVP)
 
+> **Status note (2026-10): frozen / not implemented** — the data-source
+> routing decision made backtests DB-candles-only, and the DB stores no
+> historical option chains, so options cannot be backtested
+> (`src/backtest/api/backtest.py` refuses option strategies: "backtests are
+> equity-only"; `SourcePolicy.CHAIN_SOURCES` is empty, so
+> `option_backtest_allowed()` is always false). Option chains and expiries
+> come from the broker instead (`MStockBroker.get_option_chain`). The PRD
+> body below is kept as the historical record of the engine's Phase A design.
+
 **Version:** 4.2
 **Status:** 🟢 Phase 0 + A2 (export) + A3 (seam) + A4 (loop) done — A1/A5–A7 open (A6 partially: ID/alert determinism landed)
 **Owner:** Strategy Platform
