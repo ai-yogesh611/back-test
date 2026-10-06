@@ -233,6 +233,28 @@ def _candles(n: int = 1) -> dict:
     return {"data": {"candles": [["t", 1.0, 2.0, 3.0, 4.0, 5] for _ in range(n)]}}
 
 
+def test_one_day_window_requests_the_full_session(monkeypatch):
+    # mStock's `to` date is END-EXCLUSIVE (live 2026-10-06: from==to returned
+    # zero bars; Sep 30..Oct 2 returned Sep 30 + Oct 1). An inclusive (X, X)
+    # window must therefore be requested as from=X&to=X+1.
+    seen: list[dict] = []
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        seen.append(dict(params))
+        return _Resp(200, _candles(1))
+
+    monkeypatch.setattr(dm.requests, "get", fake_get)
+    monkeypatch.setattr(dm.time, "sleep", lambda s: None)
+
+    wins = dm._build_windows("2026-06-01", "2026-06-01", 2)
+    bars, errors = dm._fetch_bars_chunked(
+        "key", "tok", "11536", "2026-06-01", "2026-06-01", "NSE", "minute", 2,
+        windows=wins, workers=1,
+    )
+    assert errors == 0 and len(bars) == 1
+    assert seen == [{"from": "2026-06-01", "to": "2026-06-02"}]
+
+
 def test_explicit_windows_fetch_only_those(monkeypatch):
     requested: list[str] = []
 

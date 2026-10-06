@@ -1580,7 +1580,13 @@ def _fetch_bars_chunked(
             return ("cancelled", None, None)
         if breaker is not None and breaker.tripped:
             return ("cancelled", None, None)
-        params = {"from": c_start.strftime("%Y-%m-%d"), "to": c_end.strftime("%Y-%m-%d")}
+        # The windows are inclusive, but mStock's `to` date is END-EXCLUSIVE
+        # (verified live 2026-10-06: from=to returns zero bars; Sep 30..Oct 2
+        # returns Sep 30 + Oct 1). Ask one day past the window to collect it.
+        params = {
+            "from": c_start.strftime("%Y-%m-%d"),
+            "to": (c_end + timedelta(days=1)).strftime("%Y-%m-%d"),
+        }
         try:
             resp = _get_historical_with_retry(url, headers, params, should_cancel=should_cancel)
             bars = _extract_bars(resp.json())
