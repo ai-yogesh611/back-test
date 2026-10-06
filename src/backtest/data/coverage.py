@@ -152,6 +152,12 @@ class BarCoverage:
     timeframes: list[str] = field(default_factory=list)
     timeframes_stored: list[str] = field(default_factory=list)
     bars_by_timeframe: dict[str, int] = field(default_factory=dict)
+    #: Per stored granularity: ``{tf: {"from": date, "to": date}}``. The Data
+    #: tab's inventory table is per symbol AND timeframe, and the aggregate
+    #: below already reads these MIN(ts)/MAX(ts) — before this they were folded
+    #: into one pair per symbol and thrown away, so the table had to re-scan the
+    #: whole cache to get them back. See ``inventory()``.
+    dates_by_timeframe: dict[str, dict[str, str | None]] = field(default_factory=dict)
 
     @property
     def data_available(self) -> bool:
@@ -171,6 +177,7 @@ class BarCoverage:
             # list above.
             "timeframes_stored": list(self.timeframes_stored),
             "bars_by_timeframe": dict(self.bars_by_timeframe),
+            "dates_by_timeframe": {k: dict(v) for k, v in self.dates_by_timeframe.items()},
             # Present on every row so a consumer can tell "no bars" apart from
             # "nobody looked" without inferring it from a null bar count.
             "coverage_known": True,
@@ -334,6 +341,8 @@ def load_bar_coverage(engine: Any) -> dict[str, BarCoverage]:
             cov.bars_by_timeframe[tf] = cov.bars_by_timeframe.get(tf, 0) + bars
         earliest = _iso_date(row["earliest"])
         latest = _iso_date(row["latest"])
+        if tf:
+            cov.dates_by_timeframe[tf] = {"from": earliest, "to": latest}
         # Totals span every stored granularity, so widen rather than overwrite.
         cov.from_date = _min_date(cov.from_date, earliest)
         cov.to_date = _max_date(cov.to_date, latest)

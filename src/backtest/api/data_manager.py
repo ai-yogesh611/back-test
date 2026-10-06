@@ -28,6 +28,7 @@ from flask import Blueprint, jsonify, request
 from sqlalchemy import create_engine, text
 
 from backtest.data.base import MSTOCK_INTERVAL_MAP
+from backtest.data.base import CANONICAL_TIMEFRAMES
 from backtest.data.coverage import (
     INDEX_UNIVERSE,
     INSTRUMENT_TYPES,
@@ -392,52 +393,61 @@ def fetch_start() -> tuple:
 
 @data_bp.get("/api/data/inventory")
 def inventory() -> tuple:
-    """Return per-symbol data availability summary."""
+    """Per-symbol data availability, served from the CACHED coverage report.
+
+    This endpoint used to run its own ``GROUP BY symbol, timeframe`` scan — the
+    same query ``load_bar_coverage`` runs for the coverage report. The Data tab
+    loads both at once, so opening one page scanned the whole cache twice to
+    render two views of identical data (~1.05s against a 1M-bar cache).
+
+    It now reads the report that is already cached and reshapes it. The row set
+    is identical — a symbol appears here exactly when it has bars — because
+    this filters the report down to ``data_available`` rows.
+
+    It asks for the UNIVERSE shape (``include_catalogue=False``) because that is
+    what the Data tab's symbol list requests, so the two share one cache entry
+    and one aggregate. Asking for the curated shape instead would miss that
+    entry and re-scan — exactly the waste this rewrite exists to remove.
+
+    Response shape is UNCHANGED (``{symbols: {SYM: [{timeframe, bars,
+    earliest, latest}]}, total_symbols, total_bars}``): it is a published
+    contract and other tooling may read it, so the payoff for changing it is
+    not worth the breakage.
+    """
     try:
-        engine = create_engine(DB_URL, echo=False)
-        sql = text(
-            """
-            SELECT symbol, timeframe, COUNT(*) as bars,
-                   MIN(ts) as earliest, MAX(ts) as latest
-            FROM market_data_cache
-            GROUP BY symbol, timeframe
-            ORDER BY symbol, timeframe
-        """
-        )
-        with engine.connect() as conn:
-            rows = conn.execute(sql).mappings().all()
-        engine.dispose()
-
-        # Group by symbol
-        symbols: dict[str, list] = {}
-        for r in rows:
-            sym = r["symbol"]
-            if sym not in symbols:
-                symbols[sym] = []
-            symbols[sym].append(
-                {
-                    "timeframe": r["timeframe"],
-                    "bars": r["bars"],
-                    "earliest": str(r["earliest"])[:10] if r["earliest"] else None,
-                    "latest": str(r["latest"])[:10] if r["latest"] else None,
-                }
-            )
-
-        return (
-            jsonify(
-                {
-                    "symbols": symbols,
-                    "total_symbols": len(symbols),
-                    "total_bars": sum(s["bars"] for slist in symbols.values() for s in slist),
-                }
-            ),
-            200,
-        )
-    except Exception as exc:
+        report = _coverage_report(include_catalogue=False)
+    except Exception as exc:  # noqa: BLE001 — an inventory view must not 500 the tab
         return jsonify({"error": str(exc)}), 500
 
+    symbols: dict[str, list] = {}
+    for row in report.instruments:
+        if not row.get("data_available"):
+            continue  # the old query only ever returned symbols with bars
+        stored = row.get("timeframes_stored") or []
+        dates = row.get("dates_by_timeframe") or {}
+        bars = row.get("bars_by_timeframe") or {}
+        symbols[row["symbol"]] = [
+            {
+                "timeframe": tf,
+                "bars": bars.get(tf, 0),
+                "earliest": (dates.get(tf) or {}).get("from"),
+                "latest": (dates.get(tf) or {}).get("to"),
+            }
+            for tf in stored
+        ]
 
-# -----------------------------------------------------------------------
+    return (
+        jsonify(
+            {
+                "symbols": symbols,
+                "total_symbols": len(symbols),
+                "total_bars": sum(s["bars"] for slist in symbols.values() for s in slist),
+            }
+        ),
+        200,
+    )
+
+
 # -----------------------------------------------------------------------
 # Coverage (PRD backTest-enhance §1.3)
 # ---------------------------------------------------------------------------
@@ -452,7 +462,7 @@ _coverage_lock = threading.Lock()
 _coverage_cache: dict[str, Any] = {"at": 0.0, "report": None}
 
 
-def _coverage_cache_key(names_only: bool, curate_only: bool) -> str:
+def _coverage_cache_key(names_only: bool, curate_only: bool, include_catalogue: bool = True) -> str:
     """Which SHAPE of answer a cached report holds.
 
     Keyed by mode, because the three modes return different things and one
@@ -464,7 +474,9 @@ def _coverage_cache_key(names_only: bool, curate_only: bool) -> str:
     """
     if names_only:
         return "names"
-    return "curated" if curate_only else "full"
+    if curate_only:
+        return "curated"
+    return "full" if include_catalogue else "universe"
 
 
 def invalidate_coverage_cache() -> None:
@@ -473,6 +485,18 @@ def invalidate_coverage_cache() -> None:
         _coverage_cache.clear()
         _coverage_cache["at"] = 0.0
         _coverage_cache["report"] = None
+    # ...and the plain symbol listing, which had NO expiry at all: /api/symbols
+    # cached its first answer into symbols._CACHED_SYMBOLS and never cleared it,
+    # so the Forward page kept showing the symbol set from boot and a symbol
+    # fetched minutes ago stayed invisible until the process restarted. Cleared
+    # here because this function is what the fetch job already calls when new
+    # bars land — the two caches describe the same fact and must expire together.
+    try:
+        from backtest.api import symbols as symbols_api
+
+        symbols_api._CACHED_SYMBOLS.clear()
+    except Exception as exc:  # noqa: BLE001 — cache housekeeping must never raise
+        log.debug("[coverage] could not clear the symbol listing cache: %s", exc)
     # Freshness watches the same MAX(ts::date) the fetch moves — refresh it
     # together so the topbar chip flips right when the job finishes.
     with _freshness_lock:
@@ -480,7 +504,12 @@ def invalidate_coverage_cache() -> None:
         _freshness_cache["payload"] = None
 
 
-def _coverage_report(refresh: bool = False, names_only: bool = False, curate_only: bool = False):
+def _coverage_report(
+    refresh: bool = False,
+    names_only: bool = False,
+    curate_only: bool = False,
+    include_catalogue: bool = True,
+):
     """Build (or reuse) the coverage report. Never raises.
 
     ``names_only`` returns the static instrument list — symbols and names, no
@@ -497,6 +526,13 @@ def _coverage_report(refresh: bool = False, names_only: bool = False, curate_onl
     and only the 1.4s is saved. Callers that filter to ``curated=1`` should set
     it — otherwise they pay for 140k rows they are about to discard.
 
+    ``include_catalogue=False`` is the Data tab's request: the fetchable
+    universe (NIFTY 200 + indices, the only symbols that tab can fetch) UNION
+    every symbol that has bars, with real coverage on each row. It is the cheap
+    shape — one aggregate, no catalogue read, ~0.28s against a 140k-row
+    catalogue — and it is deliberately NOT ``curate_only``, because a symbol
+    somebody fetched outside the universe must still be listed and shown.
+
     Availability is not lost by this — it moves to where it can be answered
     with detail: the backtest request, which fails with the dates the symbol
     really holds instead of a greyed-out option with no explanation.
@@ -507,7 +543,7 @@ def _coverage_report(refresh: bool = False, names_only: bool = False, curate_onl
     the honest answer rather than an empty dropdown.
     """
     now = time.time()
-    key = _coverage_cache_key(names_only, curate_only)
+    key = _coverage_cache_key(names_only, curate_only, include_catalogue)
     with _coverage_lock:
         cached = _coverage_cache.get(key)
         fresh = cached is not None and (now - _coverage_cache["at"]) < _COVERAGE_TTL_SECONDS
@@ -594,7 +630,7 @@ def _coverage_report(refresh: bool = False, names_only: bool = False, curate_onl
         # asked for curated rows on every load. The only thing given up is a
         # nicer NAME for a curated symbol the universe listed bare — which the
         # shipped CSVs already carry.
-        if not curate_only:
+        if include_catalogue and not curate_only:
             catalogue = load_catalogue(engine)
         engine.dispose()
 
@@ -610,6 +646,10 @@ def _coverage_report(refresh: bool = False, names_only: bool = False, curate_onl
         report.catalogue_source = "market_data_cache"
     else:
         report.catalogue_source = "builtin"
+    if not include_catalogue and not catalogue:
+        # Be explicit that this answer covers the universe + cache only, so a
+        # client can never read a missing symbol as "it does not exist".
+        report.catalogue_source = ("universe" if not bars else "universe+market_data_cache")
     report.warnings = warnings
     log.info(
         "[coverage] %d instruments (%d with data) from %s",
@@ -646,6 +686,13 @@ def coverage() -> tuple:
                          dates the symbol does hold.
       * ``limit``      - page size (default 500, ``0`` = no paging)
       * ``offset``     - page offset
+      * ``include_catalogue`` - ``0`` to skip the scriptmaster catalogue: the
+                         answer is then the fetchable universe UNION every
+                         symbol that has bars. The catalogue contributes ~140k
+                         contract rows the Data tab cannot fetch by symbol, and
+                         reading them costs ~1.4s (plus ~1.8s to merge) for rows
+                         that tab discards. Default ``1`` preserves the full
+                         report for any existing caller.
       * ``refresh``    - ``1`` to bypass the short-lived cache
 
     Rows carry ``data_available``, ``bars_count``, ``from_date``,
@@ -677,10 +724,14 @@ def coverage() -> tuple:
     available_only = not names_only and request.args.get("available") in ("1", "true", "yes")
 
     curate_only = request.args.get("curated") in ("1", "true", "yes")
+    # Absent means "as before" — only an explicit 0 skips the catalogue, so no
+    # existing caller changes behaviour by saying nothing.
+    include_catalogue = request.args.get("include_catalogue", "1") not in ("0", "false", "no")
     report = _coverage_report(
         refresh=request.args.get("refresh") in ("1", "true", "yes"),
         names_only=names_only,
         curate_only=curate_only,
+        include_catalogue=include_catalogue,
     )
     rows, total = filter_coverage(
         report,
@@ -722,6 +773,12 @@ def coverage() -> tuple:
                 "catalogue_source": report.catalogue_source,
                 "sources": report.sources,
                 "instrument_types": list(INSTRUMENT_TYPES),
+                # The canonical timeframe vocabulary, server-ordered (finest
+                # first), so a client can present a SET of timeframes in the
+                # order the engine speaks instead of declaring its own copy.
+                # Same pattern as instrument_types above: the vocabulary lives
+                # in backtest.data.base and this endpoint is the surface for it.
+                "timeframes": list(CANONICAL_TIMEFRAMES),
                 "hint": NO_DATA_HINT,
                 "generated_at": report.generated_at,
                 "warnings": report.warnings,

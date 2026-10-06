@@ -149,7 +149,7 @@ def test_data_manager_row_labels_show_stored_not_derived_timeframes():
     assert (
         result.returncode == 0
     ), f"node harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    assert "6 tests passed" in result.stdout
+    assert "16 tests passed" in result.stdout
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not available")

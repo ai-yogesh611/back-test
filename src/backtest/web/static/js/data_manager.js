@@ -6,6 +6,15 @@
  * The fetch controls are STATE-DRIVEN: every /api/data/status poll (and the
  * init poll on page load) decides whether Start or Stop is showing, so a
  * reload mid-fetch still offers the Stop button.
+ *
+ * ONE REQUEST PER PAGE LOAD (2026-10-06): the picker list and the inventory
+ * table below it are two views of one payload. Before, the list asked
+ * `curated=1` and the table asked `/api/data/inventory`, which ran the SAME
+ * `GROUP BY symbol, timeframe` scan a second time — the page counted every bar
+ * in the cache twice to draw one screen. The list now asks
+ * `include_catalogue=0` (the fetchable universe UNION everything already
+ * fetched, with bars and from→to per row) and BOTH views render from it, so
+ * they can never disagree about what is on disk.
  */
 
 const $ = (id) => document.getElementById(id);
@@ -29,6 +38,8 @@ const DM_PAGE_SIZE = 500;
 const dmState = {
     tab: 'equity,index',
     rows: [],
+    total: 0,              // matching rows before paging (may exceed rows.length)
+    timeframes: [],        // canonical vocabulary, from the server
     selected: new Set(),   // symbols ticked for the next fetch
     error: null,
 };
@@ -47,12 +58,16 @@ async function dmFetchCoverage(params) {
     return data;
 }
 
-/** Label detail for a Data-tab row: "1min · 4,817 bars".
+/** Label detail for a Data-tab row: "1min · 4,817 bars · 02 Sep → 30 Sep".
  *
  * timeframes_STORED, deliberately — what was downloaded is the fact a row label
  * can convey; timeframes_available is the derived set the Backtest picker
  * offers, nine entries for any symbol with healthy 1min data, so printing it
  * here told every row the same long thing. Mirrors SymbolPicker.detailOf().
+ *
+ * The window is the third fact, and on this tab it is the one that answers
+ * "did I actually fetch the range I asked for?" — the question a fetch of
+ * "1 Jan to 30 Sep" leaves open when the broker only had from July.
  */
 function dmDetail(row) {
     if (!row.data_available) return '';
@@ -60,7 +75,27 @@ function dmDetail(row) {
     const stored = row.timeframes_stored || [];
     if (stored.length) bits.push(stored.join('/'));
     if (row.bars_count) bits.push(`${row.bars_count.toLocaleString()} bars`);
+    const window = dmWindow(row);
+    if (window) bits.push(window);
     return bits.join(' · ');
+}
+
+/** "02 Sep → 30 Sep", or "" when the row has no dates. Day+month, not ISO:
+ *  the table has a From/To column pair for exact dates; this one is a label. */
+function dmWindow(row) {
+    const from = dmDay(row.from_date);
+    const to = dmDay(row.to_date);
+    if (!from && !to) return '';
+    return `${from || '?'} → ${to || '?'}`;
+}
+
+function dmDay(value) {
+    if (!value) return '';
+    const parts = String(value).slice(0, 10).split('-');
+    if (parts.length !== 3) return String(value);
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const month = months[Number(parts[1]) - 1];
+    return month ? `${parts[2]} ${month}` : String(value);
 }
 
 function dmRenderList() {
@@ -77,9 +112,12 @@ function dmRenderList() {
         const checked = dmState.selected.has(row.symbol) ? 'checked' : '';
         const detail = dmDetail(row);
         const name = row.name && row.name !== row.symbol ? `<span class="dm-symbol-name">${dmEsc(row.name)}</span>` : '';
+        // Not-yet-fetched is a TODO for this page, not a defect: the row is
+        // still listed (it is in the fetchable universe) and tickable for the
+        // next fetch, so the label points at the action.
         const cov = detail
             ? `<span class="dm-symbol-cov">${dmEsc(detail)}</span>`
-            : '<span class="dm-symbol-cov dm-symbol-nodata">no data</span>';
+            : '<span class="dm-symbol-cov dm-symbol-nodata">not fetched yet</span>';
         return `
             <label class="dm-symbol-row" title="${dmEsc(row.symbol)}${row.name ? ' — ' + dmEsc(row.name) : ''}">
                 <input type="checkbox" value="${dmEsc(row.symbol)}" ${checked}>
@@ -109,18 +147,99 @@ function dmRenderCount() {
 
 async function dmLoadSymbols() {
     try {
-        const params = { limit: DM_PAGE_SIZE, types: dmState.tab, curated: 1 };
+        // include_catalogue=0: the fetchable universe UNION everything with
+        // bars, coverage measured once. `curated=1` would restrict the list to
+        // the universe and hide a symbol somebody fetched outside it; the full
+        // report would add ~140k contract rows this page cannot fetch.
+        const params = { limit: DM_PAGE_SIZE, types: dmState.tab, include_catalogue: 0 };
         const q = $('dm-symbol-search').value.trim();
         if (q) params.q = q;
         const data = await dmFetchCoverage(params);
         dmState.rows = data.instruments || [];
+        dmState.total = data.total || 0;
+        // Server-owned vocabulary (finest first). Used to order the timeframe
+        // SET in the summary — encounter order would print "1day, 1min" purely
+        // because OBSCUREMIDCAP sorts before RELIANCE.
+        dmState.timeframes = data.timeframes || [];
         dmState.error = null;
     } catch (err) {
         dmState.error = err.message || String(err);
         dmState.rows = [];
+        dmState.total = 0;
     }
     dmRenderList();
     dmRenderCount();
+    // The table below renders from the SAME rows — no second request, and no
+    // chance of the list and the table disagreeing about what is on disk.
+    dmRenderInventory();
+}
+
+/** Symbols in the loaded page that actually hold bars. */
+function dmStoredRows() {
+    return dmState.rows.filter((r) => r && r.data_available);
+}
+
+/** The inventory table: one row per symbol, from the payload already in hand.
+ *
+ * One row per symbol rather than per (symbol, timeframe): with the pipeline
+ * moving to "store 1min, derive everything coarser" a symbol has exactly one
+ * stored granularity, and repeating its dates once per timeframe was noise.
+ * Mixed historical data still reads honestly — the Stored column lists every
+ * granularity, and the per-timeframe dates ride along in the row's tooltip.
+ */
+function dmRenderInventory() {
+    const tbody = $('dm-inv-table') ? $('dm-inv-table').querySelector('tbody') : null;
+    const rows = dmStoredRows().slice().sort((a, b) => String(a.symbol).localeCompare(String(b.symbol)));
+
+    if (tbody) {
+        tbody.innerHTML = '';
+        if (!rows.length) {
+            tbody.innerHTML = '<tr><td colspan="5" class="muted" style="text-align:center; padding:16px;">No bars stored yet — tick instruments above and fetch.</td></tr>';
+        }
+        for (const r of rows) {
+            const stored = (r.timeframes_stored || []).join(', ') || '-';
+            const bars = Number(r.bars_count || 0);
+            const perTf = Object.entries(r.dates_by_timeframe || {})
+                .map(([tf, d]) => `${tf}: ${d.from || '?'} → ${d.to || '?'}`)
+                .join('\n');
+            const tr = document.createElement('tr');
+            if (perTf && (r.timeframes_stored || []).length > 1) tr.title = perTf;
+            tr.innerHTML = `
+                <td><strong>${dmEsc(r.symbol)}</strong></td>
+                <td>${dmEsc(stored)}</td>
+                <td>${bars.toLocaleString()}</td>
+                <td>${dmEsc(r.from_date || '-')}</td>
+                <td>${dmEsc(r.to_date || '-')}</td>
+            `;
+            tbody.appendChild(tr);
+        }
+    }
+
+    const empty = $('dm-inv-empty');
+    const table = $('dm-inv-table');
+    if (empty && table) {
+        empty.hidden = rows.length > 0;
+        table.hidden = rows.length === 0;
+    }
+
+    const timeframes = new Set();
+    let bars = 0;
+    for (const r of rows) {
+        for (const tf of r.timeframes_stored || []) timeframes.add(tf);
+        bars += Number(r.bars_count || 0);
+    }
+    // Order by the server's vocabulary; anything it does not know (an older
+    // server, a new granularity) sorts last rather than disappearing.
+    const rank = (tf) => {
+        const i = dmState.timeframes.indexOf(tf);
+        return i === -1 ? dmState.timeframes.length : i;
+    };
+    $('dm-inv-symbols').textContent =
+        `${rows.length} symbol${rows.length === 1 ? '' : 's'}` +
+        (dmState.total > dmState.rows.length ? ` (of ${dmState.total} shown)` : '');
+    $('dm-inv-bars').textContent = `${bars.toLocaleString()} bars`;
+    $('dm-inv-timeframes').textContent =
+        [...timeframes].sort((a, b) => rank(a) - rank(b)).join(', ') || '-';
 }
 
 function dmRenderTabs() {
@@ -299,7 +418,7 @@ async function pollStatus() {
                 } else {
                     showToast(`Fetch complete: ${j.fetched} symbols${skipNote}, ${j.bars_total.toLocaleString()} bars`, 'success');
                 }
-                loadInventory();  // refresh inventory
+                dmLoadSymbols();  // one request refreshes the list AND the table
             }
             if (wasRunning && j.status === 'error') {
                 showToast(j.error || 'Fetch failed', 'error');
@@ -354,66 +473,13 @@ function updateProgress(j) {
     }
 }
 
-// -----------------------------------------------------------------------
-// Inventory
-// -----------------------------------------------------------------------
-
-async function loadInventory() {
-    const tbody = $('dm-inv-table') ? $('dm-inv-table').querySelector('tbody') : null;
-    if (tbody && !tbody.children.length) {
-        tbody.innerHTML = '<tr><td colspan="5" class="muted" style="text-align:center; padding:16px;">Loading price data inventory…</td></tr>';
-    }
-    try {
-        const resp = await fetch('/api/data/inventory');
-        const j = await resp.json();
-        if (!resp.ok) return;
-
-        const syms = j.symbols || {};
-        const names = Object.keys(syms).sort();
-        const timeframes = new Set();
-
-        if (tbody) tbody.innerHTML = '';
-
-        if (names.length === 0) {
-            $('dm-inv-empty').hidden = false;
-            $('dm-inv-table').hidden = true;
-        } else {
-            $('dm-inv-empty').hidden = true;
-            $('dm-inv-table').hidden = false;
-
-            for (const sym of names) {
-                const entries = syms[sym];
-                for (const e of entries) {
-                    timeframes.add(e.timeframe);
-                    const tr = document.createElement('tr');
-                    tr.innerHTML = `
-                        <td><strong>${dmEsc(sym)}</strong></td>
-                        <td>${dmEsc(e.timeframe)}</td>
-                        <td>${e.bars.toLocaleString()}</td>
-                        <td>${e.earliest || '-'}</td>
-                        <td>${e.latest || '-'}</td>
-                    `;
-                    tbody.appendChild(tr);
-                }
-            }
-        }
-
-        $('dm-inv-symbols').textContent = `${names.length} symbols`;
-        $('dm-inv-bars').textContent = `${(j.total_bars || 0).toLocaleString()} bars`;
-        $('dm-inv-timeframes').textContent = [...timeframes].join(', ') || '-';
-    } catch (err) {
-        console.error('Inventory load failed:', err);
-        if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="muted" style="text-align:center; padding:16px;">Failed to load data inventory.</td></tr>';
-        $('dm-inv-symbols').textContent = 'Error loading inventory';
-    }
-}
-
-$('dm-refreshBtn').addEventListener('click', loadInventory);
+// Refresh re-requests the ONE payload; both views re-render from it. It used
+// to fetch the inventory separately (a second full scan of the same rows).
+$('dm-refreshBtn').addEventListener('click', dmLoadSymbols);
 
 // -----------------------------------------------------------------------
 // Init
 // -----------------------------------------------------------------------
 dmRenderTabs();
-dmLoadSymbols();
-loadInventory();
+dmLoadSymbols();   // renders the list and the inventory table
 pollStatus();  // restore running state (stop button + polling) if a job is live

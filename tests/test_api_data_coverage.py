@@ -421,3 +421,149 @@ def test_names_only_lists_a_cached_symbol_exactly_once(client):
     symbols = [r["symbol"] for r in body["instruments"]]
     assert len(symbols) == len(set(symbols)), "a symbol in both sources must merge"
     assert body["total"] == len(symbols)
+
+
+# ---------------------------------------------------------------------------
+# include_catalogue=0 — the Data tab's shape
+# ---------------------------------------------------------------------------
+
+
+def test_the_universe_shape_skips_the_catalogue(client, monkeypatch):
+    from backtest.data import coverage as coverage_mod
+
+    def explode(eng):
+        raise AssertionError("include_catalogue=0 must not read 140k contract rows")
+
+    monkeypatch.setattr(coverage_mod, "load_catalogue", explode)
+    data_manager.invalidate_coverage_cache()
+    body = get(client, include_catalogue=0, limit=0).get_json()
+    assert body["total"] > 0, "the shipped universe is still listed"
+
+
+def test_the_universe_shape_still_measures_real_coverage(client):
+    """It is not names-only: this is the Data tab, where the numbers are the point."""
+    data_manager.invalidate_coverage_cache()
+    rows = {
+        r["symbol"]: r
+        for r in get(client, include_catalogue=0, limit=0).get_json()["instruments"]
+    }
+    assert rows["RELIANCE"]["bars_count"] == 3
+    assert rows["RELIANCE"]["data_available"] is True
+    assert rows["RELIANCE"]["coverage_known"] is True
+    assert rows["RELIANCE"]["from_date"] == "2024-01-05"
+    assert rows["NIFTY"]["data_available"] is True
+
+
+def test_the_universe_shape_keeps_a_symbol_outside_the_universe(client):
+    """A symbol somebody fetched must not vanish from the tab that fetched it."""
+    from sqlalchemy import create_engine, text as sqltext
+
+    eng = create_engine(data_manager.DB_URL)
+    with eng.begin() as conn:
+        conn.execute(
+            sqltext(
+                "INSERT INTO market_data_cache (symbol, timeframe, ts) "
+                "VALUES ('OFFUNIVERSE', '1min', '2024-01-05 09:15')"
+            )
+        )
+    eng.dispose()
+    data_manager.invalidate_coverage_cache()
+    rows = {
+        r["symbol"]: r
+        for r in get(client, include_catalogue=0, limit=0).get_json()["instruments"]
+    }
+    assert "OFFUNIVERSE" in rows
+    assert rows["OFFUNIVERSE"]["data_available"] is True
+
+
+def test_the_universe_shape_says_so_in_catalogue_source(client):
+    """A client must not read a missing symbol as 'it does not exist' when the
+    cheapest shape was requested."""
+    data_manager.invalidate_coverage_cache()
+    body = get(client, include_catalogue=0, limit=0).get_json()
+    assert body["catalogue_source"] == "universe+market_data_cache"
+
+
+def test_the_default_shape_is_unchanged_by_the_new_flag(client):
+    """Absent means 'as before' — the catalogue is still read for other callers."""
+    called = {"n": 0}
+    from backtest.data import coverage as coverage_mod
+
+    original = coverage_mod.load_catalogue
+
+    def counting(eng):
+        called["n"] += 1
+        return original(eng)
+
+    coverage_mod.load_catalogue = counting
+    try:
+        data_manager.invalidate_coverage_cache()
+        get(client, limit=0)
+        assert called["n"] == 1
+    finally:
+        coverage_mod.load_catalogue = original
+
+
+def test_per_timeframe_dates_ride_along(client):
+    """The inventory table is per timeframe; these are the dates it shows, and
+    they must come from the coverage aggregate rather than a second scan."""
+    data_manager.invalidate_coverage_cache()
+    rows = {
+        r["symbol"]: r
+        for r in get(client, include_catalogue=0, limit=0).get_json()["instruments"]
+    }
+    rel = rows["RELIANCE"]
+    assert rel["dates_by_timeframe"]["1day"] == {"from": "2024-01-05", "to": "2024-01-08"}
+    assert rel["bars_by_timeframe"] == {"1day": 2, "1min": 1}
+
+
+def test_the_canonical_vocabulary_is_published(client):
+    """Clients order a SET of timeframes without declaring their own copy."""
+    from backtest.data.base import CANONICAL_TIMEFRAMES
+
+    body = get(client, limit=0).get_json()
+    assert body["timeframes"] == list(CANONICAL_TIMEFRAMES)
+
+
+def test_inventory_is_served_from_the_cached_report_without_its_own_scan(client, monkeypatch):
+    """The Data tab loads the list and the table together; the table must not
+    run the same GROUP BY a second time."""
+    from backtest.data import coverage as coverage_mod
+
+    calls = {"n": 0}
+    original = coverage_mod.load_bar_coverage
+
+    def counting(eng):
+        calls["n"] += 1
+        return original(eng)
+
+    monkeypatch.setattr(coverage_mod, "load_bar_coverage", counting)
+    data_manager.invalidate_coverage_cache()
+    get(client, include_catalogue=0, limit=0)
+    inv = client.get("/api/data/inventory").get_json()
+    assert calls["n"] == 1, "one aggregate for both views"
+    assert inv["total_symbols"] > 0
+    assert inv["total_bars"] > 0
+
+
+def test_inventory_row_shape_is_unchanged(client):
+    """Published contract, so the optimisation must not alter the payload."""
+    data_manager.invalidate_coverage_cache()
+    inv = client.get("/api/data/inventory").get_json()
+    assert set(inv) == {"symbols", "total_symbols", "total_bars"}
+    entries = inv["symbols"]["RELIANCE"]
+    assert isinstance(entries, list)
+    for entry in entries:
+        assert set(entry) == {"timeframe", "bars", "earliest", "latest"}
+    by_tf = {e["timeframe"]: e for e in entries}
+    assert by_tf["1day"]["bars"] == 2
+    assert by_tf["1day"]["earliest"] == "2024-01-05"
+    assert by_tf["1day"]["latest"] == "2024-01-08"
+
+
+def test_inventory_only_reports_symbols_that_have_bars(client):
+    data_manager.invalidate_coverage_cache()
+    inv = client.get("/api/data/inventory").get_json()
+    # NIFTY has bars in this fixture; a universe symbol with none must not appear.
+    with_bars = {s for s, entries in inv["symbols"].items() if entries}
+    assert inv["total_symbols"] == len(with_bars)
