@@ -145,16 +145,37 @@ def test_a_window_starting_on_the_end_date_alone_is_not_empty(seeded):
 
 
 def test_a_genuinely_absent_window_still_raises(seeded):
-    """Widening the end date must not turn a real gap into a silent empty frame."""
-    with pytest.raises(ValueError, match="not found in database"):
+    """Widening the end date must not turn a real gap into a silent empty frame.
+
+    The match used to be ``"not found in database"``. The wording changed
+    deliberately (2026-10-06): the message now reports the window that failed
+    and the dates the symbol DOES hold, instead of echoing the query's own
+    bounds back at the user. The behaviour this guards — a real gap raises
+    rather than returning an empty frame — is what the ``raises`` pins.
+    """
+    with pytest.raises(ValueError, match="has no 1min data"):
         _source(seeded).get_candles("RELIANCE", "2026-09-25", "2026-09-25", "1min")
 
 
-def test_the_error_message_reports_the_resolved_window(seeded):
-    """The bug was invisible for months; the message now shows the bounds."""
+def test_the_error_message_reports_the_window_and_what_is_stored(seeded):
+    """The bug was invisible for months; the message must name the window.
+
+    It used to assert the resolved exclusive upper bound (``2026-09-26
+    00:00:00``) appeared verbatim. That was the right assertion when the
+    message echoed the query's internals, which is exactly what the user asked
+    to stop doing: they typed the window, so repeating it back is noise, and
+    the half-open bound is an implementation detail (the resolved bounds are
+    still logged by ``get_candles`` for diagnosis).
+
+    What must survive is that a same-day window is understood as ONE inclusive
+    day and that the message says so — so the assertion now checks the day
+    that was asked for and the range that actually exists.
+    """
     with pytest.raises(ValueError) as excinfo:
         _source(seeded).get_candles("RELIANCE", "2026-09-25", "2026-09-25", "1min")
-    assert "2026-09-26 00:00:00" in str(excinfo.value)
+    message = str(excinfo.value)
+    assert "2026-09-25" in message, "the day the user asked for"
+    assert "30 Sep 2026" in message, "and the dates that ARE stored"
 
 
 def test_bars_before_the_start_date_are_not_returned(seeded):
