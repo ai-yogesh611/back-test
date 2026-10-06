@@ -2053,3 +2053,13 @@ select.input option.sym-no-data:disabled { cursor: not-allowed; }
     margin-top: 8px; font-size: .8rem; line-height: 1.5; cursor: pointer;
     color: var(--warning-text, #e5c07b);
 }
+
+
+/* Failed backtest run — persists with the reason and the available dates */
+.run-error {
+    margin-top: 12px; padding: 12px 14px;
+    background: var(--danger-tint); border: 1px solid var(--danger-shade);
+    border-radius: var(--radius); color: var(--danger-text);
+    font-size: .85rem; line-height: 1.45; white-space: pre-wrap;
+}
+.run-error[hidden] { display: none; }

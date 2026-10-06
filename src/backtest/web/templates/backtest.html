@@ -65,6 +65,10 @@
             <button id="runBtn" class="btn btn-primary btn-block" type="button">{{ icon('play', 14) }} Run backtest</button>
             <p>Simulation only. No orders are placed.</p>
         </div>
+        {# A failed run must stay readable. The message names which dates the
+           instrument DOES have, and a toast that fades in 3s cannot be read,
+           let alone copied into the date fields. Cleared on the next run. #}
+        <div id="runError" class="run-error" role="alert" hidden></div>
     </section>
 
     <section id="results" class="results-panel" aria-label="Backtest results" hidden>

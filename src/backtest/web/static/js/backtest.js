@@ -35,6 +35,14 @@ async function fetchJSON(url, opts) {
     return data;
 }
 
+/** Show (or clear, with "") the sticky run-failure banner. */
+function showRunError(message) {
+    const el = $("runError");
+    if (!el) return;
+    el.textContent = message || "";
+    el.hidden = !message;
+}
+
 // ---------------------------------------------------------------------------
 // Dynamic params (Task 2.3)
 // ---------------------------------------------------------------------------
@@ -112,6 +120,7 @@ async function runBacktest() {
     if ($("resultProvenance")) $("resultProvenance").innerHTML = "";
     $("emptyState").hidden = true;
     $("results").hidden = false;
+    showRunError("");   // last failure must not outlive the run that follows it
     showLoader("metricsCards", "Running backtest…");
     $("tradeTable-wrap").querySelector("tbody").innerHTML = "";
     $("pagination").innerHTML = "";
@@ -130,7 +139,12 @@ async function runBacktest() {
         loadRecentRuns();
         showToast("Backtest complete", "success");
     } catch (err) {
-        showToast(err.message || "Backtest failed", "error");
+        const message = err.message || "Backtest failed";
+        showToast(message, "error");
+        // ...and again, persistently. A data error names which dates the
+        // instrument DOES hold, which is the whole instruction the user needs;
+        // a 3-second toast is gone before it can be read, let alone typed.
+        showRunError(message);
         $("results").hidden = true;
         $("emptyState").hidden = false;
     } finally {
