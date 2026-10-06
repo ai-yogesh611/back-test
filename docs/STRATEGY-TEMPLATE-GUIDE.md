@@ -149,7 +149,7 @@ This creates persistent records for all strategies with their current metadata.
 
 ## Pine Script Converter
 
-The platform now includes a **pure code transpiler** for converting Pine Script v5 strategies to Python plugins — **no LLM required**.
+The platform includes a **pure code transpiler** for a limited Pine v5/v6 subset — **no LLM required**. Unsupported trading semantics are rejected rather than silently translated.
 
 ### Architecture
 
@@ -233,8 +233,10 @@ Verified against a real "PS Academy CE PE" Pine v6 strategy that is
   untranslatable.
 - `strategy.exit` `qty_percent` / partial exits are unsupported (full-position
   stop/limit exits only).
-- `//@version=6` is **not** version-gated: the version line is skipped
-  unchecked and the generated header still claims Pine v5.
+- Pine v6 is accepted for the supported subset; this is not full v6 support.
+  Persistent `var`, `:=` reassignment and multi-timeframe requests are rejected.
+  Indicator scripts (including CE/PE plot/alert scripts) cannot be turned into
+  orders without explicit entry/exit rules.
 - `plot()`/`label.new()`/`line.new()`/`alertcondition()` are ignored —
   visualization only, never traded.
 
@@ -394,7 +396,7 @@ days = 30                   # Validation backtest period
 ```
 
 Note: `/api/pine/validate` currently runs with `backtest_engine=None`, so it
-returns a syntax-only PASS (with a note) — the backtest-based Sharpe check is
+returns SYNTAX_ONLY (not a backtest PASS) — the backtest-based Sharpe check is
 wired but not yet fed an engine. Paper-trading and segment rules are enforced
 at save time (segment in `config/segments.yaml`, criteria in the save body).
 

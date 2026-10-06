@@ -683,7 +683,7 @@ def test_validate_endpoint_accepts_non_ascii_generated_code(pine_client):
     assert resp.status_code == 200
     body = resp.get_json()
     assert body["is_valid"] is True
-    assert body["validation_status"] == "PASS"
+    assert body["validation_status"] == "SYNTAX_ONLY"
 
 
 def test_validate_accepts_non_ascii_generated_code():
@@ -697,7 +697,7 @@ def test_validate_accepts_non_ascii_generated_code():
         python_code, metadata["original_name"]
     )
     assert is_valid is True
-    assert result["validation_status"] == "PASS"
+    assert result["validation_status"] == "SYNTAX_ONLY"
 
 
 # ----------------------------------------------------------------------
@@ -830,3 +830,54 @@ def test_order_based_direction_param_gates_entries():
     sig = strat.generate_signals(_candles(500))
     assert int((sig == -1).sum()) == 0
     assert int((sig == 1).sum()) > 0
+
+
+def test_v6_simple_strategy_converts():
+    source = """//@version=6
+strategy("EMA v6")
+fast = ta.ema(close, 5)
+slow = ta.ema(close, 10)
+if ta.crossover(fast, slow)
+    strategy.entry("buy", strategy.long)
+"""
+    code, metadata = PineScriptConverter().convert(source)
+    assert metadata["pine_version"] == 6
+    assert "entries" in code
+
+
+def test_v6_examples_fail_closed_on_unsupported_semantics():
+    indicator = """//@version=6
+indicator("CE PE", overlay=true)
+buyCE = close > ta.ema(close, 5)
+plotshape(buyCE)
+"""
+    stateful = """//@version=6
+strategy("Consecutive up/down strategy")
+ups := close > close[1] ? nz(ups[1]) + 1 : 0
+if ups >= 3
+    strategy.entry("long", strategy.long)
+"""
+    with pytest.raises(PineConversionError, match="indicator"):
+        PineScriptConverter().convert(indicator)
+    with pytest.raises(PineConversionError, match="reassignment"):
+        PineScriptConverter().convert(stateful)
+
+
+def test_unsupported_state_and_indicator_are_explicit_in_v5():
+    for source, reason in (
+        ('//@version=5\nindicator("Signals")\nplotshape(close > open)', 'indicator'),
+        ('//@version=5\nstrategy("State")\nups := ups[1] + 1', 'reassignment'),
+    ):
+        with pytest.raises(PineConversionError, match=reason):
+            PineScriptConverter().convert(source)
+
+
+def test_validation_does_not_gate_on_sharpe():
+    from backtest.pine.validator import ConvertedStrategyValidator
+
+    class Engine:
+        def run_backtest(self, **kwargs):
+            return {"metrics": {"sharpe_ratio": -2.0}}
+
+    valid, result = ConvertedStrategyValidator(Engine()).validate("x = 1", "Test")
+    assert valid and result["validation_status"] == "PASS"

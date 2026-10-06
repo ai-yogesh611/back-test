@@ -51,6 +51,8 @@ class PineScriptConverter:
         Raises:
             PineConversionError: If parsing or generation fails
         """
+        self._audit_source(pine_code)
+
         # 1. Extract strategy name from Pine if not provided. User-provided
         # names are sanitized too — they become a Python class name, so
         # "Outside Bar Strategy" must become "OutsideBarStrategy".
@@ -100,6 +102,7 @@ class PineScriptConverter:
         # 7. Extract metadata
         metadata = {
             "original_name": strategy_name,
+            "pine_version": int(re.search(r"(?m)^\s*//\s*@version\s*=\s*(\d+)", pine_code).group(1)) if re.search(r"(?m)^\s*//\s*@version\s*=\s*(\d+)", pine_code) else None,
             "indicators_used": self._extract_indicators_list(pine_ast),
             "has_long": self._has_long_trades(pine_ast),
             "has_short": self._has_short_trades(pine_ast),
@@ -108,6 +111,39 @@ class PineScriptConverter:
             "warnings": self._collect_warnings(python_code),
         }
         return python_code, metadata
+
+    @staticmethod
+    def _audit_source(source: str) -> None:
+        """Fail closed on constructs the line-oriented parser cannot preserve.
+
+        This is a compatibility gate, not a full Pine grammar. Add support only
+        alongside semantic fixtures demonstrating equivalent positions.
+        """
+        version = re.search(r"(?m)^\s*//\s*@version\s*=\s*(\d+)", source)
+        if version and version.group(1) not in ("5", "6"):
+            raise PineConversionError(
+                f"Pine v{version.group(1)} is not supported by this converter "
+                "(supported versions: v5 and v6)."
+            )
+        if re.search(r"(?m)^\s*indicator\s*\(", source):
+            raise PineConversionError(
+                "This is an indicator, not an executable strategy. Its CE/PE "
+                "plot/alert signals and displayed stop/targets are not orders. "
+                "Define explicit strategy.entry() calls and exits before importing."
+            )
+        checks = (
+            (r"\brequest\.security\s*\(", "multi-timeframe request.security"),
+            (r"(?m)^\s*var(?:ip)?\s+", "persistent var state"),
+            (r":=", "stateful := reassignment"),
+            (r"\bstrategy\.exit\s*\([^\n]*\bqty_percent\s*=", "partial exits"),
+            (r"\bstrategy\.position_size\s*\[", "position history"),
+        )
+        for pattern, feature in checks:
+            if re.search(pattern, source):
+                raise PineConversionError(
+                    f"Unsupported Pine construct: {feature}. Conversion stopped "
+                    "rather than silently changing trading behavior."
+                )
 
     def save_as_plugin(
         self,
@@ -150,7 +186,7 @@ class PineScriptConverter:
 
         # Add header comment
         header = f'''"""
-Auto-generated from Pine Script v5
+Auto-generated from Pine Script v{metadata.get("pine_version") or "unknown"}
 Generated: {datetime.now().isoformat()}
 
 Original Strategy: {metadata['original_name']}

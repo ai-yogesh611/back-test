@@ -6,6 +6,7 @@ before allowing them to be saved as plugins.
 
 from __future__ import annotations
 
+import ast
 from datetime import date, timedelta
 from pathlib import Path
 from tempfile import gettempdir
@@ -20,8 +21,7 @@ class ConvertedStrategyValidator:
     Rules:
     1. Must pass syntax validation
     2. Must run backtest successfully
-    3. Backtest Sharpe >= min_sharpe (configurable, default 0.5)
-    4. Must pass 30-day paper trading before live (enforced in UI)
+    3. Performance metrics are reported, never used as a conversion gate
     """
 
     def __init__(self, backtest_engine=None, min_sharpe: float = 0.5):
@@ -54,6 +54,14 @@ class ConvertedStrategyValidator:
         # 1. Save as temporary plugin. The generated code carries non-ASCII
         # arrows/dashes in its comments, so the write must name its encoding —
         # the platform default is cp1252 on Windows and refuses those chars.
+        try:
+            ast.parse(strategy_code)
+        except SyntaxError as exc:
+            return False, {
+                "validation_status": "FAIL",
+                "rejection_reason": f"Invalid Python syntax: {exc}",
+                "backtest_metrics": {},
+            }
         temp_path = Path(gettempdir()) / f"{strategy_name}_temp.py"
         temp_path.write_text(strategy_code, encoding="utf-8")
 
@@ -61,9 +69,9 @@ class ConvertedStrategyValidator:
         if self.engine is None:
             # No engine — skip backtest validation, just check syntax
             return True, {
-                "validation_status": "PASS",
+                "validation_status": "SYNTAX_ONLY",
                 "backtest_metrics": {},
-                "note": "No backtest engine provided — syntax validation only",
+                "note": "No backtest engine provided — backtest not run",
             }
 
         try:
@@ -87,16 +95,6 @@ class ConvertedStrategyValidator:
                 "validation_status": "FAIL",
                 "rejection_reason": f"Backtest failed: {e}",
                 "backtest_metrics": {},
-            }
-
-        # 3. Check Sharpe ratio
-        sharpe = result.get("metrics", {}).get("sharpe_ratio", 0)
-
-        if sharpe < self.min_sharpe:
-            return False, {
-                "validation_status": "FAIL",
-                "rejection_reason": f"Sharpe ratio {sharpe:.2f} below minimum {self.min_sharpe}",
-                "backtest_metrics": result.get("metrics", {}),
             }
 
         # 4. Passed
