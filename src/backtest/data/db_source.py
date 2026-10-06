@@ -12,6 +12,7 @@ from sqlalchemy import create_engine, text
 
 from backtest.data.base import (
     CANONICAL_TIMEFRAMES,
+    canonical_rank,
     derive_serviceable_timeframes,
     finest_timeframe,
     normalize_candles,
@@ -21,6 +22,23 @@ from backtest.db.config import get_db_url
 from backtest.logging_config import get_logger
 
 log = get_logger(__name__)
+
+
+def _can_serve(stored_tf: str | None, requested: str | None) -> bool:
+    """Can ``stored_tf`` bars be resampled into ``requested``?
+
+    Yes when they are the same, or when the request is COARSER — canonical
+    rank increases as the timeframe gets coarser, so a request is buildable
+    when its rank is at least the stored one's. Unknown names answer True: this
+    guard exists to stop a known-impossible request, and rejecting a spelling
+    it cannot rank would turn a working run into an error.
+    """
+    stored_rank = canonical_rank(stored_tf)
+    requested_rank = canonical_rank(requested)
+    if stored_rank is None or requested_rank is None:
+        return True
+    return requested_rank >= stored_rank
+
 
 # Pandas resample rule mapping: canonical timeframe names -> pandas offsets
 # (ticket P4.3: ONE vocabulary end to end).
@@ -121,6 +139,26 @@ class DbSource:
         # Find the best source timeframe (finest available)
         source_tf = self._find_best_source_tf(engine, symbol, interval)
 
+        # ...and refuse to serve a granularity that cannot be BUILT from it.
+        # Resampling runs one way: fine bars aggregate into coarse ones, never
+        # the reverse. Without this check a daily-only symbol answered a 1min
+        # request by handing back its daily bars labelled as minutes — three
+        # daily candles presented as three minutes of trading, which is a
+        # silently wrong backtest rather than a visible failure. list_symbols()
+        # already applied this rule, so the same symbol could be missing from
+        # /api/symbols while being happily "run" here.
+        if not _can_serve(source_tf, interval):
+            raise ValueError(
+                self._describe_stored(
+                    symbol,
+                    requested=interval,
+                    start=start,
+                    end=end,
+                    engine=engine,
+                    cannot_build_from=source_tf,
+                )
+            )
+
         # ``ts BETWEEN :start AND :end`` compared timestamps against midnight
         # and silently dropped the whole final day — see window_bounds().
         lo, hi_exclusive = window_bounds(start, end)
@@ -202,6 +240,7 @@ class DbSource:
         start: str | None = None,
         end: str | None = None,
         engine=None,
+        cannot_build_from: str | None = None,
     ) -> str:
         """Why the request failed, and what this symbol DOES hold.
 
@@ -216,6 +255,12 @@ class DbSource:
         asking for 1day and being told "no 1min data" describes our resampling
         ladder, not their request. The stored granularities still appear in the
         availability list, where they explain what could be served.
+
+        ``cannot_build_from`` is set when the failure is not about dates at all
+        — the symbol holds data, but at a granularity too coarse to make the
+        request out of. A date list alone would mislead there ("it says it holds
+        1day up to September — so why did it fail?"), so the message also names
+        what the symbol CAN serve.
 
         Deliberately never raises: this runs on the failure path, and a
         reporting helper that throws would replace a useful error with a
@@ -267,6 +312,30 @@ class DbSource:
                 # there but the dates are wrong" — different things to do next.
                 part += " [the timeframe you asked for]"
             parts.append(part)
+
+        if cannot_build_from:
+            # A granularity problem, not a date problem. Say which requests the
+            # stored bars CAN answer, or the dates above read as "the data is
+            # right there, why did it fail?".
+            #
+            # Computed with the same bars-cap the picker uses (bars held at the
+            # finest stored granularity), so this list agrees with what the
+            # dropdown advertises: promising "1week" for three days of daily
+            # bars because the RULE allows it would send the user straight into
+            # a one-bar run.
+            stored = [r["timeframe"] for r in records]
+            finest = finest_timeframe(stored)
+            finest_bars = next(
+                (int(r["bars"]) for r in records if r["timeframe"] == finest), None
+            )
+            serviceable = derive_serviceable_timeframes(stored, finest_bars=finest_bars)
+            can = ", ".join(serviceable) if serviceable else "nothing"
+            return (
+                f"Symbol '{symbol}' has no {requested} data{window}: its bars are stored at "
+                f"{cannot_build_from}, and {cannot_build_from} bars cannot be split into "
+                f"{requested} ones. Available — {'; '.join(parts)}. "
+                f"Timeframes it can serve: {can}."
+            )
         return f"Symbol '{symbol}' has no {requested} data{window}. Available — {'; '.join(parts)}."
 
     def _find_best_source_tf(self, engine, symbol: str, requested: str) -> str:

@@ -19,6 +19,7 @@ import pandas as pd
 import pytest
 from sqlalchemy import create_engine, text
 
+from backtest.data.base import CANONICAL_TIMEFRAMES
 from backtest.data.db_source import DbSource
 
 _MDC_DDL = """
@@ -172,3 +173,75 @@ def test_a_space_in_the_requested_window_is_still_served(engine):
     df = _source(engine).get_candles("A", "2026-08-01", "2026-09-30", "1min")
     assert not df.empty
     assert len(df) == 13
+
+
+# ---------------------------------------------------------------------------
+# The other way a timeframe can be unavailable: too coarse to build from
+# ---------------------------------------------------------------------------
+
+
+def _daily_only(engine, symbol="DAILYONLY"):
+    _seed(engine, _days(symbol, "1day", "2026-09-02", "2026-09-04"))
+    return _source(engine)
+
+
+def test_daily_bars_are_never_served_as_minutes(engine):
+    """The silent-wrong-answer bug this guard exists for.
+
+    A 1day-only symbol answered a 1min request by returning its daily bars, so
+    three daily candles were presented as three minutes of trading and the
+    backtest was quietly meaningless. Resampling runs one way: fine bars
+    aggregate into coarse ones, never the reverse.
+    """
+    src = _daily_only(engine)
+    with pytest.raises(ValueError) as excinfo:
+        src.get_candles("DAILYONLY", "2026-09-02", "2026-09-04", "1min")
+    message = str(excinfo.value)
+    assert "no 1min data" in message
+    assert "1day bars cannot be split into 1min" in message
+    # Three daily bars cannot fill a week, so the bars-cap keeps 1week off this
+    # list — the same cap the picker's dropdown applies, so the two agree.
+    assert "Timeframes it can serve: 1day" in message
+
+
+def test_a_coarse_request_is_still_served_from_that_same_data(engine):
+    """Guard against over-correction: the rule must only block finer requests."""
+    src = _daily_only(engine)
+    assert len(src.get_candles("DAILYONLY", "2026-09-02", "2026-09-04", "1week")) == 1
+    assert len(src.get_candles("DAILYONLY", "2026-09-02", "2026-09-04", "1day")) == 3
+
+
+def test_the_timeframe_refusal_agrees_with_list_symbols(engine):
+    """Both must answer "can this symbol serve 1min?" the same way.
+
+    ``list_symbols`` already applied the one-way rule, so the same symbol could
+    be absent from /api/symbols while a run on it happily returned bars.
+    """
+    src = _daily_only(engine)
+    assert src.list_symbols("1min") == []
+    with pytest.raises(ValueError, match="cannot be split into 1min"):
+        src.get_candles("DAILYONLY", "2026-09-02", "2026-09-04", "1min")
+    # ...and where list_symbols includes it, the run must work.
+    assert src.list_symbols("1day") == ["DAILYONLY"]
+    assert len(src.get_candles("DAILYONLY", "2026-09-02", "2026-09-04", "1day")) == 3
+
+
+def test_the_servable_list_matches_what_the_dropdown_advertises(engine):
+    """The refusal must not promise a timeframe the picker would not offer.
+
+    Three daily bars CAN be aggregated into a week by the one-way rule, but
+    they cannot FILL one, so ``derive_serviceable_timeframes`` drops 1week once
+    the bars-cap is applied. A message that skipped the cap would send the user
+    into a run that yields a single bar.
+    """
+    src = _daily_only(engine)
+    advertised = [
+        tf for tf in CANONICAL_TIMEFRAMES if src.list_symbols(tf) == ["DAILYONLY"]
+    ]
+    assert advertised == ["1day"], "three daily bars fill a day and nothing coarser"
+
+    with pytest.raises(ValueError) as excinfo:
+        src.get_candles("DAILYONLY", "2026-09-02", "2026-09-04", "1min")
+    promised = str(excinfo.value).split("Timeframes it can serve: ", 1)[1].rstrip(".")
+    assert promised == ", ".join(advertised)
+    assert "1week" not in promised
