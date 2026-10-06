@@ -53,7 +53,7 @@ Start here. Symptom → most likely cause → where to look.
 
 | Symptom | Likely cause | Check |
 |---|---|---|
-| Bars shifted by 5h30m | Naive timestamp treated as UTC | Feeds declare `naive_tz` (mStock: IST); `normalize_tick` applies it. Never strip tz before alignment |
+| Bars shifted by 5h30m | Naive timestamp bound to `timestamptz`; the server rezoned it | Writers go through `data.base.bar_timestamp` (aware UTC out, always). Rows already in the cache are rescued per session by `data.db_source.align_to_session_clock`. Never strip tz before a write |
 | Hourly bars open at :00 instead of 09:15/10:15 | Session anchor missing | `session_anchor: "09:15"` in `config/marketdata.yaml`; NSE hourly candles are anchored at the open |
 | A tick "disappeared" | It was late or invalid — both are counted, never silent | `handler.stats`: `late_dropped`, `invalid_payloads`, `ignored_unsubscribed` |
 | Bar close looks wrong after out-of-order data | Working as intended | A late tick may extend high/low and add volume, but never rewrites `close` — that would rewrite time |
