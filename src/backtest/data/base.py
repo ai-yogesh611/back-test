@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 import pandas as pd
@@ -28,6 +29,11 @@ MSTOCK_INTERVAL_MAP = {
 
 #: NSE equity session length in minutes (09:15–15:30).
 TRADING_MINUTES_PER_DAY = 375
+
+#: The wall clock NSE/BSE bars are stamped on. A broker payload can arrive as a
+#: naive session time, so anything writing a ``timestamptz`` column has to
+#: declare this zone instead of letting the server pick one.
+EXCHANGE_TZ = "Asia/Kolkata"
 
 #: Trading days per year (NSE). The annualisation base for every daily-derived
 #: number: Sharpe, CAGR, Sortino, volatility.
@@ -203,6 +209,24 @@ def derive_serviceable_timeframes(
                 continue  # not enough base bars to fill even one window
         out.append(candidate)
     return out
+
+
+def bar_timestamp(value) -> datetime:
+    """Resolve one bar's timestamp to an **aware UTC** datetime.
+
+    ``market_data_cache.ts`` is ``timestamptz``. Binding a naive value hands
+    the instant to PostgreSQL, which reads it in the *session* timezone — and
+    the historical default here is ``Asia/Calcutta``, not UTC. That shift put
+    every fetched intraday bar 5h30 early and split a single NSE session over
+    two UTC calendar days, which is what broke daily rollups.
+
+    A naive stamp is taken as the exchange wall clock (what the brokers send);
+    an offset-bearing stamp keeps the instant it already declares.
+    """
+    ts = pd.Timestamp(value)
+    if ts.tzinfo is None:
+        ts = ts.tz_localize(EXCHANGE_TZ)
+    return ts.tz_convert("UTC").to_pydatetime()
 
 
 def periods_per_year(timeframe: str | None, default: int = TRADING_DAYS_PER_YEAR) -> int:

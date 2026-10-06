@@ -27,8 +27,7 @@ import requests
 from flask import Blueprint, jsonify, request
 from sqlalchemy import create_engine, text
 
-from backtest.data.base import MSTOCK_INTERVAL_MAP
-from backtest.data.base import CANONICAL_TIMEFRAMES
+from backtest.data.base import CANONICAL_TIMEFRAMES, MSTOCK_INTERVAL_MAP, bar_timestamp
 from backtest.data.coverage import (
     INDEX_UNIVERSE,
     INSTRUMENT_TYPES,
@@ -1319,9 +1318,9 @@ def _coverage_threshold(timeframe: str) -> int:
 
 
 def _build_windows(from_date: str, to_date: str, chunk_days: int) -> list:
-    """Split ``[from_date, to_date]`` into ``chunk_days``-wide (start, end)
-    datetimes — the exact stepping the chunk loop always used, extracted so the
-    job can decide *which* windows still need fetching before the loop runs.
+    """Split the INCLUSIVE range ``[from_date, to_date]`` into ``chunk_days``-wide
+    (start, end) datetimes — the windows the chunk loop fetches, decided before
+    the loop runs so coverage-aware skipping knows what still needs fetching.
     """
     from datetime import datetime, timedelta
 
@@ -1329,7 +1328,10 @@ def _build_windows(from_date: str, to_date: str, chunk_days: int) -> list:
     end = datetime.strptime(to_date, "%Y-%m-%d")
     windows = []
     chunk_start = start
-    while chunk_start < end:
+    # `<=`, not `<`: to_date is inclusive (the API defaults it to today, and a
+    # from==to one-day fetch must yield one window, not zero). `<` silently
+    # dropped the last day whenever it landed exactly on a chunk boundary.
+    while chunk_start <= end:
         chunk_end = min(chunk_start + timedelta(days=chunk_days), end)
         windows.append((chunk_start, chunk_end))
         chunk_start = chunk_end + timedelta(days=1)
@@ -1809,7 +1811,13 @@ def _fetch_bars_chunked(
             return ("cancelled", None, None)
         if breaker is not None and breaker.tripped:
             return ("cancelled", None, None)
-        params = {"from": c_start.strftime("%Y-%m-%d"), "to": c_end.strftime("%Y-%m-%d")}
+        # The windows are inclusive, but mStock's `to` date is END-EXCLUSIVE
+        # (verified live 2026-10-06: from=to returns zero bars; Sep 30..Oct 2
+        # returns Sep 30 + Oct 1). Ask one day past the window to collect it.
+        params = {
+            "from": c_start.strftime("%Y-%m-%d"),
+            "to": (c_end + timedelta(days=1)).strftime("%Y-%m-%d"),
+        }
         try:
             resp = _get_historical_with_retry(url, headers, params, should_cancel=should_cancel)
             bars = _extract_bars(resp.json())
@@ -1880,8 +1888,6 @@ def _extract_bars(payload) -> list[dict]:
 
 def _persist_bars(engine, bars: list[dict], symbol: str, exchange: str, timeframe: str) -> int:
     """Upsert OHLCV bars into market_data_cache."""
-    import pandas as pd
-
     if not bars:
         return 0
 
@@ -1903,10 +1909,7 @@ def _persist_bars(engine, bars: list[dict], symbol: str, exchange: str, timefram
     for bar in bars:
         try:
             if isinstance(bar, dict):
-                ts_raw = bar.get("t", bar.get("time", bar.get("timestamp")))
-                ts = pd.Timestamp(ts_raw)
-                if ts.tzinfo is not None:
-                    ts = ts.tz_convert("UTC").tz_localize(None)
+                ts = bar_timestamp(bar.get("t", bar.get("time", bar.get("timestamp"))))
                 o, h, l, c = (
                     float(bar.get("o", bar.get("open", 0))),
                     float(bar.get("h", bar.get("high", 0))),
@@ -1915,9 +1918,7 @@ def _persist_bars(engine, bars: list[dict], symbol: str, exchange: str, timefram
                 )
                 v = int(bar.get("v", bar.get("volume", 0)))
             elif isinstance(bar, (list, tuple)) and len(bar) >= 6:
-                ts = pd.Timestamp(bar[0])
-                if ts.tzinfo is not None:
-                    ts = ts.tz_convert("UTC").tz_localize(None)
+                ts = bar_timestamp(bar[0])
                 o, h, l, c = float(bar[1]), float(bar[2]), float(bar[3]), float(bar[4])
                 v = int(bar[5])
             else:
@@ -1935,7 +1936,7 @@ def _persist_bars(engine, bars: list[dict], symbol: str, exchange: str, timefram
                     "symbol": symbol,
                     "exchange": exchange,
                     "timeframe": timeframe,
-                    "ts": ts.to_pydatetime(),
+                    "ts": ts,
                     "open": o,
                     "high": h,
                     "low": l,

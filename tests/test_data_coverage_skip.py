@@ -40,7 +40,7 @@ def test_skip_enabled_defaults_on_and_respects_env(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _build_windows — the range stepper, unchanged semantics
+# _build_windows — the range stepper, inclusive on both ends
 # ---------------------------------------------------------------------------
 
 
@@ -49,19 +49,24 @@ def test_build_windows_covers_range_in_chunk_days_steps():
     assert [(s.strftime("%m-%d"), e.strftime("%m-%d")) for s, e in wins] == [
         ("06-01", "06-03"),
         ("06-04", "06-06"),
+        ("06-07", "06-07"),  # Sun tail — the last day is never dropped
     ]
 
 
-def test_build_windows_single_day_is_empty_range():
-    # from == to: the loop is `chunk_start < end`, so nothing to walk.
-    assert dm._build_windows("2026-06-01", "2026-06-01", 2) == []
+def test_build_windows_single_day_yields_one_window():
+    # Regression (Data-page test 2026-10-06): from == to built ZERO windows,
+    # so a one-day fetch "completed" without ever asking mStock for bars.
+    assert [(s.strftime("%m-%d"), e.strftime("%m-%d"))
+            for s, e in dm._build_windows("2026-06-01", "2026-06-01", 2)] == [
+        ("06-01", "06-01")
+    ]
 
 
 # ---------------------------------------------------------------------------
 # _windows_needing_fetch — the day-level diff
 # ---------------------------------------------------------------------------
 
-_WINS = dm._build_windows("2026-06-01", "2026-06-07", 2)  # (06-01..03), (06-04..06)
+_WINS = dm._build_windows("2026-06-01", "2026-06-07", 2)  # (01..03), (04..06), (07..07)
 
 
 def test_nothing_covered_fetches_every_window():
@@ -323,6 +328,28 @@ def _candles(n: int = 1) -> dict:
     return {"data": {"candles": [["t", 1.0, 2.0, 3.0, 4.0, 5] for _ in range(n)]}}
 
 
+def test_one_day_window_requests_the_full_session(monkeypatch):
+    # mStock's `to` date is END-EXCLUSIVE (live 2026-10-06: from==to returned
+    # zero bars; Sep 30..Oct 2 returned Sep 30 + Oct 1). An inclusive (X, X)
+    # window must therefore be requested as from=X&to=X+1.
+    seen: list[dict] = []
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        seen.append(dict(params))
+        return _Resp(200, _candles(1))
+
+    monkeypatch.setattr(dm.requests, "get", fake_get)
+    monkeypatch.setattr(dm.time, "sleep", lambda s: None)
+
+    wins = dm._build_windows("2026-06-01", "2026-06-01", 2)
+    bars, errors = dm._fetch_bars_chunked(
+        "key", "tok", "11536", "2026-06-01", "2026-06-01", "NSE", "minute", 2,
+        windows=wins, workers=1,
+    )
+    assert errors == 0 and len(bars) == 1
+    assert seen == [{"from": "2026-06-01", "to": "2026-06-02"}]
+
+
 def test_explicit_windows_fetch_only_those(monkeypatch):
     requested: list[str] = []
 
@@ -333,16 +360,16 @@ def test_explicit_windows_fetch_only_those(monkeypatch):
     monkeypatch.setattr(dm.requests, "get", fake_get)
     monkeypatch.setattr(dm.time, "sleep", lambda s: None)
 
-    # Range spans 3 windows, but we hand the loop only the middle one.
-    all_wins = dm._build_windows("2026-06-01", "2026-06-07", 2)  # 01..03, 04..06
+    # Range spans 3 windows, but we hand the loop only the last two.
+    all_wins = dm._build_windows("2026-06-01", "2026-06-07", 2)  # 01..03, 04..06, 07
     bars, errors = dm._fetch_bars_chunked(
         "key", "tok", "11536", "2026-06-01", "2026-06-07", "NSE", "minute", 2,
         windows=all_wins[1:],
         workers=1,
     )
     assert errors == 0
-    assert len(bars) == 1
-    assert requested == ["2026-06-04"]  # the skipped window was never requested
+    assert len(bars) == 2
+    assert sorted(requested) == ["2026-06-04", "2026-06-07"]  # skipped window never requested
 
 
 # ---------------------------------------------------------------------------
